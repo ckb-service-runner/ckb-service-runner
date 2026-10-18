@@ -31,3 +31,8 @@
 - The ping listener is a separate axum server on `ranking.ping_bind`, started at `csr run` only when `ranking.join` and mode is `inbound`/`both`; it is not re-evaluated on live settings changes (restart needed). Body limit 4 KB (413), rate limit 10 per rolling 60 s per client IP counting every request (429).
 - Reject codes: 400 malformed/stale/future/height above tip/bad nonce, 403 bad monitor signature, 409 replayed nonce, 503 node data unavailable. The nonce is reserved only after signature, freshness and height checks pass and is released if the answer cannot be built; replay window 10 min is kept in memory (`AppState::ping_nonces`), so it is lost on restart.
 - Challenge JSON rejects unknown fields. `last_check_ok_at` is set when an answer is served.
+
+## Phase 7
+- The outbound loop always runs and re-reads `ranking.join` / `ping_mode` each tick, so settings changes apply live; the first check-in happens at startup, right after the initial R2 poll.
+- A failed answer POST releases the nonce reservation; a non-200 reply is a failure retried at the next interval.
+- Spec `docs/spec/` is absent in this checkout; the concept text was used as the source of truth.

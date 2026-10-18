@@ -244,6 +244,8 @@ pub async fn run(
         }
     };
 
+    tokio::spawn(ping::outbound::run(state.clone(), stop_rx.clone()));
+
     let result = tokio::select! {
         _ = shutdown_signal() => {
             tracing::info!("shutting down");

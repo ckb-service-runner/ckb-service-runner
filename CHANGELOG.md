@@ -16,3 +16,7 @@
 
 ## Phase 6
 - Ping protocol v1 spec (`spec/ping-protocol.md`), binding/answer signatures and the inbound `POST /v1/challenge` responder with rate limit and replay protection.
+
+## A1 phase 7
+- Outbound check-in (`ping_mode` outbound/both): `/v1/checkin` → validated challenge → `/v1/answer`, every 10 min (2 s with fast tick), `last_check_ok_at` on acceptance.
+- Rust mock monitor and ping-flow integration tests; README, `docs/milestones/A1.md`, open questions. **Milestone A1 complete.**
