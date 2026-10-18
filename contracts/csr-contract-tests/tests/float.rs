@@ -4,7 +4,8 @@ use ckb_testtool::ckb_error::Error as CkbError;
 use ckb_testtool::ckb_types::packed::Script;
 use csr_contract_tests::*;
 
-const MAX_FEE: u64 = CKB; // 1 CKB per transaction
+/// `max_fee_shannons` in the float args: reserved, the runner path ignores it (no loss allowed).
+const MAX_FEE: u64 = CKB;
 const FLOAT: u64 = 1000 * CKB;
 
 /// Asserts that verification failed in the lock script of input `idx` with error code `code`.
@@ -43,19 +44,6 @@ fn float_runner_tip_deposit_ok() {
 }
 
 #[test]
-fn float_runner_fee_within_max_ok() {
-    let Setup { mut env, runner, float, .. } = setup();
-    let f = env.cell(FLOAT, float.clone(), None, Bytes::new());
-    let k = env.min_cell(10 * CKB, runner.lock.clone(), None, Bytes::new());
-    // exactly max_fee leaves the float
-    let tx = tx_with(
-        vec![env.input(&f, 0), env.input(&k, 0)],
-        vec![(output(FLOAT - MAX_FEE, float, None), Bytes::new()), (output(10 * CKB + MAX_FEE, runner.lock.clone(), None), Bytes::new())],
-    );
-    env.verify_signed(tx, &[&runner]).expect("fee within max");
-}
-
-#[test]
 fn float_runner_merge_two_floats_ok() {
     let Setup { mut env, runner, float, .. } = setup();
     let a = env.cell(FLOAT, float.clone(), None, Bytes::new());
@@ -63,21 +51,78 @@ fn float_runner_merge_two_floats_ok() {
     let k = env.min_cell(10 * CKB, runner.lock.clone(), None, Bytes::new());
     let tx = tx_with(
         vec![env.input(&a, 0), env.input(&b, 0), env.input(&k, 0)],
-        vec![(output(FLOAT + FLOAT / 2 - MAX_FEE, float, None), Bytes::new()), (output(10 * CKB, runner.lock.clone(), None), Bytes::new())],
+        vec![(output(FLOAT + FLOAT / 2, float, None), Bytes::new()), (output(10 * CKB, runner.lock.clone(), None), Bytes::new())],
     );
     env.verify_signed(tx, &[&runner]).expect("merge");
 }
 
 #[test]
-fn float_runner_fee_above_max_rejected() {
+fn float_runner_capacity_loss_rejected() {
+    // F4: not even one shannon may leave the float on the runner path (max_fee_shannons is reserved).
     let Setup { mut env, runner, float, .. } = setup();
     let f = env.cell(FLOAT, float.clone(), None, Bytes::new());
     let k = env.min_cell(10 * CKB, runner.lock.clone(), None, Bytes::new());
     let tx = tx_with(
         vec![env.input(&f, 0), env.input(&k, 0)],
-        vec![(output(FLOAT - MAX_FEE - 1, float, None), Bytes::new()), (output(10 * CKB + MAX_FEE + 1, runner.lock.clone(), None), Bytes::new())],
+        vec![(output(FLOAT - 1, float, None), Bytes::new()), (output(10 * CKB, runner.lock.clone(), None), Bytes::new())],
     );
     assert_lock_error(env.verify_signed(tx, &[&runner]), 0, 8);
+}
+
+#[test]
+fn float_runner_no_job_drain_rejected() {
+    // F4: a stolen service key spends runner key + float only and moves capacity (within the old max_fee)
+    // from the float to its own key cell.
+    let Setup { mut env, runner, float, .. } = setup();
+    let f = env.cell(FLOAT, float.clone(), None, Bytes::new());
+    let k = env.min_cell(10 * CKB, runner.lock.clone(), None, Bytes::new());
+    let key_cap = min_capacity(&runner.lock, None, 0) + 10 * CKB;
+    let tx = tx_with(
+        vec![env.input(&f, 0), env.input(&k, 0)],
+        vec![(output(FLOAT - MAX_FEE, float, None), Bytes::new()), (output(key_cap + MAX_FEE, runner.lock.clone(), None), Bytes::new())],
+    );
+    assert_lock_error(env.verify_signed(tx, &[&runner]), 0, 8);
+}
+
+#[test]
+fn float_runner_adds_type_script_rejected() {
+    // F3: a type script on the float output (e.g. always-failing or attacker-controlled) would freeze it.
+    let Setup { mut env, runner, float, .. } = setup();
+    let trap = env.always_success_script(b"trap");
+    let f = env.cell(FLOAT, float.clone(), None, Bytes::new());
+    let k = env.min_cell(10 * CKB, runner.lock.clone(), None, Bytes::new());
+    let tx = tx_with(
+        vec![env.input(&f, 0), env.input(&k, 0)],
+        vec![(output(FLOAT, float, Some(trap)), Bytes::new()), (output(10 * CKB, runner.lock.clone(), None), Bytes::new())],
+    );
+    assert_lock_error(env.verify_signed(tx, &[&runner]), 0, 10);
+}
+
+#[test]
+fn float_runner_sets_data_rejected() {
+    // F3: float cells never carry data.
+    let Setup { mut env, runner, float, .. } = setup();
+    let f = env.cell(FLOAT, float.clone(), None, Bytes::new());
+    let k = env.min_cell(10 * CKB, runner.lock.clone(), None, Bytes::new());
+    let tx = tx_with(
+        vec![env.input(&f, 0), env.input(&k, 0)],
+        vec![(output(FLOAT, float, None), Bytes::from_static(b"x")), (output(10 * CKB, runner.lock.clone(), None), Bytes::new())],
+    );
+    assert_lock_error(env.verify_signed(tx, &[&runner]), 0, 10);
+}
+
+#[test]
+fn float_runner_keeps_capacity_ok() {
+    // Runner path without any loss (e.g. a tip arriving while the float is spent): accepted.
+    let Setup { mut env, runner, float, .. } = setup();
+    let f = env.cell(FLOAT, float.clone(), None, Bytes::new());
+    let k = env.min_cell(10 * CKB, runner.lock.clone(), None, Bytes::new());
+    let key_cap = min_capacity(&runner.lock, None, 0) + 10 * CKB;
+    let tx = tx_with(
+        vec![env.input(&f, 0), env.input(&k, 0)],
+        vec![(output(FLOAT + CKB, float, None), Bytes::new()), (output(key_cap - CKB - 100_000, runner.lock.clone(), None), Bytes::new())],
+    );
+    env.verify_signed(tx, &[&runner]).expect("no loss");
 }
 
 #[test]

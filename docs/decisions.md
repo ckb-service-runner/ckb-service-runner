@@ -147,3 +147,31 @@
 - The job lock does not check registry attestation expiry or bind runs to a runner key (documented as limits
   in `spec/job-cell-standard.md` §3).
 - The harness test now creates a real job (type script) and refunds it after expiry (job lock).
+
+## A3a-fix Phase 1 – float lock and registry (audit F1, F3, F4)
+- **F4: the float never pays fees.** `csr-float-lock` runner path: float output capacity ≥ Σ float inputs of the
+  group (no loss at all, error 8). Job fees already come from the job cell (A3a Phase 4), so nothing needs the
+  old allowance. `max_fee_shannons` stays at `args[64..72]` (72-byte layout unchanged: existing float lock
+  hashes, CSR config and tests keep their format) but is **reserved/unused**. Owner path unchanged.
+- **F3:** runner path requires the single float output to have no type script and empty data (new error 10,
+  `ERR_OUTPUT_SHAPE`). Checked after the output count (7) and before capacity (8).
+- **F1:** `csr-registry` rule 6 / `ERR_NO_RUNNER_KEY = 17`: on creation, and on the owner path when
+  `service_pubkey` **or** the dual lock's runner hash changes (stricter than "pubkey changes": an owner cannot
+  switch to another sighash form of the same key without that key either), an input with the output's runner
+  lock hash must be present. Checked after rules 1–5, so the existing tests keep their error codes (e.g. a
+  mismatched runner lock still reports 13). The runner path needs no extra check: the dual lock already
+  requires owner or runner key, and the runner path keeps the lock identical.
+- Tests: `float_runner_fee_within_max_ok` / `float_runner_fee_above_max_rejected` deleted (replaced by
+  `float_runner_capacity_loss_rejected`, `float_runner_no_job_drain_rejected`, plus `float_runner_keeps_capacity_ok`);
+  `float_runner_merge_two_floats_ok` now merges without loss. New helper `Env::registry_create_tx` (inputs
+  wallet + runner key cell, both signed). `registry_create_cycles_of_type_script` measures the type script as
+  creation tx minus a baseline that only spends the key cell (the runner key's system lock now always runs).
+  `registry_create_with_genesis_secp_runner_lock_ok` deploys the sighash binary under the genesis Type ID type
+  script (args `0x8536c9d5…c304`, hash asserted = `0x9bd7e06f…`) so that the runner key cell can be spent.
+  Extra test `registry_owner_changes_service_pubkey_with_old_runner_key_rejected`.
+- **Downstream impact:** `csr register prepare` (A3b) must add the node's runner key cell as input and output
+  and sign that input with the service key (also for an owner-path key rotation: the **new** key cell). Runner
+  transactions that spend the float must pay the miner fee from another input (runner key cell or job cell).
+  Job transactions (A3c) must add the monitor config cell as a cell dep (Phase 2, F5).
+- **F8 (documented, `spec/registry.md` §4):** one key holder may still create several registry cells;
+  consumers pick the one with the latest attestation.

@@ -13,6 +13,7 @@ const ERR_NO_KEY_CELL: i8 = 6;
 const ERR_OUTPUT_COUNT: i8 = 7;
 const ERR_CAPACITY: i8 = 8;
 const ERR_OVERFLOW: i8 = 9;
+const ERR_OUTPUT_SHAPE: i8 = 10;
 
 fn program_entry() -> i8 {
     match run() {
@@ -82,9 +83,7 @@ fn run() -> Result<(), i8> {
     }
     let owner = &args[0..32];
     let runner = &args[32..64];
-    let mut fee = [0u8; 8];
-    fee.copy_from_slice(&args[64..72]);
-    let max_fee = u64::from_le_bytes(fee);
+    // args[64..72] (`max_fee_shannons`) is reserved: the runner path allows no capacity loss at all.
 
     // Owner path: anything allowed.
     if has_input_with_lock_hash(owner)? {
@@ -106,13 +105,13 @@ fn run() -> Result<(), i8> {
 
     let mut obuf = [0u8; 256];
     let mut count = 0u32;
-    let mut out_cap = 0u64;
+    let mut out_idx = 0usize;
     for i in 0.. {
         match load_raw(|b| syscalls::load_cell_by_field(b, 0, i, Source::Output, CellField::Lock), &mut obuf) {
             Ok(lock) => {
                 if lock == script {
                     count += 1;
-                    out_cap = load_cell_capacity(i, Source::Output).map_err(sys)?;
+                    out_idx = i;
                 }
             }
             Err(1) => break, // IndexOutOfBound
@@ -122,7 +121,21 @@ fn run() -> Result<(), i8> {
     if count != 1 {
         return Err(ERR_OUTPUT_COUNT);
     }
-    if out_cap < in_sum.saturating_sub(max_fee) {
+    // Float cells never carry a type script or data.
+    let mut tbuf = [0u8; 32];
+    match syscalls::load_cell_by_field(&mut tbuf, 0, out_idx, Source::Output, CellField::Type) {
+        Err(SysError::ItemMissing) => {}
+        Ok(_) | Err(SysError::LengthNotEnough(_)) => return Err(ERR_OUTPUT_SHAPE),
+        Err(e) => return Err(sys(e)),
+    }
+    match syscalls::load_cell_data(&mut tbuf, 0, out_idx, Source::Output) {
+        Ok(0) => {}
+        Ok(_) | Err(SysError::LengthNotEnough(_)) => return Err(ERR_OUTPUT_SHAPE),
+        Err(e) => return Err(sys(e)),
+    }
+    // No capacity may leave the float on the runner path (fees are paid from the job cell).
+    let out_cap = load_cell_capacity(out_idx, Source::Output).map_err(sys)?;
+    if out_cap < in_sum {
         return Err(ERR_CAPACITY);
     }
     Ok(())

@@ -80,13 +80,19 @@ On **creation and on every update** (for each registry output):
      deployment on mainnet, testnet and dev chains), or the binary's data hash `0x709f3fda…e08649`
      (ckb-system-scripts 0.5.4) with `hash_type data`, `data1` or `data2`. All four run the same code.
 
+6. **Runner key present** (creation, and owner-path updates that change `service_pubkey` or the output's runner
+   lock hash): the transaction has an input whose lock hash equals the **output's** `runner_lock_hash`
+   (dual-lock `args[32..64]`), i.e. the node's runner key cell. This proves possession of the service key
+   (error 17). It is checked after rules 1–5.
+
 Data must be a complete molecule `Registry` with exactly the schema's field counts (no extra fields), and
 `network` ≤ 2; otherwise error 7.
 
 **One registry input and one output per group** (1:1; creation: 0 → 1, destruction: 1 → 0).
 
 **Owner path** (an input with `owner_lock_hash` present): any field may change; rules 1–5 still apply to the
-output.
+output. If `service_pubkey` or the runner lock hash changes, rule 6 requires the runner key cell of the
+**new** runner lock hash (the old service key does not authorise a new one).
 
 **Runner path** (no owner input): only `attestation` and `prekeys` may change. `peer_id`, `service_pubkey`,
 `float_lock_hash`, `network`, lock and type stay identical; output capacity ≥ input capacity; the cell must not
@@ -94,9 +100,17 @@ be destroyed.
 
 **Destroying** (input without registry output) requires the owner path.
 
-For *creation* there is no input to read an owner from; the output's lock args carry the owner hash and the
-rules above are the only checks (anybody may register their own key; sybil resistance is the monitor's
-attestation).
+For *creation* there is no input to read an owner from; the output's lock args carry the owner hash. Rules 1–6
+apply: anybody may register **their own** key (sybil resistance is the monitor's attestation), but only the
+holder of the service key can create an entry for it (rule 6).
+
+Why rule 6 (audit finding **F1**): attestations are public on chain. Without it anyone could copy another
+node's attestation and create a second registry cell with that node's `peer_id` and `service_pubkey` but their
+own owner, `float_lock_hash` and `prekeys`, then collect tips (or publish fake prekeys) under that identity.
+
+Note (**F8**): the same key holder can still create several registry cells for one service key. Off-chain
+consumers (CSR, monitor, CRT) must pick the one with the **latest** attestation (`expiry_ms`) and ignore the
+others.
 
 ## 5. Error codes
 
@@ -115,17 +129,29 @@ attestation).
 | 14 | runner path changed a forbidden field |
 | 15 | runner path reduced capacity |
 | 16 | destroy without owner path |
+| 17 | no input with the output's runner lock hash (creation, or owner path changing the service key) |
 
 ## 6. Worked examples
 
-*Create.* Inputs `[owner wallet cell]`, outputs `[registry cell (dual-lock, type registry, data with fresh
-attestation)]`, cell deps `[config cell, code deps]`.
+*Create.* Inputs `[owner wallet cell, runner key cell]`, outputs `[registry cell (dual-lock, type registry,
+data with fresh attestation), change, runner key cell]`, cell deps `[config cell, code deps]`. Both inputs are
+signed (owner wallet by its lock, runner key cell with the service key). The runner key cell may also be the
+only input if it pays for the registry cell.
+
+*Rejected creation:* owner wallet only (17, `registry_create_without_runner_key_rejected`); attacker as owner
+with the victim's `peer_id`, `service_pubkey` and copied attestation, the attacker's float and the attacker's
+own key cell (17, `registry_create_with_copied_attestation_rejected`).
 
 *Runner refresh.* Inputs `[registry cell, runner key cell]`, outputs `[registry cell with new attestation
 (same other fields, capacity ≥), runner key cell]`, cell deps `[config cell]`.
 
 *Owner changes float lock.* Inputs `[registry cell, owner wallet cell]`, outputs `[registry cell with new
 `float_lock_hash`]`.
+
+*Owner rotates the service key.* Inputs `[registry cell, owner wallet cell, new runner key cell]`, outputs
+`[registry cell with new `service_pubkey`, a fresh attestation for it and dual lock `owner ‖ new runner hash`,
+change, new runner key cell]` (`registry_owner_changes_service_pubkey_with_new_runner_key_ok`). Without the new
+key cell, or with only the old one, → 17.
 
 *Owner destroy.* Inputs `[registry cell, owner wallet cell]`, outputs `[change]`.
 
@@ -149,8 +175,8 @@ Measured with ckb-testtool (`registry_create_cycles_of_type_script`, `registry_c
 
 | transaction | cycles |
 |-------------|-------:|
-| registry creation, `csr-registry` type script alone | 7,923,174 |
-| registry creation, whole tx (type script + one system-lock input) | 9,624,715 |
-| runner refresh, whole tx (type script + dual lock + system lock) | 9,621,864 |
+| registry creation, `csr-registry` type script alone (tx minus a key-cell-only baseline) | 7,951,415 |
+| registry creation, whole tx (type script + two system-lock inputs: wallet, runner key) | 11,344,015 |
+| runner refresh, whole tx (type script + dual lock + system lock) | 9,660,915 |
 
 Almost all of it is the secp256k1 public-key recovery in `k256`; the binary is ~89 KB.

@@ -28,6 +28,7 @@ const ERR_LOCK: i8 = 13;
 const ERR_RUNNER_FIELD: i8 = 14;
 const ERR_RUNNER_CAPACITY: i8 = 15;
 const ERR_DESTROY: i8 = 16;
+const ERR_NO_RUNNER_KEY: i8 = 17;
 
 /// Domain separator of the attestation message.
 const ATTEST_DOMAIN: &[u8] = b"CSR-ATTEST-v1";
@@ -302,6 +303,24 @@ fn owner_present(lock: &[u8]) -> Result<bool, i8> {
     input_with_lock_hash(owner)
 }
 
+/// Runner hash (`args[32..64]`) of a registry cell's dual lock.
+fn runner_hash(lock: &[u8]) -> Result<&[u8], i8> {
+    let (_, _, args) = mol::script(lock).ok_or(ERR_LOCK)?;
+    if args.len() != 64 {
+        return Err(ERR_LOCK);
+    }
+    Ok(&args[32..64])
+}
+
+/// Rule 6: the runner key cell of the output's runner lock is an input (proves possession of the service key).
+fn check_runner_key(out_lock: &[u8]) -> Result<(), i8> {
+    if input_with_lock_hash(runner_hash(out_lock)?)? {
+        Ok(())
+    } else {
+        Err(ERR_NO_RUNNER_KEY)
+    }
+}
+
 fn run() -> Result<(), i8> {
     let script = load_all(|b, o| syscalls::load_script(b, o))?;
     let (_, _, config_type_hash) = mol::script(&script).ok_or(ERR_ARGS_LEN)?;
@@ -321,9 +340,22 @@ fn run() -> Result<(), i8> {
     let out = parse_registry(&out_data).ok_or(ERR_DATA)?;
     let out_lock = cell_lock(0, Source::GroupOutput)?;
 
+    // Rule 6 applies on creation and whenever the owner changes the service key / runner lock.
+    let mut need_runner_key = n_in == 0;
     if n_in == 1 {
         let in_lock = cell_lock(0, Source::GroupInput)?;
-        if !owner_present(&in_lock)? {
+        if owner_present(&in_lock)? {
+            let in_data = cell_data(0, Source::GroupInput)?;
+            let new_key = match parse_registry(&in_data) {
+                Some(inp) => inp.service_pubkey != out.service_pubkey,
+                None => true,
+            };
+            let new_runner = match (runner_hash(&in_lock), runner_hash(&out_lock)) {
+                (Ok(a), Ok(b)) => a != b,
+                _ => true,
+            };
+            need_runner_key = new_key || new_runner;
+        } else {
             // runner path: only attestation and prekeys may change
             let in_data = cell_data(0, Source::GroupInput)?;
             let inp = parse_registry(&in_data).ok_or(ERR_DATA)?;
@@ -342,5 +374,9 @@ fn run() -> Result<(), i8> {
             }
         }
     }
-    check_output(config_type_hash, &out, &out_lock)
+    check_output(config_type_hash, &out, &out_lock)?;
+    if need_runner_key {
+        check_runner_key(&out_lock)?;
+    }
+    Ok(())
 }

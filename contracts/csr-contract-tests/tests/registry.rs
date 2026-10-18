@@ -52,29 +52,18 @@ fn setup() -> S {
 }
 
 impl S {
-    /// Creation: owner wallet cell in, registry cell (minimal capacity) + change out, config cell as dep.
+    /// Creation: owner wallet cell + runner (service) key cell in, registry cell (minimal capacity) + change +
+    /// key cell out, config cell as dep.
     fn create_tx(&mut self, data: Bytes, lock: Script, with_config: bool) -> TransactionView {
-        let wallet = self.env.min_cell(WALLET, self.owner.lock.clone(), None, Bytes::new());
-        let wallet_cap = min_capacity(&self.owner.lock, None, 0) + WALLET;
-        let reg_cap = min_capacity(&lock, Some(&self.reg_type), data.len());
-        let tx = tx_with(
-            vec![self.env.input(&wallet, 0)],
-            vec![
-                (output(reg_cap, lock, Some(self.reg_type.clone())), data),
-                (output(wallet_cap - reg_cap - FEE, self.owner.lock.clone(), None), Bytes::new()),
-            ],
-        );
-        if with_config {
-            tx.as_advanced_builder().cell_dep(cell_dep(&self.config)).build()
-        } else {
-            tx
-        }
+        let config = if with_config { Some(self.config.clone()) } else { None };
+        let reg_type = self.reg_type.clone();
+        self.env.registry_create_tx(&self.owner, Some(&self.service), lock, reg_type, data, config.as_ref())
     }
 
     fn create(&mut self, data: Bytes, lock: Script) -> Result<u64, CkbError> {
         let tx = self.create_tx(data, lock, true);
-        let owner = &self.owner;
-        self.env.verify_signed(tx, &[owner])
+        let (owner, service) = (&self.owner, &self.service);
+        self.env.verify_signed(tx, &[owner, service])
     }
 
     /// A live registry cell with valid data and 10 CKB above its occupied capacity. Returns (out point, capacity).
@@ -87,6 +76,11 @@ impl S {
 
     /// Spends the registry cell together with a key cell of `key`; outputs are `registry` (if any) + the key cell.
     fn spend(&mut self, key_is_owner: bool, registry: Option<(u64, Script, Bytes)>) -> Result<u64, CkbError> {
+        self.spend_with(key_is_owner, registry, None)
+    }
+
+    /// Like `spend`, plus a key cell of `extra` (in and out, signed), e.g. the new runner key.
+    fn spend_with(&mut self, key_is_owner: bool, registry: Option<(u64, Script, Bytes)>, extra: Option<&Key>) -> Result<u64, CkbError> {
         let (reg, reg_cap) = self.live_registry();
         let key = if key_is_owner { &self.owner } else { &self.service };
         let key_lock = key.lock.clone();
@@ -98,12 +92,17 @@ impl S {
             None => back += reg_cap,
         }
         outputs.push((output(back, key_lock, None), Bytes::new()));
-        let tx = tx_with(vec![self.env.input(&reg, 0), self.env.input(&k, 0)], outputs)
-            .as_advanced_builder()
-            .cell_dep(cell_dep(&self.config))
-            .build();
+        let mut inputs = vec![self.env.input(&reg, 0), self.env.input(&k, 0)];
+        if let Some(x) = extra {
+            let xc = self.env.cell(KEY_CELL, x.lock.clone(), None, Bytes::new());
+            inputs.push(self.env.input(&xc, 0));
+            outputs.push((output(KEY_CELL, x.lock.clone(), None), Bytes::new()));
+        }
+        let tx = tx_with(inputs, outputs).as_advanced_builder().cell_dep(cell_dep(&self.config)).build();
         let key = if key_is_owner { &self.owner } else { &self.service };
-        self.env.verify_signed(tx, &[key])
+        let mut keys = vec![key];
+        keys.extend(extra);
+        self.env.verify_signed(tx, &keys)
     }
 
     fn reg_cap(&self) -> u64 {
@@ -126,21 +125,57 @@ fn registry_create_with_valid_attestation_ok() {
 
 #[test]
 fn registry_create_cycles_of_type_script() {
-    // Cycles of the registry type script alone: same creation tx with an always-success input lock.
+    // Cycles of the registry type script alone: creation tx with an always-success wallet and the runner key
+    // cell (rule 6), minus a baseline tx that only spends the same key cell.
     let mut s = setup();
     let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
     let anyone = s.env.always_success_script(b"wallet");
     let w = s.env.cell(WALLET, anyone.clone(), None, Bytes::new());
+    let k = s.env.cell(KEY_CELL, s.service.lock.clone(), None, Bytes::new());
     let reg_cap = min_capacity(&s.dual, Some(&s.reg_type), data.len());
     let tx = tx_with(
-        vec![s.env.input(&w, 0)],
-        vec![(output(reg_cap, s.dual.clone(), Some(s.reg_type.clone())), data), (output(WALLET - reg_cap - FEE, anyone, None), Bytes::new())],
+        vec![s.env.input(&w, 0), s.env.input(&k, 0)],
+        vec![
+            (output(reg_cap, s.dual.clone(), Some(s.reg_type.clone())), data),
+            (output(WALLET - reg_cap - FEE, anyone, None), Bytes::new()),
+            (output(KEY_CELL, s.service.lock.clone(), None), Bytes::new()),
+        ],
     )
     .as_advanced_builder()
     .cell_dep(cell_dep(&s.config))
     .build();
-    let cycles = s.env.verify(tx).expect("create");
-    println!("registry type script (creation): {cycles} cycles");
+    let total = s.env.verify_signed(tx, &[&s.service]).expect("create");
+    let k = s.env.cell(KEY_CELL, s.service.lock.clone(), None, Bytes::new());
+    let base = tx_with(vec![s.env.input(&k, 0)], vec![(output(KEY_CELL - FEE, s.service.lock.clone(), None), Bytes::new())]);
+    let base = s.env.verify_signed(base, &[&s.service]).expect("baseline");
+    println!("registry type script (creation): {} cycles", total - base);
+}
+
+#[test]
+fn registry_create_without_runner_key_rejected() {
+    // Valid attestation, owner wallet only: nobody proves possession of the service key.
+    let mut s = setup();
+    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
+    let (dual, reg_type, config) = (s.dual.clone(), s.reg_type.clone(), s.config.clone());
+    let tx = s.env.registry_create_tx(&s.owner, None, dual, reg_type, data, Some(&config));
+    assert_script_error(s.env.verify_signed(tx, &[&s.owner]), "Outputs[0].Type", 17);
+}
+
+#[test]
+fn registry_create_with_copied_attestation_rejected() {
+    // The attacker copies the victim's (public) attestation and registers the victim's peer_id and service key
+    // with the attacker as owner and the attacker's float; the attacker's own key cell is no runner key.
+    let mut s = setup();
+    let attacker = s.env.new_key();
+    let attacker_float = s.env.float_lock_script(&attacker.lock_hash(), &attacker.lock_hash(), CKB);
+    let victim_attestation = s.fields.attestation_fields(EXPIRY_MS).sign(&s.monitor);
+    let mut f = s.fields.clone();
+    f.float_lock_hash = attacker_float.calc_script_hash().unpack();
+    let data = f.data(&victim_attestation);
+    let lock = s.env.dual_lock_script(&attacker.lock_hash(), &s.service.lock_hash());
+    let (reg_type, config) = (s.reg_type.clone(), s.config.clone());
+    let tx = s.env.registry_create_tx(&attacker, Some(&attacker), lock, reg_type, data, Some(&config));
+    assert_script_error(s.env.verify_signed(tx, &[&attacker]), "Outputs[0].Type", 17);
 }
 
 #[test]
@@ -177,7 +212,7 @@ fn registry_create_without_config_cell_dep_rejected() {
     let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
     let dual = s.dual.clone();
     let tx = s.create_tx(data, dual, false);
-    assert_script_error(s.env.verify_signed(tx, &[&s.owner]), "Outputs[0].Type", 8);
+    assert_script_error(s.env.verify_signed(tx, &[&s.owner, &s.service]), "Outputs[0].Type", 8);
 }
 
 #[test]
@@ -189,7 +224,7 @@ fn registry_create_with_two_config_cell_deps_rejected() {
     let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
     let dual = s.dual.clone();
     let tx = s.create_tx(data, dual, true).as_advanced_builder().cell_dep(cell_dep(&dup)).build();
-    assert_script_error(s.env.verify_signed(tx, &[&s.owner]), "Outputs[0].Type", 8);
+    assert_script_error(s.env.verify_signed(tx, &[&s.owner, &s.service]), "Outputs[0].Type", 8);
 }
 
 #[test]
@@ -270,7 +305,33 @@ fn registry_create_with_genesis_secp_runner_lock_ok() {
         .build();
     let lock = s.env.dual_lock_script(&s.owner.lock_hash(), &runner.calc_script_hash().unpack());
     let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
-    s.create(data, lock).expect("create with genesis secp runner lock");
+    // Rule 6 needs a runner key cell with exactly this lock: deploy the sighash binary under the genesis
+    // Type ID type script (whose hash is the code hash above), as on mainnet/testnet.
+    let type_id = Script::new_builder()
+        .code_hash({
+            // "TYPE_ID" right-aligned in 32 bytes
+            let mut h = [0u8; 32];
+            h[25..].copy_from_slice(b"TYPE_ID");
+            h.pack()
+        })
+        .hash_type(ScriptHashType::Type)
+        .args(
+            Bytes::copy_from_slice(&[
+                0x85, 0x36, 0xc9, 0xd5, 0xd9, 0x08, 0xbd, 0x89, 0xfc, 0x70, 0x09, 0x9e, 0x42, 0x84, 0x87, 0x07, 0x08,
+                0xb6, 0x63, 0x23, 0x56, 0xaa, 0xd9, 0x87, 0x34, 0xfc, 0xf4, 0x3f, 0x6f, 0x71, 0xc3, 0x04,
+            ])
+            .pack(),
+        )
+        .build();
+    let type_id_hash: [u8; 32] = type_id.calc_script_hash().unpack();
+    assert_eq!(type_id_hash, code_hash);
+    let bin = load_secp256k1_lock();
+    let secp_cell = output(min_capacity(&s.owner.lock, Some(&type_id), bin.len()), s.owner.lock.clone(), Some(type_id));
+    s.env.ctx.create_cell(secp_cell, bin);
+    let genesis_service = Key { privkey: s.service.privkey.clone(), pubkey: s.service.pubkey, lock: runner };
+    let (reg_type, config) = (s.reg_type.clone(), s.config.clone());
+    let tx = s.env.registry_create_tx(&s.owner, Some(&genesis_service), lock, reg_type, data, Some(&config));
+    s.env.verify_signed(tx, &[&s.owner, &genesis_service]).expect("create with genesis secp runner lock");
 }
 
 #[test]
@@ -397,6 +458,58 @@ fn registry_owner_changes_float_lock_hash_ok() {
     let data = f.signed_data(&s.monitor, EXPIRY_MS);
     let (cap, dual) = (s.reg_cap() - CKB, s.dual.clone());
     s.spend(true, Some((cap, dual, data))).expect("owner update");
+}
+
+#[test]
+fn registry_owner_changes_service_pubkey_without_new_runner_key_rejected() {
+    // New service key with a fresh attestation and matching dual lock, but its key cell is not an input.
+    let mut s = setup();
+    let new_service = s.env.new_key();
+    let mut f = s.fields.clone();
+    f.service_pubkey = new_service.pubkey;
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let lock = s.env.dual_lock_script(&s.owner.lock_hash(), &new_service.lock_hash());
+    let cap = s.reg_cap();
+    assert_script_error(s.spend(true, Some((cap, lock, data))), "Inputs[0].Type", 17);
+}
+
+#[test]
+fn registry_owner_changes_service_pubkey_with_new_runner_key_ok() {
+    let mut s = setup();
+    let new_service = s.env.new_key();
+    let mut f = s.fields.clone();
+    f.service_pubkey = new_service.pubkey;
+    let data = f.signed_data(&s.monitor, EXPIRY_MS + 3_600_000);
+    let lock = s.env.dual_lock_script(&s.owner.lock_hash(), &new_service.lock_hash());
+    let cap = s.reg_cap();
+    s.spend_with(true, Some((cap, lock, data)), Some(&new_service)).expect("owner rotates service key");
+}
+
+#[test]
+fn registry_owner_changes_service_pubkey_with_old_runner_key_rejected() {
+    // The old service key cell does not authorize the new key.
+    let mut s = setup();
+    let new_service = s.env.new_key();
+    let mut f = s.fields.clone();
+    f.service_pubkey = new_service.pubkey;
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let lock = s.env.dual_lock_script(&s.owner.lock_hash(), &new_service.lock_hash());
+    let cap = s.reg_cap();
+    let (reg, _) = s.live_registry();
+    let o = s.env.cell(KEY_CELL, s.owner.lock.clone(), None, Bytes::new());
+    let k = s.env.cell(KEY_CELL, s.service.lock.clone(), None, Bytes::new());
+    let tx = tx_with(
+        vec![s.env.input(&reg, 0), s.env.input(&o, 0), s.env.input(&k, 0)],
+        vec![
+            (output(cap, lock, Some(s.reg_type.clone())), data),
+            (output(KEY_CELL - FEE, s.owner.lock.clone(), None), Bytes::new()),
+            (output(KEY_CELL, s.service.lock.clone(), None), Bytes::new()),
+        ],
+    )
+    .as_advanced_builder()
+    .cell_dep(cell_dep(&s.config))
+    .build();
+    assert_script_error(s.env.verify_signed(tx, &[&s.owner, &s.service]), "Inputs[0].Type", 17);
 }
 
 #[test]

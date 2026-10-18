@@ -170,6 +170,41 @@ impl Env {
         (op, hash)
     }
 
+    /// Registry creation (`spec/registry.md` §6): inputs `[wallet cell of wallet, runner key cell of runner_key]`,
+    /// outputs `[registry cell (minimal capacity), change, runner key cell]`, the config cell as dep (if given).
+    /// Rule 6 requires the runner key cell; pass `None` only to test its absence. Sign with both keys.
+    pub fn registry_create_tx(
+        &mut self,
+        wallet: &Key,
+        runner_key: Option<&Key>,
+        reg_lock: Script,
+        reg_type: Script,
+        data: Bytes,
+        config: Option<&OutPoint>,
+    ) -> TransactionView {
+        const WALLET: u64 = 1000 * CKB;
+        const KEY_CELL: u64 = 100 * CKB;
+        const FEE: u64 = 100_000;
+        let w = self.min_cell(WALLET, wallet.lock.clone(), None, Bytes::new());
+        let wallet_cap = min_capacity(&wallet.lock, None, 0) + WALLET;
+        let reg_cap = min_capacity(&reg_lock, Some(&reg_type), data.len());
+        let mut inputs = vec![self.input(&w, 0)];
+        let mut outputs = vec![
+            (output(reg_cap, reg_lock, Some(reg_type)), data),
+            (output(wallet_cap - reg_cap - FEE, wallet.lock.clone(), None), Bytes::new()),
+        ];
+        if let Some(k) = runner_key {
+            let kc = self.cell(KEY_CELL, k.lock.clone(), None, Bytes::new());
+            inputs.push(self.input(&kc, 0));
+            outputs.push((output(KEY_CELL, k.lock.clone(), None), Bytes::new()));
+        }
+        let tx = tx_with(inputs, outputs);
+        match config {
+            Some(c) => tx.as_advanced_builder().cell_dep(cell_dep(c)).build(),
+            None => tx,
+        }
+    }
+
     /// Builds an input for a live cell with the given `since` (0 = none).
     pub fn input(&self, op: &OutPoint, since: u64) -> CellInput {
         CellInput::new_builder().previous_output(op.clone()).since(ckb_testtool::ckb_types::packed::Uint64::from(since)).build()
