@@ -20,6 +20,7 @@ pub struct AppState {
     pub started: Instant,
     pub service_pubkey: String,
     pub service_key: secp256k1::SecretKey,
+    pub storage_key: [u8; 32],
     /// Ping nonces answered within the replay window, with the time.
     pub ping_nonces: Mutex<std::collections::HashMap<String, i64>>,
     pub db: Db,

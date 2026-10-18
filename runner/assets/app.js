@@ -473,6 +473,80 @@
     load();
   };
 
+  var JOB_TABS = [
+    ['Pending', ['Discovered', 'Queued', 'Scheduled']],
+    ['Active', ['Running', 'Paused', 'Completed', 'Submitting']],
+    ['Closed', ['Settled']],
+    ['Failed', ['Failed', 'Rejected', 'Expired', 'Lost']],
+  ];
+  function ckb(sh) { return typeof sh === 'number' ? (sh / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' CKB' : '–'; }
+  function short(h) { return h && h.length > 20 ? h.slice(0, 10) + '…' + h.slice(-6) : (h || '–'); }
+
+  pages.jobs = function (root) {
+    var c = card('Jobs');
+    var tabs = el('div', 'row');
+    var table = el('div');
+    var detail = el('div');
+    var cur = 0;
+    var open = null;
+    JOB_TABS.forEach(function (t, i) {
+      var b = el('button', 'btn', t[0]); b.type = 'button';
+      b.addEventListener('click', function () { cur = i; load(); });
+      tabs.appendChild(b);
+    });
+    c.appendChild(tabs); c.appendChild(table);
+    root.appendChild(c);
+    root.appendChild(detail);
+    function showDetail(id) {
+      open = id;
+      api('/api/jobs/' + id).then(function (j) {
+        detail.textContent = '';
+        var d = card('Job ' + j.id);
+        dl(d, [
+          ['Outpoint', j.outpoint], ['Service', j.code_hash], ['Kind', j.kind], ['Trigger', j.trigger],
+          ['Tip', ckb(j.tip_shannons)], ['Tip rate (CKB/M cycles)', j.tip_rate], ['Cycles used', j.cycles == null ? '–' : j.cycles],
+          ['State', j.state], ['Result tx', j.result_tx || '–'], ['Result', j.result_hex || '–'], ['Error', j.error || '–'],
+          ['Limits', 'cycles ' + j.limits.max_cycles + ', memory ' + j.limits.max_memory_mb + ' MiB, wall ' + j.limits.max_wall_seconds + ' s'],
+        ]);
+        d.appendChild(el('h2', '', 'Timeline'));
+        var tl = el('table');
+        j.timeline.forEach(function (e) {
+          var r = el('tr');
+          [fmtTime(e.t), e.state, e.note || ''].forEach(function (x) { r.appendChild(el('td', '', x)); });
+          tl.appendChild(r);
+        });
+        d.appendChild(tl);
+        d.appendChild(el('h2', '', 'Logs'));
+        d.appendChild(el('pre', 'log', (j.logs || []).join('\n') || '(none)'));
+        detail.appendChild(d);
+      }).catch(function (x) { detail.textContent = x.message; });
+    }
+    function load() {
+      Array.prototype.forEach.call(tabs.children, function (b, i) { b.className = 'btn' + (i === cur ? ' primary' : ''); });
+      api('/api/jobs').then(function (j) {
+        table.textContent = '';
+        var states = JOB_TABS[cur][1];
+        var list = j.jobs.filter(function (x) { return states.indexOf(x.state) >= 0; });
+        if (!list.length) { table.appendChild(el('p', 'msg', 'No jobs.')); return; }
+        var t = el('table'), h = el('tr');
+        ['ID', 'Service', 'Kind', 'Trigger', 'Tip', 'Tip rate', 'Cycles', 'Result tx', 'Status'].forEach(function (x) { h.appendChild(el('th', '', x)); });
+        t.appendChild(h);
+        list.forEach(function (x) {
+          var r = el('tr', 'click');
+          [String(x.id), short(x.code_hash), x.kind, x.trigger, ckb(x.tip_shannons), String(x.tip_rate),
+            x.cycles == null ? '–' : String(x.cycles), short(x.result_tx)].forEach(function (v) { r.appendChild(el('td', '', v)); });
+          var st = el('td'); st.appendChild(pill(x.state)); r.appendChild(st);
+          r.addEventListener('click', function () { showDetail(x.id); });
+          t.appendChild(r);
+        });
+        table.appendChild(t);
+      }).catch(function (x) { table.textContent = x.message; });
+      if (open != null) showDetail(open);
+    }
+    load();
+    timers.push(setInterval(load, 5000));
+  };
+
   pages.logs = function (root) {
     var c = card('Logs');
     var row = el('div', 'row'), sel = el('select');

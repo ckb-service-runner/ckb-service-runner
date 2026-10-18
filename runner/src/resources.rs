@@ -111,9 +111,7 @@ impl Monitor {
 }
 
 /// "Node always wins": returns why new jobs must not start (and running jobs
-/// must pause), or `None` when the machine has room. Used by the job scheduler
-/// in a later milestone.
-#[allow(dead_code)]
+/// must pause), or `None` when the machine has room. Used by the job scheduler.
 pub fn hold_reason(limits: &LimitsCfg, r: &Resources, r2: R2State) -> Option<String> {
     if r2 != R2State::Synced {
         return Some(format!("node not synced (R2: {})", r2.as_str()));

@@ -86,6 +86,10 @@ pub async fn add_onchain(db: &Db, rpc_url: &str, outpoint: &str) -> Result<Value
     let code_hash = format!("0x{}", hex::encode(ckb_hash::blake2b_256(&data)));
     let name = code_hash[2..10].to_string();
     db.add_service(&code_hash, &name, "onchain")?;
+    db.set_service_outpoint(
+        &code_hash,
+        &format!("{}:{index}", tx_hash.to_ascii_lowercase()),
+    )?;
     Ok(json!({"code_hash": code_hash, "name": name}))
 }
 

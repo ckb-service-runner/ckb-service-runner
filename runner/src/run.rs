@@ -101,6 +101,7 @@ pub async fn run(
         started: Instant::now(),
         service_pubkey: identity.service_pubkey.clone(),
         service_key: identity.service_key,
+        storage_key: identity.storage_key,
         ping_nonces: Mutex::new(Default::default()),
         db,
         set_log_level,
@@ -206,7 +207,12 @@ pub async fn run(
         });
     }
 
-    // Job discovery: on every new block, while the runtime is on.
+    // Keeper: on every new block discover jobs (runtime on), run a batch and track settlements.
+    if let Ok(n) = state.db.requeue_interrupted() {
+        if n > 0 {
+            tracing::info!("{n} interrupted job run(s) queued again");
+        }
+    }
     {
         let state = state.clone();
         let mut stop = stop_rx.clone();
@@ -214,7 +220,7 @@ pub async fn run(
             let p = period(DISCOVERY_INTERVAL);
             let mut tick = interval_at(TokioInstant::now() + Duration::from_millis(500), p);
             tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            let mut chain: Option<crate::chain::Chain> = None;
+            let mut keeper: Option<crate::keeper::Keeper> = None;
             let mut last_tip = None;
             let mut warned = false;
             loop {
@@ -224,12 +230,23 @@ pub async fn run(
                 }
                 let cfg = state.config.read().unwrap().clone();
                 let r2 = state.node.read().unwrap().report.state;
-                if crate::app::runtime_state(cfg.runtime.enabled, &cfg.network, r2).0 != "on" {
+                let (rt, reason) = crate::app::runtime_state(cfg.runtime.enabled, &cfg.network, r2);
+                let submitting = state
+                    .db
+                    .runs_in(&[crate::keeper::SUBMITTING])
+                    .map(|r| !r.is_empty())
+                    .unwrap_or(false);
+                // Off / mainnet-gated: nothing runs; only transactions already submitted are followed.
+                if (rt == "off" || rt == "inactive") && !submitting {
                     continue;
                 }
-                if chain.is_none() {
+                if keeper.is_none() {
                     match crate::chain::Chain::connect(&cfg, &state.service_pubkey).await {
-                        Ok(c) => chain = Some(c),
+                        Ok(c) => {
+                            keeper = Some(crate::keeper::Keeper::new(
+                                c.with_service_key(state.service_key),
+                            ))
+                        }
                         Err(e) => {
                             if !warned {
                                 tracing::warn!("job discovery unavailable: {e}");
@@ -239,24 +256,31 @@ pub async fn run(
                         }
                     }
                 }
-                let c = chain.as_ref().expect("connected");
-                let result = async {
-                    let tip = c.tip_info().await?.number;
-                    if last_tip == Some(tip) {
-                        return Ok(None);
+                let k = keeper.as_mut().expect("connected");
+                let chain_tip = match k.tip().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::warn!("job discovery failed: {e}");
+                        continue;
                     }
-                    let plan = crate::jobs::plan_now(c, &state.db, &cfg).await?;
-                    crate::jobs::store(&state.db, &plan)?;
-                    Ok::<_, String>(Some((tip, plan.selected.len(), plan.excluded.len())))
+                };
+                if last_tip == Some(chain_tip) {
+                    continue;
                 }
-                .await;
-                match result {
-                    Ok(Some((tip, sel, exc))) => {
-                        last_tip = Some(tip);
-                        tracing::debug!("block {tip}: {sel} eligible job(s), {exc} excluded");
-                    }
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!("job discovery failed: {e}"),
+                let hold = if rt == "on" {
+                    let res = state.resources.read().unwrap().clone();
+                    res.and_then(|r| crate::resources::hold_reason(&cfg.limits, &r, r2))
+                } else {
+                    reason
+                };
+                // Errors are retried at the next block.
+                last_tip = Some(chain_tip);
+                match k
+                    .tick(&state, &cfg, rt != "off" && rt != "inactive", hold)
+                    .await
+                {
+                    Ok(summary) => tracing::debug!("{summary}"),
+                    Err(e) => tracing::warn!("job scheduler: {e}"),
                 }
             }
         });

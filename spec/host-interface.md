@@ -41,20 +41,46 @@ entry and the full data length on return; at most `size` bytes starting at `offs
 |---|---|---|
 | 7001 | `job_payload(addr, len_ptr, offset)` | the payload (same bytes as witness 0) |
 | 7002 | `block_info(addr)` | 24 bytes LE: tip number, packed epoch, median time (ms); local runs: `--block-info` or zeros |
-| 7003 | `chain_read(…)` | returns 2 in local mode (A3) |
-| 7004 | `cells_query(…)` | returns 2 in local mode (A3) |
+| 7003 | `chain_read(kind, key, addr, len_ptr, offset)` | reads from the node (job runs only; 2 in local mode), see below |
+| 7004 | `cells_query(script, script_len, script_type, addr, len_ptr, offset)` | indexer query (job runs only; 2 in local mode), see below |
 | 7010 | `kv_get(key, key_len, addr, len_ptr, offset)` | 0, or 1 missing; 12 for an empty key or one over 256 B |
 | 7011 | `kv_put(key, key_len, val, val_len)` | 0; 10 quota exceeded; 11 key > 256 B or value > 1 MiB; 12 empty key |
 | 7012 | `kv_delete(key, key_len)` | 0 / 1 missing |
 | 7013 | `kv_mark_secret(key, key_len)` | entry is excluded from any export/backup; 0 / 1 missing |
 | 7014 | `delete_on_consume(key, key_len, outpoint)` | `outpoint` = 36 bytes (tx hash ‖ index u32 LE); the entry is deleted when that outpoint is consumed, even if the service is disabled. The key need not exist yet |
 | 7020 | `sign(msg32, sig_out64)` | see below |
-| 7030 | `tx_skeleton_put(addr, len)` | stores the transaction skeleton (used in A3) |
+| 7030 | `tx_skeleton_put(addr, len)` | stores the transaction skeleton (see below); the last call wins |
 | 7031 | `result_put(addr, len)` | result bytes; more than **65,536** bytes stops the run with `result_too_large` |
 | 7050, 7051 | `random_bytes`, `prekey_decrypt` | reserved, return 2 |
 
 Other numbers in 7001–7099 return 2. Numbers outside CKB's set and 7001–7099 stop the run with
 status `unknown_syscall`. The CKB `debug` syscall output is collected (max 64 lines, 1 KB each).
+
+## Chain calls (A3c)
+
+Available when CSR runs an on-chain job (`csr run`); `csr service run-local` returns 2.
+
+* `chain_read(kind, key, addr, len_ptr, offset)` – `kind` 0: live cell output (molecule `CellOutput`), 1: live
+  cell data, both with `key` = 36-byte out point (tx hash ‖ index u32 LE); 2: header (molecule `Header`), 3:
+  transaction (molecule `Transaction`), both with `key` = 32-byte hash. Returns 0, 1 (dead / unknown) or 12
+  (unknown kind). Partial loading as above.
+* `cells_query(script, script_len, script_type, addr, len_ptr, offset)` – `script` is a molecule `Script`
+  (at most 4096 bytes), `script_type` 0 = lock, 1 = type; the args are matched as a **prefix**. Writes a
+  molecule `OutPointVec` (u32 LE count, then 36-byte out points) of at most **64** live cells, in indexer
+  order. Returns 0, or 12 for a malformed script / script type.
+
+A failing node request stops the run (`script_error`). The VM time spent waiting for the node counts
+towards the wall-time limit.
+
+## Transaction skeleton (A3c)
+
+`tx_skeleton_put` takes a molecule `Transaction` (CKB's own, as built by ckb-types / ckb-std). Empty (or
+never called) = the job needs no extra cells. CSR appends the skeleton's inputs (with their `since`), cell
+deps, header deps, outputs with data and witnesses after its own: the run transaction is inputs
+`[runner key cell, job cell, float, skeleton inputs…]`, outputs `[runner key cell, float + tip, recreated
+job | refund, skeleton outputs…]`, witnesses `[runner key signature, empty, empty, skeleton witnesses…]`.
+The skeleton must bring the capacity of its outputs (Σ outputs ≤ Σ of its live inputs; any surplus goes to
+the miner). It may not contain a job cell (the job lock allows exactly one).
 
 ## Result
 

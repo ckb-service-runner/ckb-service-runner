@@ -1101,6 +1101,451 @@ impl Chain {
             Err(e) => Err(format!("cannot submit: {e}")),
         }
     }
+
+    // ---- Job runs (A3c) ----
+
+    fn job_lock_script(&self) -> Script {
+        Script::new_builder()
+            .code_hash(self.job_lock.code_hash.pack())
+            .hash_type(packed::Byte::new(self.job_lock.hash_type as u8))
+            .args(Bytes::copy_from_slice(&self.registry_type_hash).pack())
+            .build()
+    }
+
+    fn job_type_script(&self, service_code_hash: &[u8]) -> Script {
+        Script::new_builder()
+            .code_hash(self.job_type.code_hash.pack())
+            .hash_type(packed::Byte::new(self.job_type.hash_type as u8))
+            .args(Bytes::copy_from_slice(service_code_hash).pack())
+            .build()
+    }
+
+    /// A live cell (output and data); `None` if it is dead or unknown.
+    pub async fn live_cell(&self, outpoint: &str) -> Result<Option<(CellOutput, Vec<u8>)>, String> {
+        let (h, i) = parse_out_point(outpoint)?;
+        let r = self
+            .call(
+                "get_live_cell",
+                json!([{"tx_hash": h, "index": format!("0x{i:x}")}, true]),
+            )
+            .await?;
+        if r["status"] != "live" {
+            return Ok(None);
+        }
+        let out: json::CellOutput =
+            serde_json::from_value(r["cell"]["output"].clone()).map_err(|e| e.to_string())?;
+        let data = r["cell"]["data"]["content"]
+            .as_str()
+            .and_then(|d| hex::decode(d.trim_start_matches("0x")).ok())
+            .unwrap_or_default();
+        Ok(Some((out.into(), data)))
+    }
+
+    pub async fn is_live(&self, outpoint: &str) -> Result<bool, String> {
+        Ok(self.live_cell(outpoint).await?.is_some())
+    }
+
+    /// Everything a run transaction needs besides the job: float, runner key cell and deps.
+    pub async fn run_context(&self) -> Result<RunContext, String> {
+        let float = self
+            .float()
+            .await?
+            .ok_or("no float cell found; create the float first")?;
+        let runner = self
+            .runner_cells()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("no runner key cell found")?;
+        let (registry, _, float_hash, _) = self
+            .registry_cell()
+            .await?
+            .ok_or("this node is not registered")?;
+        if float_hash != script_hash(&float.cell.lock).as_bytes() {
+            return Err("the registry cell points to another float cell".into());
+        }
+        let (config, _) = self.config_cell().await?;
+        let code = |d: &Deployed| {
+            CellDep::new_builder()
+                .out_point(d.code_cell.clone())
+                .dep_type(packed::Byte::new(DepType::Code as u8))
+                .build()
+        };
+        let cell_dep = |op: OutPoint| {
+            CellDep::new_builder()
+                .out_point(op)
+                .dep_type(packed::Byte::new(DepType::Code as u8))
+                .build()
+        };
+        Ok(RunContext {
+            float: float.cell,
+            runner,
+            deps: vec![
+                self.secp_dep().await?,
+                code(&self.job_lock),
+                code(&self.job_type),
+                code(&self.float),
+                cell_dep(registry.out_point),
+                cell_dep(config.out_point),
+            ],
+        })
+    }
+
+    /// Finds the script with lock hash `want` among the cells around the transaction that created
+    /// `outpoint`: its outputs and spent inputs, following earlier job cells backwards.
+    pub async fn find_lock(&self, outpoint: &str, want: &[u8]) -> Result<Option<Script>, String> {
+        let tx_of = |r: &Value| -> Value {
+            let t = &r["transaction"];
+            t.get("inner").unwrap_or(t).clone()
+        };
+        let job_lock = self.job_lock_script();
+        let (mut hash, _) = parse_out_point(outpoint)?;
+        for _ in 0..64 {
+            let tx = tx_of(&self.call("get_transaction", json!([hash])).await?);
+            let lock_of = |o: &Value| serde_json::from_value::<json::Script>(o["lock"].clone());
+            for o in tx["outputs"].as_array().into_iter().flatten() {
+                if let Ok(l) = lock_of(o) {
+                    let l = Script::from(l);
+                    if script_hash(&l).as_bytes() == want {
+                        return Ok(Some(l));
+                    }
+                }
+            }
+            let mut previous_job = None;
+            for input in tx["inputs"].as_array().into_iter().flatten() {
+                let prev = &input["previous_output"];
+                let Some(h) = prev["tx_hash"].as_str() else {
+                    continue;
+                };
+                let idx = hex_u64(&prev["index"]).unwrap_or(0) as usize;
+                let ptx = tx_of(&self.call("get_transaction", json!([h])).await?);
+                let Ok(l) = lock_of(&ptx["outputs"][idx]) else {
+                    continue;
+                };
+                let l = Script::from(l);
+                if script_hash(&l).as_bytes() == want {
+                    return Ok(Some(l));
+                }
+                if l == job_lock {
+                    previous_job = Some(h.to_string());
+                }
+            }
+            match previous_job {
+                Some(h) => hash = h,
+                None => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Builds and signs the run transaction of `job` on top of `ctx` (see `job-cell-standard.md`
+    /// §5): inputs `[runner key cell, job, float, skeleton inputs…]`, outputs `[runner key cell,
+    /// float + tip, recreated job | refund, skeleton outputs…]`. The fee comes from the job.
+    pub fn build_run(&self, ctx: &RunContext, job: &RunJob) -> Result<BuiltRun, String> {
+        let key = self
+            .service_key
+            .as_ref()
+            .ok_or("the service key is not available")?;
+        let (h, i) = parse_out_point(&job.outpoint)?;
+        let job_op = out_point_from(&h, i)?;
+        let sk = &job.skeleton;
+        let sk_in: u64 = job.skeleton_input_capacity;
+        let sk_out: u64 = sk
+            .as_ref()
+            .map(|t| {
+                t.raw()
+                    .outputs()
+                    .into_iter()
+                    .map(|o| Unpack::<u64>::unpack(&o.capacity()))
+                    .sum()
+            })
+            .unwrap_or(0);
+        if sk_out > sk_in {
+            return Err("the transaction skeleton creates capacity it does not bring".into());
+        }
+        let float_cap = ctx
+            .float
+            .capacity
+            .checked_add(job.tip_shannons)
+            .ok_or("capacity overflow")?;
+        let last = job.remaining_runs <= 1;
+        let refund_lock = if last {
+            Some(job.refund_lock.clone().ok_or(
+                "the refund lock of the job is not known (its script is not found on chain)",
+            )?)
+        } else {
+            None
+        };
+        let mut data = job.data.clone();
+        if !last {
+            let n = data.len();
+            data[n - 4..].copy_from_slice(&(job.remaining_runs - 1).to_le_bytes());
+        }
+        let job_lock = self.job_lock_script();
+        let job_type = self.job_type_script(&job.service_code_hash);
+        let mut inputs = vec![
+            CellInput::new(ctx.runner.out_point.clone(), 0),
+            CellInput::new(job_op, job.since),
+            CellInput::new(ctx.float.out_point.clone(), 0),
+        ];
+        let mut deps = ctx.deps.clone();
+        let mut header_deps = Vec::new();
+        let mut witnesses = vec![
+            WitnessArgs::new_builder()
+                .lock(Some(Bytes::from(vec![0u8; 65])).pack())
+                .build()
+                .as_bytes(),
+            Bytes::new(),
+            Bytes::new(),
+        ];
+        let mut extra_outputs = Vec::new();
+        if let Some(t) = sk {
+            let raw = t.raw();
+            inputs.extend(raw.inputs());
+            deps.extend(raw.cell_deps());
+            header_deps.extend(raw.header_deps());
+            for (o, d) in raw.outputs().into_iter().zip(raw.outputs_data()) {
+                extra_outputs.push((o, d.raw_data()));
+            }
+            witnesses.extend(t.witnesses().into_iter().map(|w| w.raw_data()));
+        }
+        let build = |fee: u64| -> Result<TransactionView, String> {
+            let job_out = job
+                .capacity
+                .checked_sub(job.tip_shannons)
+                .and_then(|c| c.checked_sub(fee))
+                .ok_or("the job cell cannot pay tip and fee")?;
+            let third = match &refund_lock {
+                Some(l) => CellOutput::new_builder()
+                    .capacity(Pack::<packed::Uint64>::pack(&job_out))
+                    .lock(l.clone())
+                    .build(),
+                None => CellOutput::new_builder()
+                    .capacity(Pack::<packed::Uint64>::pack(&job_out))
+                    .lock(job_lock.clone())
+                    .type_(Some(job_type.clone()).pack())
+                    .build(),
+            };
+            let third_data = if last {
+                Bytes::new()
+            } else {
+                Bytes::from(data.clone())
+            };
+            let mut b = TransactionBuilder::default()
+                .cell_deps(deps.clone())
+                .header_deps(header_deps.clone())
+                .inputs(inputs.clone())
+                .output(
+                    CellOutput::new_builder()
+                        .capacity(Pack::<packed::Uint64>::pack(&ctx.runner.capacity))
+                        .lock(ctx.runner.lock.clone())
+                        .build(),
+                )
+                .output_data(Bytes::new().pack())
+                .output(
+                    CellOutput::new_builder()
+                        .capacity(Pack::<packed::Uint64>::pack(&float_cap))
+                        .lock(ctx.float.lock.clone())
+                        .build(),
+                )
+                .output_data(Bytes::new().pack())
+                .output(third)
+                .output_data(third_data.pack());
+            for (o, d) in &extra_outputs {
+                b = b.output(o.clone()).output_data(d.pack());
+            }
+            Ok(
+                b.witnesses(witnesses.iter().map(|w| w.pack()).collect::<Vec<_>>())
+                    .build(),
+            )
+        };
+        // 1,100 shannons per KB of the serialized transaction (the node's minimum is 1,000).
+        let size = build(0)?.data().as_slice().len() as u64 + 4;
+        let fee = (size * 1100).div_ceil(1000);
+        if fee > job.max_fee_shannons {
+            return Err(format!(
+                "the fee ({fee} shannons) is above the job's max_fee_shannons ({})",
+                job.max_fee_shannons
+            ));
+        }
+        let tx = sign_first_input(&build(fee)?, key)?;
+        let hash = tx.hash();
+        let op = |i: u32| {
+            OutPoint::new_builder()
+                .tx_hash(hash.clone())
+                .index(Pack::<packed::Uint32>::pack(&i))
+                .build()
+        };
+        let next = RunContext {
+            runner: Cell {
+                out_point: op(0),
+                ..ctx.runner.clone()
+            },
+            float: Cell {
+                out_point: op(1),
+                capacity: float_cap,
+                ..ctx.float.clone()
+            },
+            deps: ctx.deps.clone(),
+        };
+        Ok(BuiltRun {
+            tx_hash: hx(hash.as_slice()),
+            tx,
+            fee,
+            next,
+        })
+    }
+
+    /// Broadcasts a run transaction; the error carries the node's message.
+    pub async fn send(&self, tx: &TransactionView) -> Result<String, String> {
+        let t = json::TransactionView::from(tx.clone()).inner;
+        match self
+            .rpc
+            .call("send_transaction", json!([t, "passthrough"]))
+            .await
+        {
+            Ok(h) => Ok(h.as_str().unwrap_or_default().to_string()),
+            Err(RpcError::Rpc { message, .. }) => Err(message),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// `(status, block number)` of a transaction: `pending`, `proposed`, `committed`,
+    /// `rejected` or `unknown`.
+    pub async fn tx_status(&self, tx_hash: &str) -> Result<(String, Option<u64>), String> {
+        let r = self.call("get_transaction", json!([tx_hash])).await?;
+        let st = &r["tx_status"];
+        let status = st["status"].as_str().unwrap_or("unknown").to_string();
+        let mut block = hex_u64(&st["block_number"]);
+        if status == "committed" && block.is_none() {
+            if let Some(bh) = st["block_hash"].as_str() {
+                let h = self.call("get_header", json!([bh])).await?;
+                block = hex_u64(&h["number"]);
+            }
+        }
+        Ok((status, block))
+    }
+
+    /// Total capacity of the live inputs of a skeleton (all of them must be live).
+    pub async fn inputs_capacity(&self, tx: &packed::Transaction) -> Result<u64, String> {
+        let mut sum = 0u64;
+        for i in tx.raw().inputs() {
+            let op = out_point_str(&i.previous_output());
+            let (o, _) = self
+                .live_cell(&op)
+                .await?
+                .ok_or_else(|| format!("skeleton input {op} is not live"))?;
+            sum = sum
+                .checked_add(Unpack::<u64>::unpack(&o.capacity()))
+                .ok_or("capacity overflow")?;
+        }
+        Ok(sum)
+    }
+
+    /// Molecule `CellOutput` and data of a live cell, molecule `Header` or `Transaction` for the
+    /// `chain_read` service call.
+    pub async fn read_for_service(&self, kind: u64, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        match kind {
+            0 | 1 => {
+                let h = hx(&key[..32]);
+                let i = u32::from_le_bytes(key[32..36].try_into().unwrap());
+                Ok(self.live_cell(&format!("{h}:{i}")).await?.map(|(o, d)| {
+                    if kind == 0 {
+                        o.as_slice().to_vec()
+                    } else {
+                        d
+                    }
+                }))
+            }
+            2 => {
+                let r = self.call("get_header", json!([hx(key)])).await?;
+                if r.is_null() {
+                    return Ok(None);
+                }
+                let h: json::HeaderView = serde_json::from_value(r).map_err(|e| e.to_string())?;
+                Ok(Some(packed::Header::from(h.inner).as_slice().to_vec()))
+            }
+            _ => {
+                let r = self.call("get_transaction", json!([hx(key)])).await?;
+                if r["transaction"].is_null() {
+                    return Ok(None);
+                }
+                let t: json::TransactionView =
+                    serde_json::from_value(r["transaction"].clone()).map_err(|e| e.to_string())?;
+                Ok(Some(packed::Transaction::from(t.inner).as_slice().to_vec()))
+            }
+        }
+    }
+
+    /// Out points of live cells whose lock (`script_type` 0) or type (1) starts with `script`
+    /// (args as prefix), at most `limit`.
+    pub async fn query_for_service(
+        &self,
+        script: &Script,
+        script_type: u64,
+        limit: usize,
+    ) -> Result<Vec<OutPoint>, String> {
+        self.wait_indexer().await?;
+        let key = json!({
+            "script": json::Script::from(script.clone()),
+            "script_type": if script_type == 0 { "lock" } else { "type" },
+            "script_search_mode": "prefix",
+            "with_data": false,
+        });
+        let r = self
+            .call(
+                "get_cells",
+                json!([key, "asc", format!("0x{limit:x}"), Value::Null]),
+            )
+            .await?;
+        let mut out = Vec::new();
+        for c in r["objects"].as_array().into_iter().flatten().take(limit) {
+            let op: json::OutPoint =
+                serde_json::from_value(c["out_point"].clone()).map_err(|e| e.to_string())?;
+            out.push(op.into());
+        }
+        Ok(out)
+    }
+}
+
+/// Float, runner key cell and cell deps of run transactions; advanced after each submitted run
+/// so that runs of one batch chain on each other's outputs.
+#[derive(Clone)]
+pub struct RunContext {
+    pub float: Cell,
+    pub runner: Cell,
+    deps: Vec<CellDep>,
+}
+
+/// A job ready for its run transaction.
+pub struct RunJob {
+    pub outpoint: String,
+    pub service_code_hash: Vec<u8>,
+    pub capacity: u64,
+    pub data: Vec<u8>,
+    pub since: u64,
+    pub tip_shannons: u64,
+    pub max_fee_shannons: u64,
+    pub remaining_runs: u32,
+    pub refund_lock: Option<Script>,
+    pub skeleton: Option<packed::Transaction>,
+    pub skeleton_input_capacity: u64,
+}
+
+pub struct BuiltRun {
+    pub tx: TransactionView,
+    pub tx_hash: String,
+    pub fee: u64,
+    pub next: RunContext,
+}
+
+/// `0x<tx hash>:<index>` → (tx hash, index).
+pub fn parse_out_point(s: &str) -> Result<(String, u32), String> {
+    let (h, i) = s
+        .split_once(':')
+        .ok_or_else(|| format!("bad outpoint {s}"))?;
+    let i: u32 = i.parse().map_err(|_| format!("bad outpoint {s}"))?;
+    Ok((h.to_string(), i))
 }
 
 pub fn read_json(p: &Path) -> Result<Value, String> {

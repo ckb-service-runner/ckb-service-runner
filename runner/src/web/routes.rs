@@ -53,6 +53,9 @@ pub fn routes() -> Router<Arc<AppState>> {
             "/api/tx/submit-signed",
             post(super::operator::submit_signed),
         )
+        .route("/api/jobs", get(jobs))
+        .route("/api/jobs/{id}", get(job))
+        .route("/api/earnings", get(earnings))
         .route("/api/events", get(super::settings::events))
 }
 
@@ -153,4 +156,51 @@ async fn service_action(State(s): St, Path((hash, verb)): Path<(String, String)>
             (code, Json(json!({"error": e.message()}))).into_response()
         }
     }
+}
+
+fn db_error(e: String) -> Response {
+    tracing::warn!("database error: {e}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": "database error"})),
+    )
+        .into_response()
+}
+
+async fn jobs(State(s): St) -> Response {
+    match s.db.runs() {
+        Ok(runs) => Json(json!({
+            "jobs": runs.iter().map(crate::keeper::run_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(e) => db_error(e),
+    }
+}
+
+async fn job(State(s): St, Path(id): Path<String>) -> Response {
+    let not_found =
+        || (StatusCode::NOT_FOUND, Json(json!({"error": "unknown job"}))).into_response();
+    let Ok(id) = id.parse::<i64>() else {
+        return not_found();
+    };
+    match crate::keeper::run_detail(&s, id) {
+        Ok(Some(v)) => Json(v).into_response(),
+        Ok(None) => not_found(),
+        Err(e) => db_error(e),
+    }
+}
+
+/// Settlements verified on chain; the float balance is read from the node.
+async fn earnings(State(s): St) -> Response {
+    let mut v = match crate::keeper::earnings_json(&s) {
+        Ok(v) => v,
+        Err(e) => return db_error(e),
+    };
+    let cfg = s.config.read().unwrap().clone();
+    if let Ok(c) = crate::chain::Chain::connect(&cfg, &s.service_pubkey).await {
+        if let Ok(f) = c.float_status().await {
+            v["float"]["capacity_shannons"] = f["capacity_shannons"].clone();
+        }
+    }
+    Json(v).into_response()
 }

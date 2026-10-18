@@ -51,6 +51,22 @@ pub struct HostState {
     pub store: Option<Store>,
     /// Service key and code hash for `sign`; `None` makes it return 2.
     pub signer: Option<(secp256k1::SecretKey, [u8; 32])>,
+    /// Node access for `chain_read` / `cells_query`; `None` (local runs) makes them return 2.
+    pub chain: Option<Box<dyn ChainAccess>>,
+}
+
+/// Maximum number of out points `cells_query` returns.
+pub const MAX_QUERY_RESULTS: usize = 64;
+
+/// Blocking node access for the chain service calls (`spec/host-interface.md`).
+pub trait ChainAccess: Send {
+    /// `kind` 0 = live cell output (molecule `CellOutput`), 1 = live cell data (key = 36-byte out
+    /// point), 2 = header (molecule `Header`), 3 = transaction (molecule `Transaction`) (key =
+    /// 32-byte hash). `Ok(None)` = not found / not live.
+    fn read(&self, kind: u64, key: &[u8]) -> Result<Option<Vec<u8>>, String>;
+    /// Live cells whose lock (`script_type` 0) or type (1) matches `script` (molecule `Script`,
+    /// args as prefix): 36-byte out points, at most `MAX_QUERY_RESULTS`.
+    fn query(&self, script: &[u8], script_type: u64) -> Result<Option<Vec<[u8; 36]>>, String>;
 }
 
 impl HostState {
@@ -63,11 +79,17 @@ impl HostState {
             skeleton: None,
             store: None,
             signer: None,
+            chain: None,
         }
     }
 
     pub fn with_store(mut self, store: Store) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    pub fn with_chain(mut self, chain: Box<dyn ChainAccess>) -> Self {
+        self.chain = Some(chain);
         self
     }
 
@@ -407,10 +429,59 @@ impl Host {
                 m.memory_mut().store_bytes(a1, &sig.serialize_compact())?;
                 SVC_OK
             }
-            // chain_read, cells_query, CRT calls and unassigned numbers: not available.
+            // chain_read(kind, key, addr, len_ptr, offset)
+            7003 => {
+                let Some(chain) = &st.chain else {
+                    return Ok(SVC_NOT_SUPPORTED);
+                };
+                let key_len = match a0 {
+                    0 | 1 => 36,
+                    2 | 3 => 32,
+                    _ => return Ok(SVC_INVALID_ARGUMENT),
+                };
+                let key = read_mem(m, a1, key_len)?;
+                match chain.read(a0, &key).map_err(chain_error)? {
+                    Some(d) => {
+                        write_partial(m, &d, a2, a3, a4)?;
+                        SVC_OK
+                    }
+                    None => SVC_MISSING,
+                }
+            }
+            // cells_query(script, script_len, script_type, addr, len_ptr, offset)
+            7004 => {
+                let Some(chain) = &st.chain else {
+                    return Ok(SVC_NOT_SUPPORTED);
+                };
+                if a1 == 0 || a1 > 4096 || a2 > 1 {
+                    return Ok(SVC_INVALID_ARGUMENT);
+                }
+                let script = read_mem(m, a0, a1)?;
+                match chain.query(&script, a2).map_err(chain_error)? {
+                    Some(ops) => {
+                        write_partial(m, &out_point_vec(&ops), a3, a4, a5)?;
+                        SVC_OK
+                    }
+                    None => SVC_INVALID_ARGUMENT,
+                }
+            }
+            // CRT calls and unassigned numbers: not available.
             _ => SVC_NOT_SUPPORTED,
         })
     }
+}
+
+fn chain_error(e: String) -> Error {
+    Error::External(format!("csr:chain: {e}"))
+}
+
+/// Molecule `OutPointVec` (fixvec: item count u32 LE, then 36-byte items).
+pub fn out_point_vec(ops: &[[u8; 36]]) -> Vec<u8> {
+    let mut d = (ops.len() as u32).to_le_bytes().to_vec();
+    for op in ops {
+        d.extend_from_slice(op);
+    }
+    d
 }
 
 fn out_point(vtx: &VirtualTx) -> Vec<u8> {
@@ -453,5 +524,18 @@ fn witness_at(vtx: &VirtualTx, index: u64, source: u64) -> Result<usize, u64> {
         }
         SRC_INPUT | SRC_GROUP_INPUT | SRC_OUTPUT | SRC_GROUP_OUTPUT => Err(INDEX_OUT_OF_BOUND),
         _ => Err(ITEM_MISSING),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn out_point_vec_is_a_molecule_fixvec() {
+        let v = out_point_vec(&[[1; 36], [2; 36]]);
+        assert_eq!(v.len(), 4 + 72);
+        assert_eq!(&v[..4], &2u32.to_le_bytes());
+        assert_eq!(v[4 + 36], 2);
     }
 }
