@@ -30,11 +30,16 @@ fn harness_deploys_all_contracts() {
     ];
     for lock in locks {
         let input = env.min_cell(10 * CKB, lock.clone(), None, Bytes::new());
-        let tx = tx_with(vec![env.input(&input, 0)], vec![(output(10 * CKB, lock, None), Bytes::new())])
+        // owner key cell so that the real float lock is satisfied
+        let owner_cell = env.min_cell(10 * CKB, key.lock.clone(), None, Bytes::new());
+        let tx = tx_with(
+            vec![env.input(&input, 0), env.input(&owner_cell, 0)],
+            vec![(output(10 * CKB, lock, None), Bytes::new()), (output(10 * CKB, key.lock.clone(), None), Bytes::new())],
+        )
             .as_advanced_builder()
             .cell_dep(ckb_testtool::ckb_types::packed::CellDep::new_builder().out_point(config_op.clone()).build())
             .build();
-        env.verify(tx).expect("lock contract placeholder accepts");
+        env.verify_signed(tx, &[&key]).expect("lock contract accepts");
     }
 
     let always = env.always_success_script(b"");

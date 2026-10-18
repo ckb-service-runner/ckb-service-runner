@@ -665,7 +665,6 @@ name = "csr-float-lock"
 version = "0.1.0"
 dependencies = [
  "ckb-std",
- "csr-schemas",
 ]
 
 [[package]]

@@ -90,3 +90,12 @@
 - Molecule `OnDemand` is an empty table; `network` and the attestation signature are `byte` / `byte[65]`.
 - Error codes per script are listed in the three standards in `spec/`.
 - The system lock also needs the `secp256k1_data` cell (fixture copied from the same crate), which `Env::verify*` adds as a cell dep.
+
+## A3a Phase 2 – float lock
+- `csr-float-lock` depends on `ckb-std` **without** the `ckb-types` feature and parses the Script molecule
+  (args offset, output lock comparison by raw bytes) by hand. The `bytes` crate pulled in by `ckb-types` emits
+  RISC-V atomic (AMO) instructions that ckb-vm rejects (`InvalidInstruction`); `dummy-atomic` alone does not cover it.
+  Later contracts that need molecule types must avoid `bytes` the same way (or build with `-C target-feature=-a`
+  and a `bytes`-free dependency tree).
+- The harness test now spends the float lock with an owner key cell, since the real lock rejects a spend without a key cell.
+- Float-lock tests assert the failing script (`Inputs[0].Lock`) and the error code from `spec/float-lock.md`.
