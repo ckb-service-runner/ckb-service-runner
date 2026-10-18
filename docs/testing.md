@@ -54,6 +54,10 @@ csr register status --json
 
 `register prepare` refuses without a Synced R2, without a float, without a runner key cell, and for an attestation whose public key or network differs from this node's (or that is already expired by the on-chain clock). It signs the runner key cell input itself with the service key. Mine blocks (`scripts/devnet.sh mine N`) if a transaction stays pending. Test: `node --test --test-concurrency=1 acceptance/a3b/p4.test.mjs`.
 
+### Keeper jobs and the race test (A3c)
+
+`node --test --test-concurrency=1 acceptance/a3c/p2.test.mjs acceptance/a3c/p3.test.mjs` (devnet running, `bash scripts/build-services.sh` done). `p2`: an `every:2` job runs three times, the float grows by exactly the tips. `p3`: two CSR instances with separate data roots share the devnet node and race for one job; exactly one settles, the other ends in `Lost` at no cost. Manual demo steps: `docs/milestones/A3c.md`.
+
 ### Manual testnet runbook (not run by the test suite)
 
 Prerequisites: a synced testnet CKB node (full node with the Indexer module), a funded testnet key, the built contracts.

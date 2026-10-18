@@ -66,6 +66,9 @@ Build the example services with `bash scripts/build-services.sh`, then
 Register with `csr service add-local --manifest PATH`, manage with `csr service list|approve|revoke|enable|disable`
 or on the dashboard page `#/services`. Host interface: `spec/host-interface.md`. Details: `docs/milestones/A2.md`.
 
+## Jobs and earnings (A3c)
+With `runtime.enabled = true`, `csr run` discovers keeper job cells on the chain, runs approved on-chain services (`csr service add-onchain`), submits the job transactions and tracks settlement. `csr jobs plan --json` shows the selection. Dashboard pages `#/jobs` and `#/earnings`. Demo: `docs/milestones/A3c.md`.
+
 ## Roadmap
 
 | Milestone | Content |

@@ -492,7 +492,10 @@ impl Keeper {
                     ctx = built.next;
                 }
                 Err(msg) => {
-                    let live = self.chain.is_live(&e.job.outpoint).await.unwrap_or(true);
+                    // The winner's transaction may only be in the pool: the cell is still live
+                    // on chain, but the node reports its input as spent.
+                    let live = !is_conflict(&msg)
+                        && self.chain.is_live(&e.job.outpoint).await.unwrap_or(true);
                     let (state, note) = if live {
                         (
                             REJECTED,
@@ -558,6 +561,14 @@ impl Keeper {
     }
 }
 
+/// Whether a node error says that an input of our transaction was spent by another one.
+fn is_conflict(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    ["dead(", "double", "conflict", "rbf", "unknown(outpoint"]
+        .iter()
+        .any(|k| m.contains(k))
+}
+
 /// `GET /api/jobs` entry of a run.
 pub fn run_json(r: &JobRun) -> Value {
     json!({
@@ -620,6 +631,15 @@ pub fn earnings_json(st: &AppState) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pool_conflicts_are_recognised() {
+        assert!(is_conflict("Resolve failed Dead(OutPoint(0xab00000000))"));
+        assert!(is_conflict("PoolRejectedRBF: conflict"));
+        assert!(!is_conflict(
+            "Verification failed Script(ValidationFailure)"
+        ));
+    }
 
     #[test]
     fn since_matches_the_trigger_table() {

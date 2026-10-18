@@ -162,7 +162,6 @@
     var g = el('div', 'grid');
     var cs = card('Network'), cn = card('Node'), cr = card('Runtime'), cres = card('Resources');
     var cf = card('Float'), ck = card('Ranking');
-    cf.className += ' placeholder'; cf.appendChild(el('p', '', 'Available in a later milestone.'));
     [cs, cn, cr, cres, cf, ck].forEach(function (c) { g.appendChild(c); });
     root.appendChild(g);
     function paint() {
@@ -186,6 +185,13 @@
         ck.appendChild(el('p', '', 'Join the ranking to see stats'));
       }
     }
+    function floatCard() {
+      api('/api/earnings').then(function (e) {
+        while (cf.children.length > 1) cf.removeChild(cf.lastChild);
+        dl(cf, [['Balance', ckb(e.float.capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
+        var a = el('a', '', 'Earnings & float'); a.href = '#/earnings'; cf.appendChild(a);
+      }).catch(function () {});
+    }
     function res() {
       api('/api/resources').then(function (r) {
         while (cres.children.length > 1) cres.removeChild(cres.lastChild);
@@ -195,7 +201,8 @@
           ['Disk free', r.disk.free_gb + ' / ' + r.disk.total_gb + ' GB']]);
       }).catch(function () {});
     }
-    onStatus = paint; paint(); res();
+    onStatus = paint; paint(); res(); floatCard();
+    timers.push(setInterval(floatCard, 10000));
     timers.push(setInterval(res, 5000));
   };
 
@@ -542,6 +549,63 @@
         table.appendChild(t);
       }).catch(function (x) { table.textContent = x.message; });
       if (open != null) showDetail(open);
+    }
+    load();
+    timers.push(setInterval(load, 5000));
+  };
+
+  pages.earnings = function (root) {
+    var c = card('Earnings & float');
+    var info = el('div'), chartBox = el('div'), table = el('div');
+    var btns = el('div', 'row');
+    [['Top up', 'topup'], ['Withdraw', 'withdraw']].forEach(function (b) {
+      var a = el('a', 'btn', b[0]); a.href = '#/float'; a.title = b[1] + ' on the Float page';
+      btns.appendChild(a);
+    });
+    [info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
+    root.appendChild(c);
+    function load() {
+      api('/api/earnings').then(function (e) {
+        info.textContent = '';
+        dl(info, [['Float balance', ckb(e.float.capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid from float', ckb(e.fees_shannons)]]);
+        var days = {};
+        e.settlements.forEach(function (x) {
+          var d = new Date((x.t || 0) * 1000).toISOString().slice(0, 10);
+          days[d] = (days[d] || 0) + x.tip_shannons;
+        });
+        var keys = Object.keys(days).sort();
+        chartBox.textContent = '';
+        if (!keys.length) chartBox.appendChild(el('p', 'msg', 'No settlements yet.'));
+        else {
+          var max = Math.max.apply(null, keys.map(function (k) { return days[k]; })), w = 40, H = 120;
+          var svg = document.createElementNS(NS, 'svg');
+          svg.setAttribute('viewBox', '0 0 ' + (keys.length * w + 10) + ' ' + (H + 30));
+          svg.setAttribute('class', 'chart');
+          keys.forEach(function (k, i) {
+            var h = Math.max(2, Math.round(days[k] / max * H));
+            var r = document.createElementNS(NS, 'rect');
+            r.setAttribute('x', 5 + i * w); r.setAttribute('y', H - h); r.setAttribute('width', w - 8); r.setAttribute('height', h);
+            r.setAttribute('fill', 'currentColor');
+            var t = document.createElementNS(NS, 'title'); t.textContent = k + ': ' + ckb(days[k]);
+            r.appendChild(t); svg.appendChild(r);
+            var l = document.createElementNS(NS, 'text');
+            l.setAttribute('x', 5 + i * w); l.setAttribute('y', H + 14); l.setAttribute('font-size', '8'); l.textContent = k.slice(5);
+            svg.appendChild(l);
+          });
+          chartBox.appendChild(svg);
+        }
+        table.textContent = '';
+        if (!e.settlements.length) { table.appendChild(el('p', 'msg', 'None.')); return; }
+        var t = el('table'), h = el('tr');
+        ['Job', 'Transaction', 'Tip', 'Block'].forEach(function (x) { h.appendChild(el('th', '', x)); });
+        t.appendChild(h);
+        e.settlements.forEach(function (x) {
+          var r = el('tr');
+          [short(x.job_outpoint), short(x.tx_hash), ckb(x.tip_shannons), String(x.block)].forEach(function (v) { r.appendChild(el('td', '', v)); });
+          t.appendChild(r);
+        });
+        table.appendChild(t);
+      }).catch(function (x) { info.textContent = x.message; });
     }
     load();
     timers.push(setInterval(load, 5000));

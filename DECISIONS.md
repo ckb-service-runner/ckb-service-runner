@@ -62,3 +62,7 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - Restart: `Running`, `Scheduled`, `Paused`, `Completed` → `Queued` (VM results are not kept; the run executes again).
 - `GET /api/jobs` lists runs newest first; `GET /api/jobs/{id}` adds `timeline` (`t`, `state`, `note`), `logs` (the VM debug lines, ≤ 64 × 1 KB), `result_hex`, `error`, `limits`. `GET /api/earnings` settlements also carry `t`; `float.capacity_shannons` is read from the chain (null if unavailable); `fees_shannons` is always 0.
 - Jobs page tabs: Pending (Discovered/Queued/Scheduled), Active (Running/Paused/Completed/Submitting), Closed (Settled), Failed (Failed/Rejected/Expired/Lost); a row opens the detail (timeline, logs, limits).
+
+## A3c Phase 3 – race, Earnings page
+- A send error naming a dead/unknown input, double spend, conflict or RBF means another transaction took the job cell; the run ends in `Lost` even though the cell is still live on chain (the winner is only pending). Other send errors keep the live-cell check.
+- Earnings page: balance and totals from `/api/earnings`, tips-per-day bar chart (UTC days of the settlement time), settlements table; Top up / Withdraw are links to the Float page, which owns the file flow.
