@@ -99,3 +99,24 @@
   and a `bytes`-free dependency tree).
 - The harness test now spends the float lock with an owner key cell, since the real lock rejects a spend without a key cell.
 - Float-lock tests assert the failing script (`Inputs[0].Lock`) and the error code from `spec/float-lock.md`.
+
+## A3a Phase 3 – registry and dual lock
+- Contracts that run in a separate cargo invocation do not get `ckb-std`'s `ckb-types` feature through feature
+  unification, so `csr-dual-lock` and `csr-registry` use only `ckb_std::syscalls` (no `high_level`). The registry
+  does not use `csr-schemas` (molecule pulls the `bytes` crate) and parses the molecule data by hand
+  (`csr-registry/src/mol.rs`, strict field counts).
+- secp256k1 recovery in-script: pure-Rust `k256 0.13` (`ecdsa` feature, no defaults) + `blake2b-ref 0.3`.
+  ~7.9 M cycles per registry creation for the type script (details in `spec/registry.md` §7). Low-S is required.
+- "Output lock is `csr-dual-lock`": the registry args are fixed to `config_type_hash` by the concept, so the dual
+  lock's code hash is **embedded at build time**: `csr-registry/build.rs` hashes
+  `contracts/build/release/csr-dual-lock`; `scripts/build-contracts.sh` therefore builds the dual lock first, then
+  the other contracts. Accepted hash types: `data1`, `data2`. A changed dual lock means a new registry binary.
+- Runner lock check accepts the sighash lock as genesis type hash `0x9bd7e06f…` (`type`) or as data hash
+  `0x709f3fda…` (`data`/`data1`/`data2`); tests use `data1` with the fixture, a test pins the fixture hash.
+- On update/destroy the owner hash comes from the input's dual-lock args. Runner-path checks (fields, lock,
+  capacity) run before the attestation checks, so a forbidden change reports 14/15 even if the attestation is
+  also bad.
+- `network > 2` in registry data is rejected as malformed (error 7).
+- The harness test now creates a real registry cell (valid attestation) instead of the placeholder spend.
+- "Registry without attestation" is tested as an attestation with an all-zero signature (error 10); missing
+  fields would be error 7.

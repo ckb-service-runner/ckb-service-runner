@@ -47,8 +47,22 @@ signature = r (32) ‖ s (32) ‖ recovery_id (1)         // recoverable secp256
 * `molecule(AttestationBody)` is the standard molecule table encoding (header with total size and four field
   offsets, then the fields in order) of `{peer_id, service_pubkey, network, expiry_ms}`; `peer_id` is a
   molecule `Bytes` (u32 LE length ‖ bytes), `service_pubkey` 33 raw bytes, `network` 1 byte, `expiry_ms` 8 bytes LE.
+* `recovery_id` is 0–3; `s` must be low (≤ n/2, as produced by libsecp256k1 / `ckb-crypto`); `r`, `s` big endian.
 * The recovered compressed public key must equal `monitor_pubkey` of the config cell.
-* Verified in-script with a no_std secp256k1 implementation; cycle numbers are recorded in `docs/decisions.md`.
+* Verified in-script with the pure-Rust `k256` 0.13 crate (`VerifyingKey::recover_from_prehash`); the message is
+  hashed with `blake2b-ref`. See §7 for cycles.
+
+Byte layout of the hashed input for `peer_id` of length *p*:
+
+| offset | size | content |
+|-------:|-----:|---------|
+| 0 | 13 | `CSR-ATTEST-v1` |
+| 13 | 4 | total size of the body = 20 + 4 + p + 33 + 1 + 8 (u32 LE) |
+| 17 | 16 | field offsets 20, 24 + p, 57 + p, 58 + p (u32 LE each) |
+| 33 | 4 + p | `peer_id` (u32 LE length ‖ bytes) |
+| 37 + p | 33 | `service_pubkey` |
+| 70 + p | 1 | `network` |
+| 71 + p | 8 | `expiry_ms` (u64 LE) |
 
 ## 4. Rules
 
@@ -60,6 +74,14 @@ On **creation and on every update** (for each registry output):
 4. `attestation.expiry_ms > clock_ms`.
 5. The output lock is `csr-dual-lock` whose `runner_lock_hash` equals the lock hash of
    `secp256k1_blake160_sighash_all` with `args = blake160(service_pubkey)`.
+   * "Is `csr-dual-lock`": `code_hash` = data hash of the `csr-dual-lock` binary of the same build (embedded into
+     `csr-registry` at build time by `csr-registry/build.rs`), `hash_type` `data1` or `data2`, args 64 bytes.
+   * Accepted forms of the sighash lock: `code_hash 0x9bd7e06f…a3cce8` with `hash_type type` (the genesis
+     deployment on mainnet, testnet and dev chains), or the binary's data hash `0x709f3fda…e08649`
+     (ckb-system-scripts 0.5.4) with `hash_type data`, `data1` or `data2`. All four run the same code.
+
+Data must be a complete molecule `Registry` with exactly the schema's field counts (no extra fields), and
+`network` ≤ 2; otherwise error 7.
 
 **One registry input and one output per group** (1:1; creation: 0 → 1, destruction: 1 → 0).
 
@@ -106,3 +128,20 @@ attestation)]`, cell deps `[config cell, code deps]`.
 `float_lock_hash`]`.
 
 *Owner destroy.* Inputs `[registry cell, owner wallet cell]`, outputs `[change]`.
+
+Owner presence on update/destroy is taken from the **input** cell's lock args (`owner_lock_hash` = first 32
+bytes of its dual-lock args). On the owner path the output may carry a different dual lock (e.g. a new owner),
+as long as rule 5 holds.
+
+## 7. Cycles
+
+Measured with ckb-testtool (`registry_create_cycles_of_type_script`, `registry_create_with_valid_attestation_ok`,
+`registry_runner_refreshes_attestation_ok`; peer ID of 40 bytes, release build `opt-level = "s"`):
+
+| transaction | cycles |
+|-------------|-------:|
+| registry creation, `csr-registry` type script alone | 7,923,174 |
+| registry creation, whole tx (type script + one system-lock input) | 9,624,715 |
+| runner refresh, whole tx (type script + dual lock + system lock) | 9,621,864 |
+
+Almost all of it is the secp256k1 public-key recovery in `k256`; the binary is ~89 KB.

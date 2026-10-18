@@ -10,17 +10,21 @@ if command -v rustup >/dev/null 2>&1; then
   rustup target add riscv64imac-unknown-none-elf >/dev/null
 fi
 TARGET=riscv64imac-unknown-none-elf
-CONTRACTS="csr-float-lock csr-dual-lock csr-registry csr-job-type csr-job-lock"
-ARGS=""
-for c in $CONTRACTS; do ARGS="$ARGS -p $c"; done
 LOCKED=""
 [ -f "$ROOT/contracts/Cargo.lock" ] && LOCKED="--locked"
-echo "== CSR contracts =="
-cargo build --manifest-path "$ROOT/contracts/Cargo.toml" --release --target $TARGET -j 2 $LOCKED $ARGS \
-  --config "target.$TARGET.rustflags=['-C','link-arg=-s']"
 OUT="$ROOT/contracts/build/release"
 mkdir -p "$OUT"
-for c in $CONTRACTS; do
-  cp "$ROOT/contracts/target/$TARGET/release/$c" "$OUT/$c"
-  echo "  $c: $(stat -c %s "$OUT/$c") bytes"
-done
+build() {
+  local args=""
+  for c in "$@"; do args="$args -p $c"; done
+  cargo build --manifest-path "$ROOT/contracts/Cargo.toml" --release --target $TARGET -j 2 $LOCKED $args \
+    --config "target.$TARGET.rustflags=['-C','link-arg=-s']"
+  for c in "$@"; do
+    cp "$ROOT/contracts/target/$TARGET/release/$c" "$OUT/$c"
+    echo "  $c: $(stat -c %s "$OUT/$c") bytes"
+  done
+}
+echo "== CSR contracts =="
+# csr-registry embeds the code hash of the built csr-dual-lock (csr-registry/build.rs), so the dual lock comes first.
+build csr-dual-lock
+build csr-float-lock csr-registry csr-job-type csr-job-lock

@@ -277,3 +277,107 @@ pub fn tx_with(inputs: Vec<CellInput>, outputs: Vec<(CellOutput, Bytes)>) -> Tra
         .outputs_data(datas.into_iter().map(|d| d.pack()).collect::<Vec<_>>())
         .build()
 }
+
+// --- registry -----------------------------------------------------------------------------------
+
+/// Domain separator of the monitor attestation (`spec/registry.md` §3).
+pub const ATTEST_DOMAIN: &[u8] = b"CSR-ATTEST-v1";
+
+fn mol_bytes(b: &[u8]) -> csr_schemas::Bytes {
+    let mut v = Vec::with_capacity(4 + b.len());
+    v.extend_from_slice(&(b.len() as u32).to_le_bytes());
+    v.extend_from_slice(b);
+    csr_schemas::Bytes::new_unchecked(v.into())
+}
+
+/// Fields signed by the monitor.
+#[derive(Clone, Debug)]
+pub struct AttestationFields {
+    pub peer_id: Vec<u8>,
+    pub service_pubkey: [u8; 33],
+    pub network: u8,
+    pub expiry_ms: u64,
+}
+
+impl AttestationFields {
+    /// `molecule(AttestationBody)`.
+    pub fn body(&self) -> csr_schemas::AttestationBody {
+        csr_schemas::AttestationBody::new_builder()
+            .peer_id(mol_bytes(&self.peer_id))
+            .service_pubkey(csr_schemas::Byte33::new_unchecked(Bytes::copy_from_slice(&self.service_pubkey)))
+            .network(packed::Byte::new(self.network))
+            .expiry_ms(csr_schemas::Uint64::new_unchecked(Bytes::copy_from_slice(&self.expiry_ms.to_le_bytes())))
+            .build()
+    }
+
+    /// blake2b-256("CSR-ATTEST-v1" ‖ molecule(AttestationBody)).
+    pub fn message(&self) -> [u8; 32] {
+        let mut h = new_blake2b();
+        h.update(ATTEST_DOMAIN);
+        h.update(self.body().as_slice());
+        let mut out = [0u8; 32];
+        h.finalize(&mut out);
+        out
+    }
+
+    /// Signs the attestation with `monitor` (65 byte recoverable signature `r ‖ s ‖ recid`).
+    pub fn sign(&self, monitor: &Key) -> csr_schemas::Attestation {
+        let sig: [u8; 65] =
+            monitor.privkey.sign_recoverable(&self.message().into()).expect("sign").serialize().try_into().unwrap();
+        self.with_signature(sig)
+    }
+
+    pub fn with_signature(&self, sig: [u8; 65]) -> csr_schemas::Attestation {
+        csr_schemas::Attestation::new_builder()
+            .peer_id(mol_bytes(&self.peer_id))
+            .service_pubkey(csr_schemas::Byte33::new_unchecked(Bytes::copy_from_slice(&self.service_pubkey)))
+            .network(packed::Byte::new(self.network))
+            .expiry_ms(csr_schemas::Uint64::new_unchecked(Bytes::copy_from_slice(&self.expiry_ms.to_le_bytes())))
+            .signature(csr_schemas::Signature::new_unchecked(Bytes::copy_from_slice(&sig)))
+            .build()
+    }
+}
+
+/// Registry cell data (`molecule(Registry)`).
+#[derive(Clone, Debug)]
+pub struct RegistryFields {
+    pub peer_id: Vec<u8>,
+    pub service_pubkey: [u8; 33],
+    pub float_lock_hash: [u8; 32],
+    pub network: u8,
+    pub prekeys: Vec<u8>,
+}
+
+impl RegistryFields {
+    pub fn data(&self, attestation: &csr_schemas::Attestation) -> Bytes {
+        csr_schemas::Registry::new_builder()
+            .peer_id(mol_bytes(&self.peer_id))
+            .service_pubkey(csr_schemas::Byte33::new_unchecked(Bytes::copy_from_slice(&self.service_pubkey)))
+            .float_lock_hash(csr_schemas::Byte32::new_unchecked(Bytes::copy_from_slice(&self.float_lock_hash)))
+            .network(packed::Byte::new(self.network))
+            .attestation(attestation.clone())
+            .prekeys(mol_bytes(&self.prekeys))
+            .build()
+            .as_bytes()
+    }
+
+    /// Attestation fields matching this entry.
+    pub fn attestation_fields(&self, expiry_ms: u64) -> AttestationFields {
+        AttestationFields {
+            peer_id: self.peer_id.clone(),
+            service_pubkey: self.service_pubkey,
+            network: self.network,
+            expiry_ms,
+        }
+    }
+
+    /// Data with a valid attestation signed by `monitor`.
+    pub fn signed_data(&self, monitor: &Key, expiry_ms: u64) -> Bytes {
+        self.data(&self.attestation_fields(expiry_ms).sign(monitor))
+    }
+}
+
+/// Cell dep on a live cell (e.g. the config cell).
+pub fn cell_dep(op: &OutPoint) -> packed::CellDep {
+    packed::CellDep::new_builder().out_point(op.clone()).build()
+}
