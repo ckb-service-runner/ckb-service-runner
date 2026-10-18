@@ -46,3 +46,16 @@
 ## A1+ Phase 2: Network page
 - Per-country view is an SVG bar list sorted by count (no map, no style attributes). The Overview ranking card calls `/api/network` only when `ranking.join` is true; the page polls every 30 s (server cache is 5 min).
 - Monitor public API documented in the new `spec/monitor-public-api.md`.
+
+## A2 Phase 1: sandbox and local runs
+- `ckb-vm` is pinned to `=0.24.15` with the `asm` feature: it is the version in `Cargo.lock` of ckb v0.210.0 (`https://raw.githubusercontent.com/nervosnetwork/ckb/v0.210.0/Cargo.lock`). ISA `IMC|B|MOP`, VM version 2 as in ckb-script's `ScriptVersion::V2` (`data2`).
+- The pinned ckb-vm has a fixed 4 MiB memory, so only `limits.max_vm_memory_mb = 4` / `--max-memory-mb 4` is accepted; other values make `run-local` fail with a CLI error (exit 1). Any out-of-bound memory access (including stack) maps to `memory_exceeded`.
+- Wall time uses a watchdog thread that sets ckb-vm's `Pause` flag; the resulting `Error::Pause` maps to `timeout`.
+- Status mapping (`runtime::classify`): VM errors other than cycles/memory/pause/invalid ecall/result-too-large (e.g. invalid instruction) are `script_error` with `exit_code` -1. Errors while loading the program map to `invalid_elf` when they are ELF parse errors. Cycles/result are only reported for `ok`/`script_error`; the `result_hex` is empty for the other statuses.
+- Unknown syscall numbers: the host declines them and ckb-vm raises `InvalidEcall`, which maps to `unknown_syscall`. Unassigned numbers within 7001–7099 return 2.
+- Syscalls cost 500 cycles each (as in CKB). Not provided: `load_transaction`, `exec`, `spawn` family (→ `unknown_syscall`); header syscalls answer index-out-of-bound because the virtual transaction has no header deps.
+- Virtual transaction details: the job cell has capacity 0, an all-zero lock (`hash_type data`), empty data, out point (`ckb_hash("csr-virtual-job-cell")`, 0); the tx hash is `ckb_hash("csr-virtual-tx-v1" ‖ script_hash ‖ payload)`, so it is deterministic. Cell deps are the program (index 0) and the data cells.
+- The service `code_hash` printed by `run-local` is the data hash of the identity file (default: the ELF); the virtual script's own `code_hash` is always the data hash of the program run in the VM.
+- `run-local` creates `<data-root>/<network>/keys/` like `csr run`; it does not otherwise touch the data root yet.
+- The Rust services workspace (`services/rust/`) is excluded from the root workspace; it uses `ckb-std =1.1.0` and a tiny local crate `csr-svc` for the raw `ecall`s of the service calls (`result_put`, `job_payload`). `hello-rust` reads witness 0 through ckb-std and returns via `result_put`.
+- `scripts/build-services.sh` currently builds the Rust workspace (adds the riscv target through rustup if missing); C and JS follow in later phases.

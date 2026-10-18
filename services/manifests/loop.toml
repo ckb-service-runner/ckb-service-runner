@@ -1,0 +1,4 @@
+name = "loop"
+language = "rust"
+elf = "../rust/target/riscv64imac-unknown-none-elf/release/loop"
+args = "0x"

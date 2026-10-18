@@ -1,0 +1,338 @@
+//! Host interface: CKB syscalls answered from the virtual transaction plus the CSR service calls
+//! (7001–7099, see `spec/host-interface.md`).
+
+use super::vtx::VirtualTx;
+use ckb_vm::registers::{A0, A1, A2, A3, A4, A5, A7};
+use ckb_vm::{Error, Memory, Register, SupportMachine, Syscalls};
+use std::sync::{Arc, Mutex};
+
+pub const MAX_RESULT_BYTES: usize = 65_536;
+pub const MAX_DEBUG_LINES: usize = 64;
+pub const MAX_DEBUG_LINE_BYTES: usize = 1024;
+/// Cycles charged per syscall (CKB uses 500).
+const SYSCALL_CYCLES: u64 = 500;
+
+// Return codes of CKB syscalls.
+const SUCCESS: u64 = 0;
+const INDEX_OUT_OF_BOUND: u64 = 1;
+const ITEM_MISSING: u64 = 2;
+
+// Return codes of service calls.
+pub const SVC_OK: u64 = 0;
+pub const SVC_NOT_SUPPORTED: u64 = 2;
+pub const SVC_INVALID_ARGUMENT: u64 = 12;
+
+/// Tags carried in `Error::External` to stop a run with a specific status.
+pub const STOP_RESULT_TOO_LARGE: &str = "csr:result_too_large";
+
+const SRC_INPUT: u64 = 1;
+const SRC_OUTPUT: u64 = 2;
+const SRC_CELL_DEP: u64 = 3;
+const SRC_HEADER_DEP: u64 = 4;
+const SRC_GROUP_INPUT: u64 = 0x0100_0000_0000_0001;
+const SRC_GROUP_OUTPUT: u64 = 0x0100_0000_0000_0002;
+
+/// What a run collects; shared between the VM and the caller.
+pub struct HostState {
+    pub vtx: VirtualTx,
+    pub block_info: [u64; 3],
+    pub debug: Vec<String>,
+    pub result: Option<Vec<u8>>,
+    pub skeleton: Option<Vec<u8>>,
+}
+
+impl HostState {
+    pub fn new(vtx: VirtualTx, block_info: [u64; 3]) -> Self {
+        HostState {
+            vtx,
+            block_info,
+            debug: Vec::new(),
+            result: None,
+            skeleton: None,
+        }
+    }
+
+    /// The result: `result_put` bytes, else the last `CSR-RESULT:0x<hex>` debug line, else empty.
+    pub fn final_result(&self) -> Vec<u8> {
+        if let Some(r) = &self.result {
+            return r.clone();
+        }
+        self.debug
+            .iter()
+            .rev()
+            .find_map(|l| l.trim_end().strip_prefix("CSR-RESULT:0x"))
+            .and_then(|h| hex::decode(h).ok())
+            .unwrap_or_default()
+    }
+}
+
+pub struct Host {
+    pub state: Arc<Mutex<HostState>>,
+}
+
+/// Writes `data[offset..]` to `addr` following CKB's partial-loading convention: `*len_ptr` holds
+/// the buffer size on entry and the full data length on return.
+fn write_partial<Mac: SupportMachine>(
+    m: &mut Mac,
+    data: &[u8],
+    addr: u64,
+    len_ptr: u64,
+    offset: u64,
+) -> Result<u64, Error> {
+    let cap = m
+        .memory_mut()
+        .load64(&Mac::REG::from_u64(len_ptr))?
+        .to_u64();
+    let full = data.len() as u64;
+    let start = offset.min(full) as usize;
+    let n = (cap as usize).min(data.len() - start);
+    if n > 0 {
+        m.memory_mut().store_bytes(addr, &data[start..start + n])?;
+    }
+    m.memory_mut()
+        .store64(&Mac::REG::from_u64(len_ptr), &Mac::REG::from_u64(full))?;
+    Ok(SUCCESS)
+}
+
+fn read_mem<Mac: SupportMachine>(m: &mut Mac, addr: u64, len: u64) -> Result<Vec<u8>, Error> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    Ok(m.memory_mut().load_bytes(addr, len)?.to_vec())
+}
+
+impl<Mac: SupportMachine> Syscalls<Mac> for Host {
+    fn initialize(&mut self, _machine: &mut Mac) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn ecall(&mut self, m: &mut Mac) -> Result<bool, Error> {
+        let n = m.registers()[A7].to_u64();
+        let arg = |m: &Mac, r: usize| m.registers()[r].to_u64();
+        let (a0, a1, a2, a3, a4, a5) = (
+            arg(m, A0),
+            arg(m, A1),
+            arg(m, A2),
+            arg(m, A3),
+            arg(m, A4),
+            arg(m, A5),
+        );
+        let known = matches!(
+            n,
+            2041 | 2042
+                | 2052
+                | 2061
+                | 2062
+                | 2071..=2074
+                | 2081..=2083
+                | 2091
+                | 2092
+                | 2104
+                | 2177
+                | 7001..=7099
+        );
+        if !known {
+            return Ok(false);
+        }
+        m.add_cycles_no_checking(SYSCALL_CYCLES)?;
+        let ret = {
+            let state = self.state.clone();
+            let mut st = state.lock().unwrap();
+            self.dispatch(m, &mut st, n, [a0, a1, a2, a3, a4, a5])?
+        };
+        m.set_register(A0, Mac::REG::from_u64(ret));
+        Ok(true)
+    }
+}
+
+impl Host {
+    fn dispatch<Mac: SupportMachine>(
+        &mut self,
+        m: &mut Mac,
+        st: &mut HostState,
+        n: u64,
+        [a0, a1, a2, a3, a4, a5]: [u64; 6],
+    ) -> Result<u64, Error> {
+        Ok(match n {
+            2041 => 2, // vm_version
+            2042 => m.cycles(),
+            2052 => {
+                let d = st.vtx.script().to_molecule();
+                write_partial(m, &d, a0, a1, a2)?
+            }
+            2061 => {
+                let d = st.vtx.tx_hash;
+                write_partial(m, &d, a0, a1, a2)?
+            }
+            2062 => {
+                let d = st.vtx.script().hash();
+                write_partial(m, &d, a0, a1, a2)?
+            }
+            // load_cell(addr, len, offset, index, source)
+            2071 => match cell_at(&st.vtx, a3, a4) {
+                Lookup::Cell(c) => write_partial(m, &c.output_molecule(), a0, a1, a2)?,
+                Lookup::Missing(code) => code,
+            },
+            // load_input(addr, len, offset, index, source)
+            2073 => match input_at(&st.vtx, a3, a4) {
+                Lookup::Cell(_) => {
+                    let mut d = Vec::with_capacity(44);
+                    d.extend_from_slice(&0u64.to_le_bytes()); // since
+                    d.extend_from_slice(&out_point(&st.vtx));
+                    write_partial(m, &d, a0, a1, a2)?
+                }
+                Lookup::Missing(code) => code,
+            },
+            // load_witness(addr, len, offset, index, source)
+            2074 => match witness_at(&st.vtx, a3, a4) {
+                Ok(i) => {
+                    let d = st.vtx.witnesses[i].clone();
+                    write_partial(m, &d, a0, a1, a2)?
+                }
+                Err(code) => code,
+            },
+            // load_cell_by_field(addr, len, offset, index, source, field)
+            2081 => match cell_at(&st.vtx, a3, a4) {
+                Lookup::Cell(c) => {
+                    let d: Option<Vec<u8>> = match a5 {
+                        0 => Some(c.capacity.to_le_bytes().to_vec()),
+                        1 => Some(c.data_hash().to_vec()),
+                        2 => Some(c.lock.to_molecule()),
+                        3 => Some(c.lock.hash().to_vec()),
+                        4 => c.type_.as_ref().map(|s| s.to_molecule()),
+                        5 => c.type_.as_ref().map(|s| s.hash().to_vec()),
+                        6 => Some(c.occupied_capacity().to_le_bytes().to_vec()),
+                        _ => return Ok(ITEM_MISSING),
+                    };
+                    match d {
+                        Some(d) => write_partial(m, &d, a0, a1, a2)?,
+                        None => ITEM_MISSING,
+                    }
+                }
+                Lookup::Missing(code) => code,
+            },
+            // load_header / load_header_by_field: the virtual transaction has no header deps.
+            2072 | 2082 => INDEX_OUT_OF_BOUND,
+            // load_input_by_field(addr, len, offset, index, source, field)
+            2083 => match input_at(&st.vtx, a3, a4) {
+                Lookup::Cell(_) => match a5 {
+                    0 => write_partial(m, &out_point(&st.vtx), a0, a1, a2)?,
+                    1 => write_partial(m, &0u64.to_le_bytes(), a0, a1, a2)?,
+                    _ => ITEM_MISSING,
+                },
+                Lookup::Missing(code) => code,
+            },
+            // load_cell_data_as_code(addr, memory_size, content_offset, content_size, index, source)
+            2091 => match cell_at(&st.vtx, a4, a5) {
+                Lookup::Cell(c) => {
+                    let data = &c.data;
+                    let (off, size) = (a2 as usize, a3 as usize);
+                    if off > data.len() || size > data.len() - off || size as u64 > a1 {
+                        return Ok(SVC_INVALID_ARGUMENT);
+                    }
+                    m.memory_mut().store_bytes(a0, &data[off..off + size])?;
+                    SUCCESS
+                }
+                Lookup::Missing(code) => code,
+            },
+            // load_cell_data(addr, len, offset, index, source)
+            2092 => match cell_at(&st.vtx, a3, a4) {
+                Lookup::Cell(c) => write_partial(m, &c.data, a0, a1, a2)?,
+                Lookup::Missing(code) => code,
+            },
+            2104 => INDEX_OUT_OF_BOUND, // load_block_extension: no headers
+            2177 => {
+                let mut bytes = Vec::new();
+                let mut p = a0;
+                loop {
+                    let b = m.memory_mut().load8(&Mac::REG::from_u64(p))?.to_u8();
+                    if b == 0 {
+                        break;
+                    }
+                    if bytes.len() < MAX_DEBUG_LINE_BYTES {
+                        bytes.push(b);
+                    }
+                    p += 1;
+                }
+                if st.debug.len() < MAX_DEBUG_LINES {
+                    st.debug.push(String::from_utf8_lossy(&bytes).into_owned());
+                }
+                return Ok(a0); // debug has no return value; keep a0 unchanged
+            }
+            // job_payload(addr, len_ptr, offset)
+            7001 => {
+                let d = st.vtx.witnesses[0].clone();
+                write_partial(m, &d, a0, a1, a2)?;
+                SVC_OK
+            }
+            // block_info(addr): tip number, packed epoch, median time (ms), u64 LE each
+            7002 => {
+                let mut d = Vec::with_capacity(24);
+                for v in st.block_info {
+                    d.extend_from_slice(&v.to_le_bytes());
+                }
+                m.memory_mut().store_bytes(a0, &d)?;
+                SVC_OK
+            }
+            // tx_skeleton_put(addr, len)
+            7030 => {
+                let d = read_mem(m, a0, a1)?;
+                st.skeleton = Some(d);
+                SVC_OK
+            }
+            // result_put(addr, len)
+            7031 => {
+                if a1 as usize > MAX_RESULT_BYTES {
+                    return Err(Error::External(STOP_RESULT_TOO_LARGE.into()));
+                }
+                st.result = Some(read_mem(m, a0, a1)?);
+                SVC_OK
+            }
+            // chain_read, cells_query, storage, sign, CRT calls: not available in this build/mode.
+            _ => SVC_NOT_SUPPORTED,
+        })
+    }
+}
+
+fn out_point(vtx: &VirtualTx) -> Vec<u8> {
+    let mut d = vtx.input_out_point.0.to_vec();
+    d.extend_from_slice(&vtx.input_out_point.1.to_le_bytes());
+    d
+}
+
+enum Lookup<'a> {
+    Cell(&'a super::vtx::Cell),
+    Missing(u64),
+}
+
+fn input_at(vtx: &VirtualTx, index: u64, source: u64) -> Lookup<'_> {
+    match source {
+        SRC_INPUT | SRC_GROUP_INPUT if index == 0 => Lookup::Cell(&vtx.input),
+        SRC_INPUT | SRC_GROUP_INPUT => Lookup::Missing(INDEX_OUT_OF_BOUND),
+        _ => Lookup::Missing(INDEX_OUT_OF_BOUND),
+    }
+}
+
+fn cell_at(vtx: &VirtualTx, index: u64, source: u64) -> Lookup<'_> {
+    match source {
+        SRC_INPUT | SRC_GROUP_INPUT => input_at(vtx, index, source),
+        SRC_CELL_DEP => match vtx.cell_deps.get(index as usize) {
+            Some(c) => Lookup::Cell(c),
+            None => Lookup::Missing(INDEX_OUT_OF_BOUND),
+        },
+        SRC_OUTPUT | SRC_GROUP_OUTPUT | SRC_HEADER_DEP => Lookup::Missing(INDEX_OUT_OF_BOUND),
+        _ => Lookup::Missing(ITEM_MISSING),
+    }
+}
+
+/// Witness index for `source`; the group contains only input 0 so group index 0 maps to witness 0.
+fn witness_at(vtx: &VirtualTx, index: u64, source: u64) -> Result<usize, u64> {
+    match source {
+        SRC_INPUT | SRC_GROUP_INPUT if (index as usize) < vtx.witnesses.len() => Ok(index as usize),
+        SRC_OUTPUT | SRC_GROUP_OUTPUT if (index as usize) < vtx.witnesses.len() => {
+            Ok(index as usize)
+        }
+        SRC_INPUT | SRC_GROUP_INPUT | SRC_OUTPUT | SRC_GROUP_OUTPUT => Err(INDEX_OUT_OF_BOUND),
+        _ => Err(ITEM_MISSING),
+    }
+}

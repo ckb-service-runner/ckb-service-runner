@@ -29,6 +29,8 @@ futures-util = { version = "0.3", default-features = false }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 rust-embed = "8"
+ckb-vm = { version = "=0.24.15", features = ["asm"] }
+blake2b-ref = "0.3.1"
 
 [dev-dependencies]
 tempfile = "3"

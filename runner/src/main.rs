@@ -10,6 +10,8 @@ mod password;
 mod ping;
 mod resources;
 mod run;
+mod runtime;
+mod service;
 mod web;
 
 /// Scratch directory for unit tests (`/tmp` may be read-only).
@@ -70,10 +72,36 @@ enum Command {
         #[arg(long)]
         password_stdin: bool,
     },
+    /// Service tools
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// Run the service
     Run {
         #[arg(long)]
         confirm_mainnet: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Run a service once in the sandbox (developer tool, ignores approval)
+    RunLocal {
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Job payload as 0x-prefixed hex
+        #[arg(long)]
+        payload: String,
+        #[arg(long)]
+        max_cycles: Option<u64>,
+        #[arg(long)]
+        max_memory_mb: Option<u32>,
+        #[arg(long)]
+        max_wall_seconds: Option<u32>,
+        /// TIP:EPOCH:MEDIAN_MS
+        #[arg(long)]
+        block_info: Option<String>,
     },
 }
 
@@ -208,6 +236,43 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| data_root(&cli).join("csr.toml"));
             match runtime().block_on(run::run(cfg, path, data_root(&cli), *confirm_mainnet)) {
                 Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Command::Service {
+            action:
+                ServiceAction::RunLocal {
+                    manifest,
+                    payload,
+                    max_cycles,
+                    max_memory_mb,
+                    max_wall_seconds,
+                    block_info,
+                },
+        } => {
+            let cfg = match load_config(&cli) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let args = service::RunLocalArgs {
+                manifest,
+                payload,
+                max_cycles: *max_cycles,
+                max_memory_mb: *max_memory_mb,
+                max_wall_seconds: *max_wall_seconds,
+                block_info: block_info.as_deref(),
+            };
+            match service::run_local(&cfg, &data_root(&cli), &args) {
+                Ok(j) => {
+                    println!("{j}");
+                    ExitCode::SUCCESS
+                }
                 Err(e) => {
                     eprintln!("{e}");
                     ExitCode::from(1)
