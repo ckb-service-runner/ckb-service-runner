@@ -32,6 +32,8 @@ pub struct AppState {
     /// Serialises writes of the config file.
     pub config_write: Mutex<()>,
     /// Dashboard sessions (in memory only).
+    /// Cached monitor public-API data.
+    pub monitor_cache: tokio::sync::Mutex<crate::monitor::Cache>,
     pub sessions: Mutex<std::collections::HashMap<String, crate::web::Session>>,
 }
 

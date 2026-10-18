@@ -253,3 +253,70 @@ pub fn wait_for(secs: u64, mut f: impl FnMut() -> bool) -> bool {
     }
     false
 }
+
+/// Mock of the monitor's public API (`/v1/network`, `/v1/nodes/{peer_id}`).
+pub struct PublicMonitor {
+    pub port: u16,
+    pub down: Arc<std::sync::atomic::AtomicBool>,
+    /// Requests per path (node lookups counted under `/v1/nodes`).
+    pub hits: Arc<Mutex<std::collections::HashMap<String, u32>>>,
+}
+
+impl PublicMonitor {
+    /// `ranked` lists the peer IDs that are ranked.
+    pub fn start(ranked: &[&str]) -> PublicMonitor {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hits: Arc<Mutex<std::collections::HashMap<String, u32>>> = Default::default();
+        let ranked: Vec<String> = ranked.iter().map(|s| s.to_string()).collect();
+        let (d, h) = (down.clone(), hits.clone());
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(mut c) = c else { return };
+                let (d, h, ranked) = (d.clone(), h.clone(), ranked.clone());
+                std::thread::spawn(move || {
+                    let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
+                    while let Some((_, path, _)) = read_request(&mut c) {
+                        let key = if path.starts_with("/v1/nodes/") {
+                            "/v1/nodes".to_string()
+                        } else {
+                            path.clone()
+                        };
+                        *h.lock().unwrap().entry(key).or_default() += 1;
+                        let (status, body) = if d.load(std::sync::atomic::Ordering::SeqCst) {
+                            (503, r#"{"error":"down"}"#.to_string())
+                        } else if path == "/v1/network" {
+                            (200, r#"{"nodes_total":42,"nodes_reachable":30,"countries":[{"code":"DE","count":12},{"code":"US","count":9}],"updated_at":1792000000,"extra":true}"#.to_string())
+                        } else if let Some(id) = path.strip_prefix("/v1/nodes/") {
+                            if ranked.iter().any(|r| r == id) {
+                                (
+                                    200,
+                                    format!(
+                                        r#"{{"peer_id":"{id}","rank":7,"of":42,"availability":{{"d7":0.99,"d30":0.97,"d365":0.9}},"check_type":"p2p_verified","attestation":{{"status":"valid","expiry":1800000000}},"last_check_at":1792000100}}"#
+                                    ),
+                                )
+                            } else {
+                                (404, r#"{"error":"not_ranked"}"#.to_string())
+                            }
+                        } else {
+                            (404, "{}".to_string())
+                        };
+                        if write!(c, "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}", body.len()).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        PublicMonitor { port, down, hits }
+    }
+
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn hit(&self, path: &str) -> u32 {
+        *self.hits.lock().unwrap().get(path).unwrap_or(&0)
+    }
+}

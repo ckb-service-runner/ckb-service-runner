@@ -108,6 +108,7 @@ pub async fn run(
         resources: RwLock::new(Some(monitor.sample())),
         last_check_ok_at: AtomicI64::new(0),
         config_write: Mutex::new(()),
+        monitor_cache: Default::default(),
         sessions: Mutex::new(Default::default()),
         config: RwLock::new(cfg),
     });

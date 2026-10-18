@@ -18,6 +18,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/status", get(status))
         .route("/api/node", get(node))
+        .route("/api/network", get(network))
         .route("/api/resources", get(resources))
         .route("/api/resources/history", get(history))
         .route("/api/logs", get(logs_route))
@@ -37,6 +38,10 @@ async fn status(State(s): St) -> Json<Value> {
 async fn node(State(s): St) -> Json<Value> {
     let nt = s.config.read().unwrap().node.node_type.clone();
     Json(s.node_json(&nt))
+}
+
+async fn network(State(s): St) -> Json<Value> {
+    Json(crate::monitor::network_json(&s).await)
 }
 
 async fn resources(State(s): St) -> Response {

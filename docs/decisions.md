@@ -36,3 +36,9 @@
 - The outbound loop always runs and re-reads `ranking.join` / `ping_mode` each tick, so settings changes apply live; the first check-in happens at startup, right after the initial R2 poll.
 - A failed answer POST releases the nonce reservation; a non-200 reply is a failure retried at the next interval.
 - Spec `docs/spec/` is absent in this checkout; the concept text was used as the source of truth.
+
+## A1+ Phase 1: Network API
+- `runner/src/monitor/` fetches `/v1/network` and `/v1/nodes/{peer_id}` lazily on the first `GET /api/network` after the 5-minute cache expires (no background refresh). Both endpoints are cached together as one snapshot keyed by (monitor URL, peer ID); a changed key invalidates it.
+- A 404 for the node is a successful "not ranked" (`node: null`). Any other failure of either request fails the whole refresh: cached data is served with `stale: true` + `error`; with no cache `network`/`node` are `null` and `error` is set (HTTP 200).
+- After a failed refresh the monitor is not asked again for 15 s (avoids hammering on every dashboard poll). Requests: 10 s timeout, no proxy, no redirects. Unknown reply fields are ignored.
+- If the node's peer ID is not known yet, only `/v1/network` is fetched and `node` is `null`.

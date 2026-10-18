@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod identity;
 mod logs;
+mod monitor;
 mod network;
 mod node;
 mod password;
