@@ -139,6 +139,10 @@ struct Deployments {
     float: Deployed,
     dual: Deployed,
     registry: Deployed,
+    job_type: Deployed,
+    job_lock: Deployed,
+    /// Type hash of the registry script of this deployment (args of the job lock).
+    registry_type_hash: Vec<u8>,
     /// Args of the Type ID type script of the monitor config cell.
     config_type_args: Vec<u8>,
     config_type_hash: H256,
@@ -189,6 +193,9 @@ fn load_deployments(cfg: &Config) -> Result<Deployments, String> {
         float: load_deployed(&v, "float_lock", f)?,
         dual: load_deployed(&v, "dual_lock", f)?,
         registry: load_deployed(&v, "registry", f)?,
+        job_type: load_deployed(&v, "job_type", f)?,
+        job_lock: load_deployed(&v, "job_lock", f)?,
+        registry_type_hash: hex32(&v["registry_type_hash"], "registry_type_hash")?,
         config_type_args: hex32(&v["config_cell"]["type_args"], "config_cell.type_args")?,
         config_type_hash: H256::from_slice(&hex32(
             &v["config_cell"]["type_hash"],
@@ -391,11 +398,31 @@ pub struct Chain {
     float: Deployed,
     dual: Deployed,
     registry: Deployed,
+    job_type: Deployed,
+    job_lock: Deployed,
+    registry_type_hash: Vec<u8>,
     config_type_args: Vec<u8>,
     config_type_hash: H256,
     runner_lock: Script,
     service_key: Option<secp256k1::SecretKey>,
     service_pubkey: Vec<u8>,
+}
+
+pub struct TipInfo {
+    pub number: u64,
+    /// Packed epoch (`number | index << 24 | length << 40`).
+    pub epoch: u64,
+    pub median_ms: u64,
+}
+
+/// A live cell with job lock and job type, data not yet decoded.
+pub struct RawJob {
+    pub outpoint: String,
+    pub service_code_hash: String,
+    pub capacity: u64,
+    /// Block that created the cell.
+    pub block: u64,
+    pub data: Vec<u8>,
 }
 
 pub struct Float {
@@ -435,6 +462,9 @@ impl Chain {
             float: dep.float,
             dual: dep.dual,
             registry: dep.registry,
+            job_type: dep.job_type,
+            job_lock: dep.job_lock,
+            registry_type_hash: dep.registry_type_hash,
             config_type_args: dep.config_type_args,
             config_type_hash: dep.config_type_hash,
             runner_lock: sighash_lock(&blake2b_256(&pk)[..20]),
@@ -846,6 +876,72 @@ impl Chain {
         };
         self.assemble(&owner, vec![f.cell], fixed, vec![self.float_dep()], false)
             .await
+    }
+
+    /// Tip block number, packed epoch and median time (ms) for trigger checks.
+    pub async fn tip_info(&self) -> Result<TipInfo, String> {
+        let h = self.call("get_tip_header", json!([])).await?;
+        let number = hex_u64(&h["number"]).ok_or("bad tip number")?;
+        let epoch = hex_u64(&h["epoch"]).ok_or("bad tip epoch")?;
+        let hash = h["hash"].as_str().unwrap_or("").to_string();
+        let median_ms = hex_u64(&self.call("get_block_median_time", json!([hash])).await?)
+            .ok_or("bad median time")?;
+        Ok(TipInfo {
+            number,
+            epoch,
+            median_ms,
+        })
+    }
+
+    /// Live cells with this deployment's job lock, restricted to the job type.
+    pub async fn job_cells(&self) -> Result<Vec<RawJob>, String> {
+        self.wait_indexer().await?;
+        let lock = Script::new_builder()
+            .code_hash(self.job_lock.code_hash.pack())
+            .hash_type(packed::Byte::new(self.job_lock.hash_type as u8))
+            .args(Bytes::copy_from_slice(&self.registry_type_hash).pack())
+            .build();
+        let key = json!({
+            "script": json::Script::from(lock),
+            "script_type": "lock",
+            "with_data": true,
+        });
+        let mut out = Vec::new();
+        let mut cursor = Value::Null;
+        for _ in 0..20 {
+            let r = self
+                .call("get_cells", json!([key, "asc", "0x400", cursor]))
+                .await?;
+            let page = r["objects"].as_array().ok_or("get_cells: no objects")?;
+            for c in page {
+                let Some(t) = c["output"]["type"].as_object() else {
+                    continue;
+                };
+                let ty: json::Script =
+                    serde_json::from_value(Value::Object(t.clone())).map_err(|e| e.to_string())?;
+                let ty: Script = ty.into();
+                let args = ty.args().raw_data();
+                if ty.code_hash() != self.job_type.code_hash.pack()
+                    || ty.hash_type() != packed::Byte::new(self.job_type.hash_type as u8)
+                    || args.len() != 32
+                {
+                    continue;
+                }
+                let cell = parse_cell(c)?;
+                out.push(RawJob {
+                    outpoint: out_point_str(&cell.out_point),
+                    service_code_hash: hx(&args),
+                    capacity: cell.capacity,
+                    block: hex_u64(&c["block_number"]).unwrap_or(0),
+                    data: cell.data,
+                });
+            }
+            cursor = r["last_cursor"].clone();
+            if page.len() < 0x400 || cursor.is_null() {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     fn registry_type(&self) -> Script {

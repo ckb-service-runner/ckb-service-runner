@@ -27,6 +27,18 @@ pub struct ServiceRow {
     pub status: String,
 }
 
+/// A discovered job cell. `state` is `discovered` (eligible) or `excluded` (with `reason`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobCellRow {
+    pub outpoint: String,
+    pub code_hash: String,
+    pub tip_shannons: u64,
+    pub max_cycles: u64,
+    pub trigger: String,
+    pub state: String,
+    pub reason: Option<String>,
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Db, String> {
         let conn = Connection::open(path).map_err(|e| format!("cannot open database: {e}"))?;
@@ -52,6 +64,16 @@ impl Db {
                  name TEXT NOT NULL,
                  language TEXT NOT NULL,
                  status TEXT NOT NULL DEFAULT 'not_approved'
+             );
+             CREATE TABLE IF NOT EXISTS job_cells (
+                 outpoint TEXT PRIMARY KEY,
+                 code_hash TEXT NOT NULL,
+                 tip_shannons INTEGER NOT NULL,
+                 max_cycles INTEGER NOT NULL,
+                 trigger TEXT NOT NULL,
+                 state TEXT NOT NULL,
+                 reason TEXT,
+                 seen_block INTEGER NOT NULL
              );",
         )
         .map_err(|e| format!("cannot initialise database: {e}"))?;
@@ -109,6 +131,56 @@ impl Db {
             )
             .map_err(|e| e.to_string())?;
         Ok(n > 0)
+    }
+
+    /// Replaces the set of discovered job cells by the live cells seen at `block`.
+    pub fn replace_job_cells(&self, rows: &[JobCellRow], block: u64) -> Result<(), String> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM job_cells", [])
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            tx.execute(
+                "INSERT INTO job_cells (outpoint, code_hash, tip_shannons, max_cycles, trigger, state, reason, seen_block)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    r.outpoint,
+                    r.code_hash,
+                    r.tip_shannons as i64,
+                    r.max_cycles as i64,
+                    r.trigger,
+                    r.state,
+                    r.reason,
+                    block as i64
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    #[allow(dead_code)] // read by the jobs API
+    pub fn job_cells(&self) -> Result<Vec<JobCellRow>, String> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare(
+                "SELECT outpoint, code_hash, tip_shannons, max_cycles, trigger, state, reason FROM job_cells ORDER BY outpoint",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| {
+                Ok(JobCellRow {
+                    outpoint: r.get(0)?,
+                    code_hash: r.get(1)?,
+                    tip_shannons: r.get::<_, i64>(2)? as u64,
+                    max_cycles: r.get::<_, i64>(3)? as u64,
+                    trigger: r.get(4)?,
+                    state: r.get(5)?,
+                    reason: r.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
     /// Stores a sample and drops everything older than 24 h.
@@ -173,6 +245,23 @@ mod tests {
             ("y", "approved_enabled")
         );
         assert!(!db.set_service_status("0xbb", "not_approved").unwrap());
+    }
+
+    #[test]
+    fn job_cells_are_replaced() {
+        let db = Db::open_memory();
+        let row = |op: &str| JobCellRow {
+            outpoint: op.into(),
+            code_hash: "0xaa".into(),
+            tip_shannons: 5,
+            max_cycles: 6,
+            trigger: "ondemand".into(),
+            state: "discovered".into(),
+            reason: None,
+        };
+        db.replace_job_cells(&[row("a"), row("b")], 1).unwrap();
+        db.replace_job_cells(&[row("b")], 2).unwrap();
+        assert_eq!(db.job_cells().unwrap(), vec![row("b")]);
     }
 
     #[test]

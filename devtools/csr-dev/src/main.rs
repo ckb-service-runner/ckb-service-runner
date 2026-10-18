@@ -97,6 +97,35 @@ enum Command {
     },
     /// Lock args and lock hash of the funding account (the operator wallet in tests)
     OwnerLockArgs,
+    /// Deploy a service ELF as a code cell (code_hash = data hash)
+    DeployService {
+        #[arg(long)]
+        elf: PathBuf,
+    },
+    /// Create a job cell (`spec/job-cell-standard.md`)
+    Job {
+        #[arg(long)]
+        code_hash: String,
+        #[arg(long)]
+        tip_ckb: String,
+        #[arg(long)]
+        max_fee_shannons: u64,
+        #[arg(long)]
+        max_cycles: u64,
+        /// ondemand | at-block:N | every:N
+        #[arg(long)]
+        trigger: String,
+        #[arg(long)]
+        runs: u32,
+        #[arg(long, default_value = "0x")]
+        payload: String,
+        #[arg(long)]
+        expiry_block: Option<u64>,
+        #[arg(long)]
+        refund_lock_args: Option<String>,
+        #[arg(long, default_value = "deployments/devnet.json")]
+        deployments: PathBuf,
+    },
 }
 
 struct Ctx {
@@ -437,6 +466,148 @@ fn owner_lock_args(ctx: &Ctx) -> Result<Value, String> {
     Ok(json!({"lock_args": h(ctx.funder.args), "lock_hash": lock_hash_hex(&lock)}))
 }
 
+fn deploy_service(ctx: &Ctx, elf: &Path) -> Result<Value, String> {
+    let bin = std::fs::read(elf).map_err(|e| format!("cannot read {}: {e}", elf.display()))?;
+    let lock = ctx.funder.lock();
+    let cap = occupied(&lock, &None, bin.len()) * CKB;
+    let tx = ctx.chain.build_funded(
+        &ctx.funder,
+        vec![Out {
+            capacity: cap,
+            lock,
+            type_: None,
+            data: bin.clone(),
+            type_id: false,
+        }],
+        vec![],
+    )?;
+    let tx_hash = ctx.chain.send_and_wait(&tx)?;
+    Ok(json!({"code_hash": h(data_hash(&bin)), "tx_hash": tx_hash, "index": 0}))
+}
+
+/// Molecule table: header (total size, field offsets) followed by the fields.
+fn mol_table(fields: &[Vec<u8>]) -> Vec<u8> {
+    let header = 4 + 4 * fields.len();
+    let total = header + fields.iter().map(Vec::len).sum::<usize>();
+    let mut out = (total as u32).to_le_bytes().to_vec();
+    let mut off = header;
+    for f in fields {
+        out.extend_from_slice(&(off as u32).to_le_bytes());
+        off += f.len();
+    }
+    for f in fields {
+        out.extend_from_slice(f);
+    }
+    out
+}
+
+/// Molecule `Trigger` union from `ondemand | at-block:N | every:N`.
+fn trigger_molecule(s: &str) -> Result<Vec<u8>, String> {
+    let (id, arg) = match s.split_once(':') {
+        None if s == "ondemand" => (0u32, None),
+        Some(("at-block", n)) => (1, Some(n)),
+        Some(("every", n)) => (4, Some(n)),
+        _ => return Err("trigger must be ondemand, at-block:N or every:N".into()),
+    };
+    let mut out = id.to_le_bytes().to_vec();
+    match arg {
+        None => out.extend(mol_table(&[])),
+        Some(n) => {
+            let n: u64 = n.parse().map_err(|_| format!("bad trigger number '{n}'"))?;
+            out.extend(mol_table(&[n.to_le_bytes().to_vec()]));
+        }
+    }
+    Ok(out)
+}
+
+fn dep_script(dep: &Value, name: &str) -> Result<(Vec<u8>, packed::CellDep), String> {
+    let s = &dep["scripts"][name];
+    let code_hash = hex_arg(s["code_hash"].as_str().unwrap_or(""), 32, "code_hash")?;
+    let op = chain::out_point(
+        s["tx_hash"].as_str().unwrap_or(""),
+        s["index"].as_u64().unwrap_or(0) as u32,
+    )?;
+    let cd = packed::CellDep::new_builder()
+        .out_point(op)
+        .dep_type(packed::Byte::new(ckb_types::core::DepType::Code as u8))
+        .build();
+    Ok((code_hash, cd))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn job(
+    ctx: &Ctx,
+    code_hash: &str,
+    tip: &str,
+    max_fee: u64,
+    max_cycles: u64,
+    trigger: &str,
+    runs: u32,
+    payload: &str,
+    expiry: Option<u64>,
+    refund_args: Option<&str>,
+    deployments: &Path,
+) -> Result<Value, String> {
+    let dep = read_json(deployments)?;
+    let service = hex_arg(code_hash, 32, "--code-hash")?;
+    let tip_shannons = ckb_to_shannons(tip)?;
+    let payload =
+        hex::decode(payload.trim_start_matches("0x")).map_err(|_| "payload is not hex")?;
+    let trig = trigger_molecule(trigger)?;
+    if runs == 0 || (runs > 1 && !trigger.starts_with("every:")) {
+        return Err("runs must be >= 1, and > 1 only for every:N".into());
+    }
+    let expiry_block = match expiry {
+        Some(e) => e,
+        None => ctx.chain.rpc.tip_number()? + 100_000,
+    };
+    let refund_lock = match refund_args {
+        Some(a) => sighash_lock(&hex_arg(a, 20, "--refund-lock-args")?),
+        None => ctx.funder.lock(),
+    };
+    let data = mol_table(&[
+        trig,
+        tip_shannons.to_le_bytes().to_vec(),
+        max_fee.to_le_bytes().to_vec(),
+        max_cycles.to_le_bytes().to_vec(),
+        [(payload.len() as u32).to_le_bytes().to_vec(), payload].concat(),
+        expiry_block.to_le_bytes().to_vec(),
+        refund_lock.calc_script_hash().as_slice().to_vec(),
+        runs.to_le_bytes().to_vec(),
+    ]);
+    let (type_hash, type_dep) = dep_script(&dep, "job_type")?;
+    let (lock_hash, _) = dep_script(&dep, "job_lock")?;
+    let registry_type_hash = hex_arg(
+        dep["registry_type_hash"].as_str().unwrap_or(""),
+        32,
+        "registry_type_hash",
+    )?;
+    let script = |code: &[u8], args: &[u8]| {
+        Script::new_builder()
+            .code_hash(packed::Byte32::from_slice(code).expect("32 bytes"))
+            .hash_type(packed::Byte::new(ScriptHashType::Data2 as u8))
+            .args(Bytes::copy_from_slice(args).pack())
+            .build()
+    };
+    let lock = script(&lock_hash, &registry_type_hash);
+    let type_ = Some(script(&type_hash, &service));
+    let capacity =
+        occupied(&lock, &type_, data.len()) * CKB + runs as u64 * (tip_shannons + max_fee) + CKB;
+    let tx = ctx.chain.build_funded(
+        &ctx.funder,
+        vec![Out {
+            capacity,
+            lock,
+            type_,
+            data,
+            type_id: false,
+        }],
+        vec![type_dep],
+    )?;
+    let tx_hash = ctx.chain.send_and_wait(&tx)?;
+    Ok(json!({"tx_hash": tx_hash, "index": 0, "capacity_shannons": capacity}))
+}
+
 fn run(cli: &Cli) -> Result<Value, String> {
     let ctx = context(&cli.rpc)?;
     match &cli.command {
@@ -461,6 +632,31 @@ fn run(cli: &Cli) -> Result<Value, String> {
         Command::Fund { lock_args, ckb } => fund(&ctx, lock_args, ckb),
         Command::SignTx { input, out, key } => sign_tx(&ctx, input, out, key),
         Command::OwnerLockArgs => owner_lock_args(&ctx),
+        Command::DeployService { elf } => deploy_service(&ctx, elf),
+        Command::Job {
+            code_hash,
+            tip_ckb,
+            max_fee_shannons,
+            max_cycles,
+            trigger,
+            runs,
+            payload,
+            expiry_block,
+            refund_lock_args,
+            deployments,
+        } => job(
+            &ctx,
+            code_hash,
+            tip_ckb,
+            *max_fee_shannons,
+            *max_cycles,
+            trigger,
+            *runs,
+            payload,
+            *expiry_block,
+            refund_lock_args.as_deref(),
+            deployments,
+        ),
     }
 }
 

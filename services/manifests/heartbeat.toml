@@ -1,0 +1,4 @@
+name = "heartbeat"
+language = "rust"
+elf = "../rust/target/riscv64imac-unknown-none-elf/release/heartbeat"
+args = "0x"

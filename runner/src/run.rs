@@ -16,6 +16,7 @@ use tokio::time::{interval_at, Instant as TokioInstant, MissedTickBehavior};
 
 const R2_INTERVAL: Duration = Duration::from_secs(10);
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
 const RESOURCE_INTERVAL: Duration = Duration::from_secs(5);
 const MAINNET_MARKER: &str = ".mainnet-confirmed";
 
@@ -200,6 +201,62 @@ pub async fn run(
                     if let Err(e) = state.db.add_sample(&sample) {
                         tracing::warn!("storing metric sample failed: {e}");
                     }
+                }
+            }
+        });
+    }
+
+    // Job discovery: on every new block, while the runtime is on.
+    {
+        let state = state.clone();
+        let mut stop = stop_rx.clone();
+        tokio::spawn(async move {
+            let p = period(DISCOVERY_INTERVAL);
+            let mut tick = interval_at(TokioInstant::now() + Duration::from_millis(500), p);
+            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            let mut chain: Option<crate::chain::Chain> = None;
+            let mut last_tip = None;
+            let mut warned = false;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {},
+                    _ = stop.changed() => return,
+                }
+                let cfg = state.config.read().unwrap().clone();
+                let r2 = state.node.read().unwrap().report.state;
+                if crate::app::runtime_state(cfg.runtime.enabled, &cfg.network, r2).0 != "on" {
+                    continue;
+                }
+                if chain.is_none() {
+                    match crate::chain::Chain::connect(&cfg, &state.service_pubkey).await {
+                        Ok(c) => chain = Some(c),
+                        Err(e) => {
+                            if !warned {
+                                tracing::warn!("job discovery unavailable: {e}");
+                                warned = true;
+                            }
+                            continue;
+                        }
+                    }
+                }
+                let c = chain.as_ref().expect("connected");
+                let result = async {
+                    let tip = c.tip_info().await?.number;
+                    if last_tip == Some(tip) {
+                        return Ok(None);
+                    }
+                    let plan = crate::jobs::plan_now(c, &state.db, &cfg).await?;
+                    crate::jobs::store(&state.db, &plan)?;
+                    Ok::<_, String>(Some((tip, plan.selected.len(), plan.excluded.len())))
+                }
+                .await;
+                match result {
+                    Ok(Some((tip, sel, exc))) => {
+                        last_tip = Some(tip);
+                        tracing::debug!("block {tip}: {sel} eligible job(s), {exc} excluded");
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("job discovery failed: {e}"),
                 }
             }
         });

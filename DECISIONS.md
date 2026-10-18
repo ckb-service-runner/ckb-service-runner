@@ -40,3 +40,10 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - Extra refusals beyond the spec: expired attestation (vs on-chain `clock_ms`), unknown network name. The attestation `peer_id` is not compared with the node's (the node's peer ID is only known to a running service).
 - `register status` picks, among registry cells with this node's service pubkey, the one with the latest attestation expiry (F8).
 - The registry owner is not required to equal the float's owner.
+
+## A3c Phase 1 – job creation, discovery, selection
+- `csr-dev job`: capacity = occupied capacity + `runs × (tip + max_fee)` + 1 CKB; job type/lock referenced by data2 hash (from the deployments file, which also gives `registry_type_hash`); `runs > 1` only for `every:N`.
+- Discovery searches the indexer by the exact job lock (`csr-job-lock`, args = this deployment's `registry_type_hash`) and keeps cells whose type is `csr-job-type` with 32-byte args; malformed job data is skipped. Found jobs are stored in SQLite table `job_cells` (`discovered` / `excluded` + reason), refreshed on every new block by a loop in `csr run` that only works while the runtime state is `on`.
+- `trigger_not_due` is evaluated at the current tip: `at-block:n` → tip ≥ n; `every:k` → tip ≥ creation block + k; epoch via cross-multiplied fractions; timestamp via the tip's median time (whole seconds). Exclusion order is exactly as specified; `csr jobs plan` ignores `runtime.enabled` (diagnostic only).
+- Allowlist = DB status `approved_enabled` AND `runtime.allowed_services`. `service add-onchain` stores language `onchain`, name = first 8 hex chars of the data hash.
+- Heartbeat is a copy of `kvtest` semantics (wrapping u32 counter in `counter`, result = new value), manifest `heartbeat.toml`.

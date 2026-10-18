@@ -3,6 +3,7 @@ mod chain;
 mod config;
 mod db;
 mod identity;
+mod jobs;
 mod logs;
 mod monitor;
 mod network;
@@ -115,10 +116,24 @@ enum Command {
         #[command(subcommand)]
         action: TxAction,
     },
+    /// Keeper jobs
+    Jobs {
+        #[command(subcommand)]
+        action: JobsAction,
+    },
     /// Run the service
     Run {
         #[arg(long)]
         confirm_mainnet: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum JobsAction {
+    /// Discover job cells on chain and show what would run and what is excluded
+    Plan {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -232,6 +247,12 @@ enum ServiceAction {
     AddLocal {
         #[arg(long)]
         manifest: PathBuf,
+    },
+    /// Register a service from its code cell (prints {code_hash, name})
+    AddOnchain {
+        /// 0x<tx hash>:<index>
+        #[arg(long)]
+        outpoint: String,
     },
     /// List registered services
     List {
@@ -570,6 +591,37 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Jobs {
+            action: JobsAction::Plan { json },
+        } => {
+            let r = (|| -> Result<(), String> {
+                let cfg = load_config(&cli)?;
+                let net_dir = data_root(&cli).join(&cfg.network);
+                std::fs::create_dir_all(&net_dir)
+                    .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
+                let id = identity::Identity::load_or_create(&net_dir)?;
+                let db = db::Db::open(&net_dir.join("csr.db"))?;
+                let plan = runtime().block_on(async {
+                    let c = chain::Chain::connect(&cfg, &id.service_pubkey).await?;
+                    jobs::plan_now(&c, &db, &cfg).await
+                })?;
+                jobs::store(&db, &plan)?;
+                let j = plan.to_json();
+                if *json {
+                    println!("{j}");
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default());
+                }
+                Ok(())
+            })();
+            match r {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Command::Service { action } => {
             let r = (|| -> Result<(), String> {
                 let mut cfg = load_config(&cli)?;
@@ -585,6 +637,15 @@ fn main() -> ExitCode {
                 let (hash, act) = match action {
                     ServiceAction::AddLocal { manifest } => {
                         println!("{}", registry::add_local(&db, manifest)?);
+                        return Ok(());
+                    }
+                    ServiceAction::AddOnchain { outpoint } => {
+                        let v = runtime().block_on(registry::add_onchain(
+                            &db,
+                            &cfg.node.rpc_url,
+                            outpoint,
+                        ))?;
+                        println!("{v}");
                         return Ok(());
                     }
                     ServiceAction::List { json } => {
