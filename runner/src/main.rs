@@ -1,6 +1,21 @@
+mod app;
 mod config;
+mod db;
+mod identity;
+mod logs;
 mod network;
 mod node;
+mod resources;
+mod run;
+mod web;
+
+/// Scratch directory for unit tests (`/tmp` may be read-only).
+#[cfg(test)]
+fn test_tmp() -> tempfile::TempDir {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/unit-tmp");
+    std::fs::create_dir_all(&base).unwrap();
+    tempfile::Builder::new().tempdir_in(base).unwrap()
+}
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -174,6 +189,26 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(2)
+            }
+        }
+        Command::Run { confirm_mainnet } => {
+            let cfg = match load_config(&cli) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let path = cli
+                .config
+                .clone()
+                .unwrap_or_else(|| data_root(&cli).join("csr.toml"));
+            match runtime().block_on(run::run(cfg, path, data_root(&cli), *confirm_mainnet)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
             }
         }
         _ => {

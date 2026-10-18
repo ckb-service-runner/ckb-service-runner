@@ -17,7 +17,13 @@ toml = "0.8"
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt", "macros", "time", "net", "io-util"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "net", "io-util", "signal", "sync"] }
+axum = "0.8.9"
+sysinfo = "0.39.6"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+rand = "0.8"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

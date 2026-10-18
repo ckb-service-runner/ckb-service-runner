@@ -12,7 +12,7 @@ use rpc::RpcClient;
 use serde_json::{json, Value};
 
 /// `node_type` to report for a snapshot (`None` while unreachable).
-fn node_type(cfg: &Config, s: &Snapshot) -> Option<&'static str> {
+pub fn node_type(cfg: &Config, s: &Snapshot) -> Option<&'static str> {
     if s.transport_error || s.tip.is_none() {
         None
     } else if s.chain_info.is_none() || s.sync.is_none() {
@@ -119,4 +119,70 @@ pub async fn detect_url(cfg: &Config, url: &str) -> DetectResult {
             "hint": hint,
         }),
     }
+}
+
+/// Everything one guard tick learns about the node.
+#[derive(Debug, Clone)]
+pub struct Polled {
+    pub snap: Snapshot,
+    pub report: R2Report,
+    /// `(pending, proposed)` from `tx_pool_info`.
+    pub tx_pool: Option<(u64, u64)>,
+}
+
+impl Polled {
+    pub fn unknown() -> Polled {
+        Polled {
+            snap: Snapshot::default(),
+            report: R2Report::unknown(),
+            tx_pool: None,
+        }
+    }
+}
+
+/// One guard tick: snapshot, `tx_pool_info` and the R2 evaluation (7 JSON-RPC calls).
+pub async fn poll(client: &RpcClient, network: &str) -> Polled {
+    let snap = fetch_snapshot(client).await;
+    let report = evaluate(&snap, expected_chain(network));
+    let tx_pool = if snap.transport_error || snap.tip.is_none() {
+        None
+    } else {
+        client
+            .call("tx_pool_info", json!([]))
+            .await
+            .ok()
+            .and_then(|v| {
+                Some((
+                    rpc::hex_u64(v.get("pending")?)?,
+                    rpc::hex_u64(v.get("proposed")?)?,
+                ))
+            })
+    };
+    Polled {
+        snap,
+        report,
+        tx_pool,
+    }
+}
+
+/// Checks done on the first successful contact with the node. `Ok(true)` means
+/// the node was contacted and is acceptable, `Ok(false)` that it is unreachable
+/// (try again later), `Err` that `csr run` must refuse to work with this node.
+pub fn first_contact(snap: &Snapshot, network: &str) -> Result<bool, String> {
+    if snap.transport_error || snap.tip.is_none() {
+        return Ok(false);
+    }
+    let (Some((chain, _)), Some(_)) = (&snap.chain_info, snap.sync) else {
+        return Err(
+            "unsupported node: sync_state or get_blockchain_info missing (light client?); a full node is required"
+                .into(),
+        );
+    };
+    let expected = expected_chain(network);
+    if chain != expected {
+        return Err(format!(
+            "chain mismatch: expected {expected}, node reports {chain}"
+        ));
+    }
+    Ok(true)
 }
