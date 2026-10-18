@@ -49,3 +49,4 @@ tr.click{cursor:pointer}
 .pill.Settled,.pill.Running,.pill.Submitting{background:var(--ok)}
 .pill.Paused,.pill.Queued,.pill.Scheduled{background:var(--warn)}
 .pill.Failed,.pill.Rejected,.pill.Lost,.pill.Expired{background:var(--bad)}
+.runtime-toggle.disabled { opacity: .45; cursor: not-allowed; }

@@ -1,0 +1,26 @@
+[Unit]
+Description=CSR - CKB Service Runner
+After=network-online.target ckb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=csr
+Group=csr
+# First start on mainnet only: add --confirm-mainnet once, then remove it again:
+# ExecStart=/usr/local/bin/csr --data-root /var/lib/csr run --confirm-mainnet
+ExecStart=/usr/local/bin/csr --data-root /var/lib/csr run
+Restart=on-failure
+RestartSec=5
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/csr
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.0
+- First Phase 1 release: release profile, `scripts/package.sh` (tarball + SHA256SUMS), `config/csr.service`, `docs/install.md`, greyed-out runtime toggle on mainnet; `docs/milestones/A4.md`.
+
 ## Unreleased
 - A3c phase 3: race between two runners on one devnet node (loser → `Lost` on pool double-spend errors), dashboard Earnings & float page and Overview float card; `docs/milestones/A3c.md`, `docs/testing.md`, README.
 - A3c phase 2: keeper execution (`runner/src/keeper.rs`): runs persisted in SQLite (`job_runs`, `job_events`, `settlements`) with the full lifecycle, sandbox execution of on-chain service code, run transaction (runner key cell, job with trigger `since`, float + tip, recreation/refund, registry + monitor config deps, fee from the job), chained batches, settlement tracking (`Settled`/`Lost`/`Rejected`); host calls `chain_read` (7003) and `cells_query` (7004); `GET /api/jobs`, `GET /api/jobs/{id}`, `GET /api/earnings`; dashboard Jobs page.

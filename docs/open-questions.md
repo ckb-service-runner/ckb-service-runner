@@ -10,3 +10,5 @@
 - Transaction file format for offline signing: `csr-dev` and `csr` write the `ckb-cli` tx JSON (`transaction`, `multisig_configs`, `signatures`). Whether Neuron's offline-signing import accepts exactly this (Neuron uses its own export wrapper around the same `transaction` object) is unverified – no Neuron available here. A second export format is not added yet.
 
 - Transaction file format for Neuron offline signing: CSR writes/reads the `ckb-cli` "tx" JSON (`transaction`, `multisig_configs`, `signatures`). Whether Neuron's offline signing accepts exactly this file could not be verified here (no Neuron available); a Neuron-specific export is not implemented.
+
+- Windows and macOS builds are out of scope for this project (A4 ships Linux x86_64 only).

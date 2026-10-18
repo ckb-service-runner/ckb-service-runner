@@ -66,3 +66,8 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A3c Phase 3 – race, Earnings page
 - A send error naming a dead/unknown input, double spend, conflict or RBF means another transaction took the job cell; the run ends in `Lost` even though the cell is still live on chain (the winner is only pending). Other send errors keep the live-cell check.
 - Earnings page: balance and totals from `/api/earnings`, tips-per-day bar chart (UTC days of the settlement time), settlements table; Top up / Withdraw are links to the Float page, which owns the file flow.
+
+## A4 Phase 1 – release
+- Release profile without LTO (`codegen-units = 16`); size checked against the 30 MB target.
+- Runtime toggle is a disabled checkbox in the Overview runtime card (no toggle existed before).
+- `LICENSE` is packaged only if present (none in the repo).

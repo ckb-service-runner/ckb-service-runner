@@ -171,6 +171,13 @@
       dl(cs, [['Network', s.network], ['Version', s.version], ['Uptime', fmtUp(s.uptime_s)], ['Peer ID', s.peer_id], ['Service key', s.service_pubkey]]);
       dl(cn, [['R2 state', pill(s.r2.state)], ['Reasons', (s.r2.reasons || []).join('; ') || 'none']]);
       dl(cr, [['State', pill(s.runtime.state)], ['Reason', s.runtime.reason], ['Mainnet unlock', s.mainnet_runtime_unlocked ? 'yes' : 'no']]);
+      var locked = s.network === 'mainnet' && !s.mainnet_runtime_unlocked;
+      var tg = el('label', 'runtime-toggle' + (locked ? ' disabled' : ''));
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.id = 'runtime-toggle'; cb.checked = s.runtime.state === 'active'; cb.disabled = locked;
+      tg.appendChild(cb); tg.appendChild(document.createTextNode(' Runtime'));
+      cr.appendChild(tg);
+      if (locked) cr.appendChild(el('p', 'msg', 'Services start on mainnet in Phase 2'));
       var r = s.ranking || {};
       dl(ck, [['Join', r.join ? 'yes' : 'no'], ['Mode', r.ping_mode], ['Last check ok', r.last_check_ok_at ? new Date(r.last_check_ok_at * 1000).toLocaleString() : 'never']]);
       if (r.join) {
