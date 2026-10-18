@@ -429,6 +429,20 @@
       });
       btns.appendChild(btn);
     });
+    var att = el('input'); att.type = 'file'; att.accept = '.json,application/json';
+    var reg = el('button', 'btn', 'Register'); reg.type = 'button';
+    reg.addEventListener('click', function () {
+      var f = att.files && att.files[0];
+      if (!f) return say('Choose the monitor attestation file first.', true);
+      if (!owner.value.trim()) return say('Enter the owner lock args.', true);
+      f.text().then(function (t) {
+        return api('/api/registry/prepare-create', { method: 'POST', body: { attestation: JSON.parse(t), owner_lock_args: owner.value.trim() } });
+      }).then(function (j) {
+        download('register-unsigned.json', j.file);
+        say('Unsigned registration downloaded (fee ' + j.fee_shannons + ' shannons). Sign it in your wallet, then submit the signed file below.');
+      }).catch(function (x) { say(x.message, true); });
+    });
+    var regrow = el('div', 'row'); regrow.appendChild(att); regrow.appendChild(reg);
     submit.addEventListener('click', function () {
       var f = signed.files && signed.files[0];
       if (!f) return say('Choose the signed transaction file first.', true);
@@ -438,10 +452,10 @@
         .catch(function (x) { say(x.message, true); });
     });
     var sub = el('div', 'row'); sub.appendChild(signed); sub.appendChild(submit);
-    [info, form, btns, sub, msg].forEach(function (n) { c.appendChild(n); });
+    [info, form, btns, regrow, sub, msg].forEach(function (n) { c.appendChild(n); });
     root.appendChild(c);
     function load() {
-      Promise.all([api('/api/runner-cell'), api('/api/float')]).then(function (r) {
+      Promise.all([api('/api/runner-cell'), api('/api/float'), api('/api/registry')]).then(function (r) {
         info.textContent = '';
         dl(info, [
           ['Runner key cell', r[0].found ? r[0].outpoint : 'none'],
@@ -451,6 +465,8 @@
           ['Max fee (shannons)', r[1].max_fee_shannons],
           ['Owner lock hash', r[1].owner_lock_hash],
           ['Runner lock hash', r[1].runner_lock_hash],
+          ['Registered', r[2].registered ? r[2].outpoint : 'no'],
+          ['Attestation expiry (ms)', r[2].attestation_expiry_ms],
         ]);
       }).catch(function (x) { info.textContent = x.message; });
     }

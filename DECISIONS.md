@@ -33,3 +33,10 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - `runner-cell status` reports the first cell's outpoint and the total capacity of all plain cells under the runner lock. `tx submit` only broadcasts (no waiting); errors carry the node's message.
 - HTTP: `GET /api/runner-cell`, `GET /api/float`, `POST /api/float/prepare-{create,topup,withdraw}` (JSON body `ckb`, `owner_lock_args`, `all`; returns `{file, fee_shannons, tx_hash}`), `POST /api/tx/submit-signed` (body = the signed file). Dashboard page "Float" with Create / Top up / Withdraw buttons and a signed-file upload. Register button and `/api/registry/prepare-create` come with the register flow.
 - testnet/mainnet: chain commands fail with "scripts not deployed" until shipped hashes exist.
+
+## A3b Phase 4 – registration
+- Registry creation tx: inputs `[runner key cell, owner cells…]`, outputs `[registry, identical runner key cell, owner change]`; cell deps secp256k1, registry code, config cell (found via indexer by its Type ID script, not by the deployments file's outpoint, which `clock-update` moves). Registry cell capacity = exactly its occupied capacity. Only the first runner key cell is used.
+- Input 0 (runner cell) is signed by CSR (sighash group of one input); the owner placeholder witness is at index 1.
+- Extra refusals beyond the spec: expired attestation (vs on-chain `clock_ms`), unknown network name. The attestation `peer_id` is not compared with the node's (the node's peer ID is only known to a running service).
+- `register status` picks, among registry cells with this node's service pubkey, the one with the latest attestation expiry (F8).
+- The registry owner is not required to equal the float's owner.

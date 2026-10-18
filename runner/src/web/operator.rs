@@ -19,7 +19,7 @@ async fn chain(s: &AppState) -> Result<Chain, String> {
     let cfg = s.config.read().unwrap().clone();
     Chain::connect(&cfg, &s.service_pubkey)
         .await
-        .map_err(|e| e.to_string())
+        .map(|c| c.with_service_key(s.service_key))
 }
 
 fn reply(r: Result<Value, String>) -> Response {
@@ -112,6 +112,34 @@ pub async fn submit_signed(State(s): St, Json(b): Json<Value>) -> Response {
             }
             reply(r)
         }
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+pub async fn registry_status(State(s): St) -> Response {
+    match chain(&s).await {
+        Ok(c) => reply(c.register_status().await),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// Body: `attestation` (the monitor's attestation JSON) and `owner_lock_args`.
+pub async fn prepare_register(State(s): St, Json(b): Json<Value>) -> Response {
+    let Some(owner) = b["owner_lock_args"].as_str() else {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "owner_lock_args is required".into(),
+        );
+    };
+    if !b["attestation"].is_object() {
+        return fail(StatusCode::BAD_REQUEST, "attestation is required".into());
+    }
+    match chain(&s).await {
+        Ok(c) => reply(
+            c.prepare_register(&b["attestation"], owner)
+                .await
+                .map(prepared),
+        ),
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
 }

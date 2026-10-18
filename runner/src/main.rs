@@ -105,6 +105,11 @@ enum Command {
         #[command(subcommand)]
         action: FloatAction,
     },
+    /// The registry cell
+    Register {
+        #[command(subcommand)]
+        action: RegisterAction,
+    },
     /// Transactions
     Tx {
         #[command(subcommand)]
@@ -168,6 +173,26 @@ enum FloatAction {
         json: bool,
     },
     /// Show the float cell
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegisterAction {
+    /// Unsigned transaction creating the registry cell (the runner key cell input is signed by CSR)
+    Prepare {
+        #[arg(long)]
+        attestation: PathBuf,
+        #[arg(long)]
+        owner_lock_args: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the registry cell of this node
     Status {
         #[arg(long)]
         json: bool,
@@ -271,7 +296,9 @@ where
             .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
         let id = identity::Identity::load_or_create(&net_dir)?;
         runtime().block_on(async {
-            let c = chain::Chain::connect(&cfg, &id.service_pubkey).await?;
+            let c = chain::Chain::connect(&cfg, &id.service_pubkey)
+                .await?
+                .with_service_key(id.service_key);
             f(c).await
         })
     })();
@@ -483,6 +510,21 @@ fn main() -> ExitCode {
                 let p = c
                     .prepare_withdraw(ckb.as_deref(), *all, owner_lock_args.as_deref())
                     .await?;
+                chain::write_prepared(&p, out)
+            }),
+        },
+        Command::Register { action } => match action {
+            RegisterAction::Status { json } => {
+                chain_cmd(&cli, *json, |c| async move { c.register_status().await })
+            }
+            RegisterAction::Prepare {
+                attestation,
+                owner_lock_args,
+                out,
+                json,
+            } => chain_cmd(&cli, *json, |c| async move {
+                let att = chain::read_json(attestation)?;
+                let p = c.prepare_register(&att, owner_lock_args).await?;
                 chain::write_prepared(&p, out)
             }),
         },

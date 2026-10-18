@@ -108,6 +108,7 @@ pub struct Cell {
     pub out_point: OutPoint,
     pub capacity: u64,
     pub lock: Script,
+    pub data: Vec<u8>,
 }
 
 fn parse_cell(c: &Value) -> Result<Cell, String> {
@@ -120,6 +121,10 @@ fn parse_cell(c: &Value) -> Result<Cell, String> {
         )?,
         capacity: hex_u64(&c["output"]["capacity"]).ok_or("bad cell capacity")?,
         lock: lock.into(),
+        data: c["output_data"]
+            .as_str()
+            .map(|d| hex::decode(d.trim_start_matches("0x")).unwrap_or_default())
+            .unwrap_or_default(),
     })
 }
 
@@ -130,31 +135,29 @@ struct Deployed {
     code_cell: OutPoint,
 }
 
-fn load_float_deployment(cfg: &Config) -> Result<Deployed, String> {
-    let Some(dev) = cfg.devnet.as_ref().filter(|_| cfg.network == "devnet") else {
-        // TODO: shipped script hashes of testnet/mainnet once the scripts are deployed there.
-        return Err(format!(
-            "the CSR scripts are not deployed on {} yet",
-            cfg.network
-        ));
-    };
-    let text = std::fs::read_to_string(&dev.deployments)
-        .map_err(|e| format!("cannot read {}: {e}", dev.deployments))?;
-    let v: Value =
-        serde_json::from_str(&text).map_err(|e| format!("{} is not JSON: {e}", dev.deployments))?;
-    let s = &v["scripts"]["float_lock"];
+struct Deployments {
+    float: Deployed,
+    dual: Deployed,
+    registry: Deployed,
+    /// Args of the Type ID type script of the monitor config cell.
+    config_type_args: Vec<u8>,
+    config_type_hash: H256,
+}
+
+fn load_deployed(v: &Value, name: &str, file: &str) -> Result<Deployed, String> {
+    let s = &v["scripts"][name];
     let code_hash: H256 = s["code_hash"]
         .as_str()
         .unwrap_or("")
         .trim_start_matches("0x")
         .parse()
-        .map_err(|_| format!("{}: bad float_lock.code_hash", dev.deployments))?;
+        .map_err(|_| format!("{file}: bad {name}.code_hash"))?;
     let hash_type = match s["hash_type"].as_str().unwrap_or("") {
         "data" => ScriptHashType::Data,
         "data1" => ScriptHashType::Data1,
         "data2" => ScriptHashType::Data2,
         "type" => ScriptHashType::Type,
-        _ => return Err(format!("{}: bad float_lock.hash_type", dev.deployments)),
+        _ => return Err(format!("{file}: bad {name}.hash_type")),
     };
     let code_cell = out_point_from(
         s["tx_hash"].as_str().unwrap_or(""),
@@ -167,10 +170,232 @@ fn load_float_deployment(cfg: &Config) -> Result<Deployed, String> {
     })
 }
 
+fn load_deployments(cfg: &Config) -> Result<Deployments, String> {
+    let Some(dev) = cfg.devnet.as_ref().filter(|_| cfg.network == "devnet") else {
+        // TODO: shipped script hashes of testnet/mainnet once the scripts are deployed there.
+        return Err(format!(
+            "the CSR scripts are not deployed on {} yet",
+            cfg.network
+        ));
+    };
+    let f = &dev.deployments;
+    let text = std::fs::read_to_string(f).map_err(|e| format!("cannot read {f}: {e}"))?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("{f} is not JSON: {e}"))?;
+    let hex32 = |x: &Value, what: &str| -> Result<Vec<u8>, String> {
+        hex::decode(x.as_str().unwrap_or("").trim_start_matches("0x"))
+            .map_err(|_| format!("{f}: bad {what}"))
+    };
+    Ok(Deployments {
+        float: load_deployed(&v, "float_lock", f)?,
+        dual: load_deployed(&v, "dual_lock", f)?,
+        registry: load_deployed(&v, "registry", f)?,
+        config_type_args: hex32(&v["config_cell"]["type_args"], "config_cell.type_args")?,
+        config_type_hash: H256::from_slice(&hex32(
+            &v["config_cell"]["type_hash"],
+            "config_cell.type_hash",
+        )?)
+        .map_err(|_| format!("{f}: bad config_cell.type_hash"))?,
+    })
+}
+
+fn type_id_script(args: &[u8]) -> Script {
+    let mut code = [0u8; 32];
+    code[25..32].copy_from_slice(b"TYPE_ID");
+    Script::new_builder()
+        .code_hash(packed::Byte32::from_slice(&code).unwrap())
+        .hash_type(packed::Byte::new(ScriptHashType::Type as u8))
+        .args(Bytes::copy_from_slice(args).pack())
+        .build()
+}
+
+/// An output of a prepared transaction.
+struct Out {
+    lock: Script,
+    type_: Option<Script>,
+    data: Bytes,
+    cap: u64,
+}
+
+impl Out {
+    fn plain(lock: Script, cap: u64) -> Out {
+        Out {
+            lock,
+            type_: None,
+            data: Bytes::new(),
+            cap,
+        }
+    }
+}
+
+/// Molecule table: header (total size, field offsets) followed by the fields.
+fn mol_table(fields: &[Vec<u8>]) -> Vec<u8> {
+    let header = 4 + 4 * fields.len();
+    let total = header + fields.iter().map(Vec::len).sum::<usize>();
+    let mut out = (total as u32).to_le_bytes().to_vec();
+    let mut off = header;
+    for f in fields {
+        out.extend_from_slice(&(off as u32).to_le_bytes());
+        off += f.len();
+    }
+    for f in fields {
+        out.extend_from_slice(f);
+    }
+    out
+}
+
+fn mol_bytes(b: &[u8]) -> Vec<u8> {
+    let mut v = (b.len() as u32).to_le_bytes().to_vec();
+    v.extend_from_slice(b);
+    v
+}
+
+/// A monitor attestation as written by `csr-dev attest` (and the monitor).
+pub struct Attestation {
+    peer_id: Vec<u8>,
+    pubkey: Vec<u8>,
+    network: u8,
+    expiry_ms: u64,
+    signature: Vec<u8>,
+}
+
+fn network_id(name: &str) -> Option<u8> {
+    match name {
+        "mainnet" => Some(0),
+        "testnet" => Some(1),
+        "devnet" => Some(2),
+        _ => None,
+    }
+}
+
+impl Attestation {
+    pub fn parse(v: &Value) -> Result<Attestation, String> {
+        let hex_field = |k: &str, len: usize| -> Result<Vec<u8>, String> {
+            let b = hex::decode(v[k].as_str().unwrap_or("").trim_start_matches("0x"))
+                .map_err(|_| format!("attestation: {k} is not hex"))?;
+            if b.len() != len {
+                return Err(format!("attestation: {k} must be {len} bytes"));
+            }
+            Ok(b)
+        };
+        let peer_id = v["peer_id"]
+            .as_str()
+            .filter(|p| !p.is_empty())
+            .ok_or("attestation: peer_id missing")?
+            .as_bytes()
+            .to_vec();
+        let network = v["network"]
+            .as_str()
+            .and_then(network_id)
+            .ok_or("attestation: network must be mainnet, testnet or devnet")?;
+        Ok(Attestation {
+            peer_id,
+            pubkey: hex_field("service_pubkey", 33)?,
+            network,
+            expiry_ms: v["expiry_ms"]
+                .as_u64()
+                .ok_or("attestation: expiry_ms missing")?,
+            signature: hex_field("signature", 65)?,
+        })
+    }
+
+    fn molecule(&self) -> Vec<u8> {
+        mol_table(&[
+            mol_bytes(&self.peer_id),
+            self.pubkey.clone(),
+            vec![self.network],
+            self.expiry_ms.to_le_bytes().to_vec(),
+            self.signature.clone(),
+        ])
+    }
+
+    /// Molecule `Registry` data (`contracts/schemas/csr.mol`), prekeys empty.
+    fn registry_data(&self, float_lock_hash: &H256) -> Vec<u8> {
+        mol_table(&[
+            mol_bytes(&self.peer_id),
+            self.pubkey.clone(),
+            float_lock_hash.as_bytes().to_vec(),
+            vec![self.network],
+            self.molecule(),
+            mol_bytes(&[]),
+        ])
+    }
+}
+
+/// `(peer_id, service_pubkey, float_lock_hash, expiry_ms)` of a molecule `Registry`.
+fn parse_registry_data(d: &[u8]) -> Option<(String, Vec<u8>, Vec<u8>, u64)> {
+    let u32_at = |o: usize| -> Option<usize> {
+        Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?) as usize)
+    };
+    if u32_at(0)? != d.len() || u32_at(4)? != 28 {
+        return None;
+    }
+    let field = |i: usize| -> Option<&[u8]> {
+        let start = u32_at(4 + 4 * i)?;
+        let end = if i == 5 { d.len() } else { u32_at(8 + 4 * i)? };
+        d.get(start..end)
+    };
+    let peer = field(0)?;
+    let peer = std::str::from_utf8(peer.get(4..)?).ok()?.to_string();
+    let att = field(4)?;
+    // Attestation table: 5 offsets; expiry is field 3.
+    let a_off = |i: usize| -> Option<usize> {
+        Some(u32::from_le_bytes(att.get(4 + 4 * i..8 + 4 * i)?.try_into().ok()?) as usize)
+    };
+    let expiry = att.get(a_off(3)?..a_off(3)? + 8)?;
+    Some((
+        peer,
+        field(1)?.to_vec(),
+        field(2)?.to_vec(),
+        u64::from_le_bytes(expiry.try_into().ok()?),
+    ))
+}
+
+/// Signs the sighash group made of input 0 only (the runner key cell) with the service key.
+fn sign_first_input(
+    tx: &TransactionView,
+    key: &secp256k1::SecretKey,
+) -> Result<TransactionView, String> {
+    let mut witnesses: Vec<Bytes> = tx.witnesses().into_iter().map(|w| w.raw_data()).collect();
+    let placeholder = WitnessArgs::new_builder()
+        .lock(Some(Bytes::from(vec![0u8; 65])).pack())
+        .build();
+    let n_inputs = tx.inputs().len();
+    let mut h = ckb_hash::new_blake2b();
+    h.update(tx.hash().as_slice());
+    h.update(&(placeholder.as_bytes().len() as u64).to_le_bytes());
+    h.update(&placeholder.as_bytes());
+    for w in witnesses.iter().skip(n_inputs) {
+        h.update(&(w.len() as u64).to_le_bytes());
+        h.update(w);
+    }
+    let mut digest = [0u8; 32];
+    h.finalize(&mut digest);
+    let (rec, compact) = secp256k1::Secp256k1::new()
+        .sign_ecdsa_recoverable(&secp256k1::Message::from_digest(digest), key)
+        .serialize_compact();
+    let mut sig = compact.to_vec();
+    sig.push(rec.to_i32() as u8);
+    witnesses[0] = WitnessArgs::new_builder()
+        .lock(Some(Bytes::from(sig)).pack())
+        .build()
+        .as_bytes();
+    Ok(tx
+        .as_advanced_builder()
+        .set_witnesses(witnesses.into_iter().map(|w| w.pack()).collect())
+        .build())
+}
+
 pub struct Chain {
     rpc: RpcClient,
+    network: String,
     float: Deployed,
+    dual: Deployed,
+    registry: Deployed,
+    config_type_args: Vec<u8>,
+    config_type_hash: H256,
     runner_lock: Script,
+    service_key: Option<secp256k1::SecretKey>,
+    service_pubkey: Vec<u8>,
 }
 
 pub struct Float {
@@ -190,7 +415,7 @@ pub struct Prepared {
 impl Chain {
     /// Connects to the configured node; the chain must be the network's chain.
     pub async fn connect(cfg: &Config, service_pubkey: &str) -> Result<Chain, String> {
-        let float = load_float_deployment(cfg)?;
+        let dep = load_deployments(cfg)?;
         let rpc = RpcClient::new(&cfg.node.rpc_url);
         let info = rpc
             .call("get_blockchain_info", json!([]))
@@ -206,9 +431,22 @@ impl Chain {
         let pk = hex::decode(service_pubkey.trim_start_matches("0x")).map_err(|e| e.to_string())?;
         Ok(Chain {
             rpc,
-            float,
-            runner_lock: sighash_lock(&blake2b_256(pk)[..20]),
+            network: cfg.network.clone(),
+            float: dep.float,
+            dual: dep.dual,
+            registry: dep.registry,
+            config_type_args: dep.config_type_args,
+            config_type_hash: dep.config_type_hash,
+            runner_lock: sighash_lock(&blake2b_256(&pk)[..20]),
+            service_key: None,
+            service_pubkey: pk,
         })
+    }
+
+    /// The service key signs the runner key cell input of registration transactions.
+    pub fn with_service_key(mut self, key: secp256k1::SecretKey) -> Chain {
+        self.service_key = Some(key);
+        self
     }
 
     pub fn runner_lock_hash(&self) -> H256 {
@@ -446,13 +684,14 @@ impl Chain {
         &self,
         owner: &Script,
         pre: Vec<Cell>,
-        fixed: Vec<(Script, u64)>,
+        fixed: Vec<Out>,
         mut deps: Vec<CellDep>,
+        sign_runner_input: bool,
     ) -> Result<Prepared, String> {
         deps.insert(0, self.secp_dep().await?);
         let change_min = occupied(owner, None, 0);
         let in_pre: u64 = pre.iter().map(|c| c.capacity).sum();
-        let out_fixed: u64 = fixed.iter().map(|o| o.1).sum();
+        let out_fixed: u64 = fixed.iter().map(|o| o.cap).sum();
         let need = out_fixed + FEE_RESERVE + change_min;
         let mut picked: Vec<Cell> = Vec::new();
         let mut have = in_pre;
@@ -475,6 +714,12 @@ impl Chain {
             .map(|c| CellInput::new(c.out_point.clone(), 0))
             .collect();
         let mut witnesses = vec![Bytes::new(); inputs.len()];
+        if sign_runner_input {
+            witnesses[0] = WitnessArgs::new_builder()
+                .lock(Some(Bytes::from(vec![0u8; 65])).pack())
+                .build()
+                .as_bytes();
+        }
         witnesses[owner_first] = WitnessArgs::new_builder()
             .lock(Some(Bytes::from(vec![0u8; 65])).pack())
             .build()
@@ -484,15 +729,17 @@ impl Chain {
                 .cell_deps(deps.clone())
                 .inputs(inputs.clone())
                 .witnesses(witnesses.iter().map(|w| w.pack()).collect::<Vec<_>>());
-            for (lock, cap) in fixed.iter().chain([&(owner.clone(), change)]) {
+            let change_out = Out::plain(owner.clone(), change);
+            for o in fixed.iter().chain([&change_out]) {
                 b = b
                     .output(
                         CellOutput::new_builder()
-                            .capacity(Pack::<packed::Uint64>::pack(cap))
-                            .lock(lock.clone())
+                            .capacity(Pack::<packed::Uint64>::pack(&o.cap))
+                            .lock(o.lock.clone())
+                            .type_(o.type_.clone().pack())
                             .build(),
                     )
-                    .output_data(Bytes::new().pack());
+                    .output_data(o.data.pack());
             }
             b.build()
         };
@@ -502,7 +749,14 @@ impl Chain {
         if change < change_min {
             return Err("the owner's cells cannot cover the change output and the fee".into());
         }
-        let tx = build(change);
+        let mut tx = build(change);
+        if sign_runner_input {
+            let key = self
+                .service_key
+                .as_ref()
+                .ok_or("the service key is not available")?;
+            tx = sign_first_input(&tx, key)?;
+        }
         Ok(Prepared {
             file: json!({
                 "transaction": serde_json::to_value(json::TransactionView::from(tx.clone()).inner)
@@ -533,7 +787,7 @@ impl Chain {
         if self.float().await?.is_some() {
             return Err("a float cell already exists; use prepare-topup".into());
         }
-        self.assemble(&owner, vec![], vec![(lock, cap)], vec![])
+        self.assemble(&owner, vec![], vec![Out::plain(lock, cap)], vec![], false)
             .await
     }
 
@@ -560,8 +814,9 @@ impl Chain {
         self.assemble(
             &owner,
             vec![f.cell],
-            vec![(lock, cap)],
+            vec![Out::plain(lock, cap)],
             vec![self.float_dep()],
+            false,
         )
         .await
     }
@@ -587,10 +842,150 @@ impl Chain {
                     keep / CKB
                 )
             })?;
-            vec![(f.cell.lock.clone(), left)]
+            vec![Out::plain(f.cell.lock.clone(), left)]
         };
-        self.assemble(&owner, vec![f.cell], fixed, vec![self.float_dep()])
+        self.assemble(&owner, vec![f.cell], fixed, vec![self.float_dep()], false)
             .await
+    }
+
+    fn registry_type(&self) -> Script {
+        Script::new_builder()
+            .code_hash(self.registry.code_hash.pack())
+            .hash_type(packed::Byte::new(self.registry.hash_type as u8))
+            .args(Bytes::copy_from_slice(self.config_type_hash.as_bytes()).pack())
+            .build()
+    }
+
+    /// The monitor config cell (found by its Type ID type script) and its `clock_ms`.
+    async fn config_cell(&self) -> Result<(Cell, u64), String> {
+        let cells = self
+            .get_cells(json!({
+                "script": json::Script::from(type_id_script(&self.config_type_args)),
+                "script_type": "type",
+            }))
+            .await?;
+        let cell = cells
+            .into_iter()
+            .next()
+            .ok_or("the monitor config cell was not found on chain")?;
+        if cell.data.len() < 41 {
+            return Err("the monitor config cell is malformed".into());
+        }
+        let clock = u64::from_le_bytes(cell.data[33..41].try_into().unwrap());
+        Ok((cell, clock))
+    }
+
+    /// Registry cells of this service key; the one with the latest attestation wins (audit F8).
+    async fn registry_cell(&self) -> Result<Option<(Cell, String, Vec<u8>, u64)>, String> {
+        let cells = self
+            .get_cells(json!({
+                "script": json::Script::from(self.registry_type()),
+                "script_type": "type",
+            }))
+            .await?;
+        let mine = &self.service_pubkey;
+        Ok(cells
+            .into_iter()
+            .filter_map(|c| {
+                let (peer, pk, float, exp) = parse_registry_data(&c.data)?;
+                (pk == *mine).then_some((c, peer, float, exp))
+            })
+            .max_by_key(|r| r.3))
+    }
+
+    pub async fn register_status(&self) -> Result<Value, String> {
+        Ok(match self.registry_cell().await? {
+            Some((c, peer, float, exp)) => json!({
+                "registered": true,
+                "outpoint": out_point_str(&c.out_point),
+                "peer_id": peer,
+                "attestation_expiry_ms": exp,
+                "float_lock_hash": hx(float),
+            }),
+            None => json!({
+                "registered": false,
+                "outpoint": null,
+                "peer_id": null,
+                "attestation_expiry_ms": null,
+                "float_lock_hash": null,
+            }),
+        })
+    }
+
+    /// Unsigned registry creation: the owner pays; the runner key cell is spent and re-created and
+    /// its input is signed here with the service key (`spec/registry.md`, rule 6).
+    pub async fn prepare_register(
+        &self,
+        attestation: &Value,
+        owner_lock_args: &str,
+    ) -> Result<Prepared, String> {
+        let polled = crate::node::poll(&self.rpc, &self.network).await;
+        if polled.report.state != crate::node::r2::R2State::Synced {
+            return Err(format!(
+                "the node is not synced (R2: {}); registration needs a synced node",
+                polled.report.state.as_str()
+            ));
+        }
+        let att = Attestation::parse(attestation)?;
+        if att.pubkey != self.service_pubkey {
+            return Err("the attestation is for a different service key".into());
+        }
+        if Some(att.network) != network_id(&self.network) {
+            return Err(format!(
+                "the attestation is for another network, this node is on {}",
+                self.network
+            ));
+        }
+        let (config, clock) = self.config_cell().await?;
+        if att.expiry_ms <= clock {
+            return Err("the attestation has expired".into());
+        }
+        let float = self
+            .float()
+            .await?
+            .ok_or("no float cell found; create the float before registering")?;
+        let runner_cell = self
+            .runner_cells()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("no runner key cell found; fund the runner lock first")?;
+        let owner = sighash_lock(&parse_lock_args(owner_lock_args)?);
+        let mut args = script_hash(&owner).as_bytes().to_vec();
+        args.extend_from_slice(self.runner_lock_hash().as_bytes());
+        let lock = Script::new_builder()
+            .code_hash(self.dual.code_hash.pack())
+            .hash_type(packed::Byte::new(self.dual.hash_type as u8))
+            .args(Bytes::from(args).pack())
+            .build();
+        let type_ = self.registry_type();
+        let data = Bytes::from(att.registry_data(&script_hash(&float.cell.lock)));
+        let cap = occupied(&lock, Some(&type_), data.len());
+        let registry = Out {
+            lock,
+            type_: Some(type_),
+            data,
+            cap,
+        };
+        let key_cell = Out::plain(runner_cell.lock.clone(), runner_cell.capacity);
+        let deps = vec![
+            CellDep::new_builder()
+                .out_point(self.registry.code_cell.clone())
+                .dep_type(packed::Byte::new(DepType::Code as u8))
+                .build(),
+            CellDep::new_builder()
+                .out_point(config.out_point)
+                .dep_type(packed::Byte::new(DepType::Code as u8))
+                .build(),
+        ];
+        self.assemble(
+            &owner,
+            vec![runner_cell],
+            vec![registry, key_cell],
+            deps,
+            true,
+        )
+        .await
     }
 
     /// Broadcasts a signed transaction file (ckb-cli tx file or a bare transaction).
@@ -645,6 +1040,28 @@ mod tests {
     fn lock_args_must_be_20_bytes() {
         assert!(parse_lock_args("0x00").is_err());
         assert!(parse_lock_args(&format!("0x{}", "ab".repeat(20))).is_ok());
+    }
+
+    #[test]
+    fn registry_data_roundtrip() {
+        let att = Attestation::parse(&json!({
+            "peer_id": "QmPeer", "service_pubkey": format!("0x02{}", "11".repeat(32)),
+            "network": "devnet", "expiry_ms": 12345, "signature": format!("0x{}", "22".repeat(65)),
+        }))
+        .unwrap();
+        let data = att.registry_data(&H256::from_slice(&[7u8; 32]).unwrap());
+        let (peer, pk, float, exp) = parse_registry_data(&data).unwrap();
+        assert_eq!(peer, "QmPeer");
+        assert_eq!(pk.len(), 33);
+        assert_eq!(float, vec![7u8; 32]);
+        assert_eq!(exp, 12345);
+    }
+
+    #[test]
+    fn attestation_needs_known_network() {
+        let v = json!({"peer_id": "Qm", "service_pubkey": format!("0x02{}", "11".repeat(32)),
+            "network": "moon", "expiry_ms": 1, "signature": format!("0x{}", "22".repeat(65))});
+        assert!(Attestation::parse(&v).is_err());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- A3b phase 4: `csr register prepare|status`, `POST /api/registry/prepare-create`, `GET /api/registry`, dashboard Register button; devnet operator flow and testnet runbook in `docs/testing.md`; `docs/milestones/A3b.md`.
 - A3b phase 2: `csr-dev` (deploy-contracts, clock-update, attest, fund, sign-tx, owner-lock-args); `csr` accepts `network = "devnet"` + `[devnet]` in debug builds (R2 without peer rule); `csr identity --json`.
 - A3a security fixes, phase 2: `csr-job-lock` run path requires the registered node's runner key cell (F2, error 15) and a live attestation by the monitor config cell dep (F5, errors 16/17); job tests and helpers updated (config dep in every run); F6–F8 documented; job cycles re-measured; downstream impact in `docs/decisions.md`.
 - A3a security fixes, phase 1: `csr-registry` requires the runner key cell on creation/key change (F1, error 17); `csr-float-lock` runner path forbids type/data on the float output (F3, error 10) and any capacity loss (F4; `max_fee_shannons` reserved).

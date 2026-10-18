@@ -44,6 +44,11 @@ pub fn routes() -> Router<Arc<AppState>> {
             "/api/float/prepare-withdraw",
             post(super::operator::prepare_withdraw),
         )
+        .route("/api/registry", get(super::operator::registry_status))
+        .route(
+            "/api/registry/prepare-create",
+            post(super::operator::prepare_register),
+        )
         .route(
             "/api/tx/submit-signed",
             post(super::operator::submit_signed),
