@@ -1,0 +1,4 @@
+# TODO: replace with the real CSR Network Monitor URL and key once it exists.
+monitor_url = "https://monitor.invalid"
+# Placeholder: the secp256k1 generator point G.
+monitor_pubkey = "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"

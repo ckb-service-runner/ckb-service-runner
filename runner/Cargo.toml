@@ -1,0 +1,17 @@
+[package]
+name = "csr"
+version = "0.1.0"
+edition = "2021"
+description = "CSR - CKB Service Runner"
+
+[[bin]]
+name = "csr"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+secp256k1 = "0.29"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+url = "2"
