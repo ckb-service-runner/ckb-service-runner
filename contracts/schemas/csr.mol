@@ -1,0 +1,71 @@
+// CSR on-chain data. Self-contained (no import of blockchain.mol).
+// Regenerate: scripts/gen-schemas.sh
+
+array Byte32 [byte; 32];
+array Byte33 [byte; 33];
+array Signature [byte; 65];
+array Uint32 [byte; 4];
+array Uint64 [byte; 8];
+vector Bytes <byte>;
+
+// --- registry ---------------------------------------------------------------
+
+// Fields that are signed by the monitor. `expiry_ms` is the attestation expiry.
+table AttestationBody {
+    peer_id:        Bytes,
+    service_pubkey: Byte33,
+    network:        byte,
+    expiry_ms:      Uint64,
+}
+
+table Attestation {
+    peer_id:        Bytes,
+    service_pubkey: Byte33,
+    network:        byte,
+    expiry_ms:      Uint64,
+    signature:      Signature,
+}
+
+table Registry {
+    peer_id:         Bytes,
+    service_pubkey:  Byte33,
+    float_lock_hash: Byte32,
+    network:         byte,
+    attestation:     Attestation,
+    prekeys:         Bytes,
+}
+
+// --- job --------------------------------------------------------------------
+
+table OnDemand {}
+table AtBlock {
+    block: Uint64,
+}
+table AtEpoch {
+    epoch: Uint64,
+}            // packed epoch number as in CKB `since`
+table AtTimestamp {
+    timestamp_ms: Uint64,
+}
+table Every {
+    blocks: Uint64,
+}
+
+union Trigger {
+    OnDemand,
+    AtBlock,
+    AtEpoch,
+    AtTimestamp,
+    Every,
+}
+
+table Job {
+    trigger:          Trigger,
+    tip_shannons:     Uint64,
+    max_fee_shannons: Uint64,
+    max_cycles:       Uint64,
+    payload:          Bytes,
+    expiry_block:     Uint64,
+    refund_lock_hash: Byte32,
+    remaining_runs:   Uint32,
+}

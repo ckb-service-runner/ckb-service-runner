@@ -3,3 +3,5 @@ target/
 .tools/
 services/c/*/build/
 services/js/node_modules/
+contracts/target/
+contracts/build/

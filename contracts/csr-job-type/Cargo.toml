@@ -1,0 +1,9 @@
+[package]
+name = "csr-job-type"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ckb-std = { workspace = true }
+csr-schemas = { path = "../csr-schemas" }
