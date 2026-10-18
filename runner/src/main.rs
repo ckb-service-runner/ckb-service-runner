@@ -8,6 +8,7 @@ mod network;
 mod node;
 mod password;
 mod ping;
+mod registry;
 mod resources;
 mod run;
 mod runtime;
@@ -109,6 +110,24 @@ enum ServiceAction {
         #[arg(long)]
         block_info: Option<String>,
     },
+    /// Register a local service (prints {code_hash, name})
+    AddLocal {
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+    /// List registered services
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Approve a service (adds it to runtime.allowed_services)
+    Approve { code_hash: String },
+    /// Revoke the approval of a service
+    Revoke { code_hash: String },
+    /// Enable an approved service
+    Enable { code_hash: String },
+    /// Disable an approved service
+    Disable { code_hash: String },
 }
 
 #[derive(Subcommand)]
@@ -289,6 +308,60 @@ fn main() -> ExitCode {
                     println!("{j}");
                     ExitCode::SUCCESS
                 }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Command::Service { action } => {
+            let r = (|| -> Result<(), String> {
+                let mut cfg = load_config(&cli)?;
+                let net_dir = data_root(&cli).join(&cfg.network);
+                std::fs::create_dir_all(&net_dir)
+                    .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
+                let db = db::Db::open(&net_dir.join("csr.db"))?;
+                let root = service::storage_root(&cfg, &data_root(&cli));
+                let cfg_path = cli
+                    .config
+                    .clone()
+                    .unwrap_or_else(|| data_root(&cli).join("csr.toml"));
+                let (hash, act) = match action {
+                    ServiceAction::AddLocal { manifest } => {
+                        println!("{}", registry::add_local(&db, manifest)?);
+                        return Ok(());
+                    }
+                    ServiceAction::List { json } => {
+                        let list = registry::list(&db, &root)?;
+                        if *json {
+                            println!("{}", serde_json::Value::Array(list));
+                        } else {
+                            for s in &list {
+                                println!(
+                                    "{} {} {} {} storage={}B",
+                                    s["code_hash"].as_str().unwrap_or(""),
+                                    s["name"].as_str().unwrap_or(""),
+                                    s["language"].as_str().unwrap_or(""),
+                                    s["status"].as_str().unwrap_or(""),
+                                    s["storage_bytes"]
+                                );
+                            }
+                        }
+                        return Ok(());
+                    }
+                    ServiceAction::Approve { code_hash } => (code_hash, registry::Action::Approve),
+                    ServiceAction::Revoke { code_hash } => (code_hash, registry::Action::Revoke),
+                    ServiceAction::Enable { code_hash } => (code_hash, registry::Action::Enable),
+                    ServiceAction::Disable { code_hash } => (code_hash, registry::Action::Disable),
+                    ServiceAction::RunLocal { .. } => unreachable!("handled above"),
+                };
+                let e = registry::act(&db, &mut cfg, &cfg_path, &root, hash, act)
+                    .map_err(|e| e.message())?;
+                println!("{e}");
+                Ok(())
+            })();
+            match r {
+                Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("{e}");
                     ExitCode::from(1)

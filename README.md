@@ -60,12 +60,18 @@ With `ranking.join = true` the CSR Network Monitor can verify that your node is 
 
 Protocol details: `spec/ping-protocol.md`. The monitor URL and key are placeholders until the real monitor exists (see `docs/open-questions.md`).
 
+## Services (A2)
+Build the example services with `bash scripts/build-services.sh`, then
+`csr service run-local --manifest services/manifests/hello-rust.toml --payload 0x0102`.
+Register with `csr service add-local --manifest PATH`, manage with `csr service list|approve|revoke|enable|disable`
+or on the dashboard page `#/services`. Host interface: `spec/host-interface.md`. Details: `docs/milestones/A2.md`.
+
 ## Roadmap
 
 | Milestone | Content |
 |---|---|
 | **A1** | Runner, R2 guard, resource monitor, dashboard, auth, ping responder (this release) |
-| A2 | Service runtime: job execution in a sandboxed VM with limits |
+| **A2** | Service runtime: CKB-VM sandbox, host interface, encrypted storage, local runs, Rust/C/JS example services, Services page (`docs/milestones/A2.md`) |
 | A3 | Services, job market and on-chain interaction |
 | A4 | Production hardening, mainnet unlock via the monitor |
 

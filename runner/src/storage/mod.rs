@@ -113,7 +113,6 @@ fn service_dirs(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Plaintext bytes stored for a service (0 when it has no data).
-#[allow(dead_code)]
 pub fn service_usage(root: &Path, code_hash_hex: &str) -> u64 {
     dir_usage(&root.join(code_hash_hex))
 }

@@ -41,3 +41,7 @@ pre.log{background:var(--card);border:1px solid var(--bd);padding:.5rem;overflow
 .msg.stale{color:var(--warn);font-weight:700}
 svg.bars{height:auto}
 svg.bars .bar{fill:var(--ac)}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:.3rem .5rem;border-bottom:1px solid var(--bd);font-size:.9rem;word-break:break-all}
+.pill.approved_enabled{background:var(--ok)}
+.pill.approved_disabled{background:var(--warn)}

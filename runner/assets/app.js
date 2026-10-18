@@ -356,6 +356,46 @@
     }).catch(function (x) { c.appendChild(el('p', 'msg err', x.message)); });
   };
 
+  pages.services = function (root) {
+    var c = card('Services');
+    var msg = el('p', 'msg');
+    root.appendChild(c); root.appendChild(msg);
+    function act(hash, verb) {
+      api('/api/services/' + hash + '/' + verb, { method: 'POST', body: {} }).then(function () {
+        msg.className = 'msg'; msg.textContent = '';
+        load();
+      }).catch(function (x) { msg.className = 'msg err'; msg.textContent = x.message; });
+    }
+    function load() {
+      api('/api/services').then(function (list) {
+        clear(c);
+        if (!list.length) { c.appendChild(el('p', '', 'No services registered. Use `csr service add-local --manifest PATH`.')); return; }
+        var t = el('table');
+        var h = el('tr');
+        ['Name', 'Language', 'Code hash', 'Status', 'Storage', 'Jobs', 'Earned (shannons)', ''].forEach(function (x) { h.appendChild(el('th', '', x)); });
+        t.appendChild(h);
+        list.forEach(function (s) {
+          var r = el('tr');
+          [s.name, s.language, s.code_hash].forEach(function (x) { r.appendChild(el('td', '', x)); });
+          var st = el('td'); st.appendChild(pill(s.status)); r.appendChild(st);
+          [s.storage_bytes + ' B', s.jobs, s.earned_shannons].forEach(function (x) { r.appendChild(el('td', '', String(x))); });
+          var a = el('td');
+          var verbs = s.status === 'not_approved' ? ['approve'] : s.status === 'approved_enabled' ? ['disable', 'revoke'] : ['enable', 'revoke'];
+          verbs.forEach(function (v) {
+            var b = el('button', 'btn', v);
+            b.type = 'button';
+            b.addEventListener('click', function () { act(s.code_hash, v); });
+            a.appendChild(b);
+          });
+          r.appendChild(a);
+          t.appendChild(r);
+        });
+        c.appendChild(t);
+      }).catch(function (x) { clear(c); c.appendChild(el('p', 'msg err', x.message)); });
+    }
+    load();
+  };
+
   pages.logs = function (root) {
     var c = card('Logs');
     var row = el('div', 'row'), sel = el('select');

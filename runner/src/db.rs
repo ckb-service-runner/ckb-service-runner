@@ -19,6 +19,14 @@ pub struct Sample {
     pub tip_lag: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ServiceRow {
+    pub code_hash: String,
+    pub name: String,
+    pub language: String,
+    pub status: String,
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Db, String> {
         let conn = Connection::open(path).map_err(|e| format!("cannot open database: {e}"))?;
@@ -38,12 +46,69 @@ impl Db {
                  cpu_percent REAL NOT NULL,
                  ram_free_mb INTEGER NOT NULL,
                  tip_lag INTEGER
+             );
+             CREATE TABLE IF NOT EXISTS services (
+                 code_hash TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 language TEXT NOT NULL,
+                 status TEXT NOT NULL DEFAULT 'not_approved'
              );",
         )
         .map_err(|e| format!("cannot initialise database: {e}"))?;
         Ok(Db {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Registers a service; an already known code hash keeps its status.
+    pub fn add_service(&self, code_hash: &str, name: &str, language: &str) -> Result<(), String> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO services (code_hash, name, language) VALUES (?1, ?2, ?3)
+             ON CONFLICT(code_hash) DO UPDATE SET name = ?2, language = ?3",
+            params![code_hash, name, language],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn services(&self) -> Result<Vec<ServiceRow>, String> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare(
+                "SELECT code_hash, name, language, status FROM services ORDER BY name, code_hash",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| {
+                Ok(ServiceRow {
+                    code_hash: r.get(0)?,
+                    name: r.get(1)?,
+                    language: r.get(2)?,
+                    status: r.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn service(&self, code_hash: &str) -> Result<Option<ServiceRow>, String> {
+        Ok(self
+            .services()?
+            .into_iter()
+            .find(|s| s.code_hash == code_hash))
+    }
+
+    /// Sets the status of a known service; false if the code hash is unknown.
+    pub fn set_service_status(&self, code_hash: &str, status: &str) -> Result<bool, String> {
+        let c = self.conn.lock().unwrap();
+        let n = c
+            .execute(
+                "UPDATE services SET status = ?2 WHERE code_hash = ?1",
+                params![code_hash, status],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
     }
 
     /// Stores a sample and drops everything older than 24 h.
@@ -94,6 +159,20 @@ mod tests {
             ram_free_mb: 100,
             tip_lag: Some(2),
         }
+    }
+
+    #[test]
+    fn service_registry() {
+        let db = Db::open_memory();
+        db.add_service("0xaa", "x", "rust").unwrap();
+        db.set_service_status("0xaa", "approved_enabled").unwrap();
+        db.add_service("0xaa", "y", "rust").unwrap();
+        let s = db.service("0xaa").unwrap().unwrap();
+        assert_eq!(
+            (s.name.as_str(), s.status.as_str()),
+            ("y", "approved_enabled")
+        );
+        assert!(!db.set_service_status("0xbb", "not_approved").unwrap());
     }
 
     #[test]

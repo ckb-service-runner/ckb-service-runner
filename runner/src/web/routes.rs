@@ -2,7 +2,7 @@
 
 use crate::app::AppState;
 use crate::logs;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -28,6 +28,8 @@ pub fn routes() -> Router<Arc<AppState>> {
             "/api/settings",
             get(super::settings::get).put(super::settings::put),
         )
+        .route("/api/services", get(services))
+        .route("/api/services/{hash}/{verb}", post(service_action))
         .route("/api/events", get(super::settings::events))
 }
 
@@ -80,4 +82,52 @@ async fn logs_route(State(s): St, Query(q): Query<HashMap<String, String>>) -> R
             .into_response();
     }
     Json(json!({"lines": logs::tail(&s.log_path(), level)})).into_response()
+}
+
+fn storage_root(s: &AppState) -> std::path::PathBuf {
+    let cfg = s.config.read().unwrap();
+    s.net_dir.join(&cfg.storage.path)
+}
+
+async fn services(State(s): St) -> Response {
+    match crate::registry::list(&s.db, &storage_root(&s)) {
+        Ok(l) => Json(Value::Array(l)).into_response(),
+        Err(e) => {
+            tracing::warn!("listing services failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn service_action(State(s): St, Path((hash, verb)): Path<(String, String)>) -> Response {
+    use crate::registry::{act, Action, ActionError};
+    let Some(action) = Action::parse(&verb) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown action"})),
+        )
+            .into_response();
+    };
+    let _guard = s.config_write.lock().unwrap();
+    let mut cfg = s.config.read().unwrap().clone();
+    let root = storage_root(&s);
+    match act(&s.db, &mut cfg, &s.config_path, &root, &hash, action) {
+        Ok(e) => {
+            *s.config.write().unwrap() = cfg;
+            tracing::info!("service {hash}: {verb}");
+            Json(e).into_response()
+        }
+        Err(e) => {
+            let code = match e {
+                ActionError::Unknown => StatusCode::NOT_FOUND,
+                ActionError::Conflict(_) => StatusCode::CONFLICT,
+                ActionError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (code, Json(json!({"error": e.message()}))).into_response()
+        }
+    }
 }
