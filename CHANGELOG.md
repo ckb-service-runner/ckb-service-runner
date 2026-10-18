@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- A2 phase 4: C (`hello-c`, vendored ckb-c-stdlib) and JavaScript (`hello-js` on the vendored ckb-js-vm) example services; `build-services.sh` builds C and verifies the JS artefacts.
 - Add `GET /api/network` and the monitor public-API client with a 5-minute cache (A1+ phase 1).
 - A1+ phase 2: dashboard Network page (`#/network`), Overview ranking card with rank and 30-day availability, `docs/milestones/A1plus.md`, `spec/monitor-public-api.md`.
 

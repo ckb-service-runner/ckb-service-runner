@@ -1,2 +1,5 @@
 target/
 .acc-tmp/
+.tools/
+services/c/*/build/
+services/js/node_modules/

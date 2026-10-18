@@ -1,0 +1,8 @@
+# ckb-js-vm (QuickJS-based JavaScript VM for CKB), RISC-V ELF, as shipped in ckb-testtool 1.0.5 (the VM binary has no own version number).
+# Source: npm package ckb-testtool@1.0.5, published from https://github.com/nervosnetwork/ckb-js-vm
+#   https://registry.npmjs.org/ckb-testtool/-/ckb-testtool-1.0.5.tgz  (file package/src/unittest/defaultScript/ckb-js-vm)
+#   npm integrity sha512-DwE7XVbV5N5m7OSp73cMSyHi+V/sOoDT4NbkvLHziNMfnRQ45PTC4DPpVf5h1scKCcsudNW/4WHXddH9lkdzkQ==
+# The hash equals build/ckb-js-vm in checksums.txt of the reproducible build at
+#   https://github.com/nervosnetwork/ckb-js-vm/blob/29f3d1b3ee9e747ff3059c6046bda6bd0e2dafb9/checksums.txt
+# (the GitHub repository publishes no release assets).
+721318de24bff4d8b26d20d4d05a9b8e79c04dadfb29da3fd0863e2b9f0da8c4  ckb-js-vm

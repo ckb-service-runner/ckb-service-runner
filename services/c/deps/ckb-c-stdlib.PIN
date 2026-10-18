@@ -1,0 +1,2 @@
+ckb-c-stdlib vendored from https://github.com/nervosnetwork/ckb-c-stdlib.git
+commit 6bf2bca668e0db5f9eb120eb78b31782899ef90d (2026-08-12), `git archive` without tests/ and simulator/

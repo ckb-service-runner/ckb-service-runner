@@ -59,7 +59,9 @@ status `unknown_syscall`. The CKB `debug` syscall output is collected (max 64 li
 ## Result
 
 The last `result_put` wins. If a service never calls it, the host uses the last debug line of the
-form `CSR-RESULT:0x<hex>`; else the result is empty.
+form `CSR-RESULT:0x<hex>`; else the result is empty. This is how JavaScript services on ckb-js-vm
+(which cannot issue raw syscalls) return results; a debug line is cut at 1 KB, so the fallback
+carries at most 505 bytes.
 
 ## Signing (7020)
 

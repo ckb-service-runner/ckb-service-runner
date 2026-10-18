@@ -1,0 +1,4 @@
+name = "hello-c"
+language = "c"
+elf = "../c/hello/build/hello"
+args = "0x"
