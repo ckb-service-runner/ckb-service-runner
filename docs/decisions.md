@@ -25,3 +25,9 @@
 ## Phase 5: dashboard
 - Static assets are embedded with `rust-embed` and served by the router fallback; CSP and `X-Content-Type-Options` are added to every response by a middleware layer.
 - Dashboard JS uses SSE with a 10 s polling fallback; theme is stored in localStorage.
+
+## Phase 6: inbound ping responder
+- Ping protocol is documented in `spec/ping-protocol.md`. Signing uses `secp256k1` + `sha2` (SHA-256 of the UTF-8 message); S is normalised before verifying monitor signatures; our signatures are low-S (libsecp256k1 default).
+- The ping listener is a separate axum server on `ranking.ping_bind`, started at `csr run` only when `ranking.join` and mode is `inbound`/`both`; it is not re-evaluated on live settings changes (restart needed). Body limit 4 KB (413), rate limit 10 per rolling 60 s per client IP counting every request (429).
+- Reject codes: 400 malformed/stale/future/height above tip/bad nonce, 403 bad monitor signature, 409 replayed nonce, 503 node data unavailable. The nonce is reserved only after signature, freshness and height checks pass and is released if the answer cannot be built; replay window 10 min is kept in memory (`AppState::ping_nonces`), so it is lost on restart.
+- Challenge JSON rejects unknown fields. `last_check_ok_at` is set when an answer is served.

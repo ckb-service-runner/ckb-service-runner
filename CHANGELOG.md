@@ -13,3 +13,6 @@
 
 ## Phase 5
 - Embedded dashboard (Overview, Node, Resources, Settings, Logs), CSP + nosniff headers.
+
+## Phase 6
+- Ping protocol v1 spec (`spec/ping-protocol.md`), binding/answer signatures and the inbound `POST /v1/challenge` responder with rate limit and replay protection.

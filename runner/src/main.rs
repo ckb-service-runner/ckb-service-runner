@@ -6,6 +6,7 @@ mod logs;
 mod network;
 mod node;
 mod password;
+mod ping;
 mod resources;
 mod run;
 mod web;

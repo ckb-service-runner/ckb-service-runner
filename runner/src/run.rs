@@ -6,7 +6,7 @@ use crate::db::{Db, Sample};
 use crate::identity::Identity;
 use crate::node::{self, rpc::RpcClient, Polled};
 use crate::resources::Monitor;
-use crate::{logs, web};
+use crate::{logs, ping, web};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex, RwLock};
@@ -99,6 +99,8 @@ pub async fn run(
         net_dir,
         started: Instant::now(),
         service_pubkey: identity.service_pubkey.clone(),
+        service_key: identity.service_key,
+        ping_nonces: Mutex::new(Default::default()),
         db,
         set_log_level,
         peer_id: RwLock::new(first.snap.node_id.clone()),
@@ -212,6 +214,36 @@ pub async fn run(
             .await
     });
 
+    // Ping port: only when ranking is joined and the mode includes inbound.
+    let ping_server = {
+        let (join, mode, pbind) = {
+            let c = state.config.read().unwrap();
+            (
+                c.ranking.join,
+                c.ranking.ping_mode.clone(),
+                c.ranking.ping_bind.clone(),
+            )
+        };
+        if join && (mode == "inbound" || mode == "both") {
+            let l = tokio::net::TcpListener::bind(&pbind)
+                .await
+                .map_err(|e| format!("cannot listen on {pbind}: {e}"))?;
+            tracing::info!("ping responder listening on {pbind}");
+            let app = ping::inbound::router(ping::inbound::Responder::new(state.clone()))
+                .into_make_service_with_connect_info::<std::net::SocketAddr>();
+            let mut st = stop_rx.clone();
+            Some(tokio::spawn(async move {
+                let _ = axum::serve(l, app)
+                    .with_graceful_shutdown(async move {
+                        let _ = st.changed().await;
+                    })
+                    .await;
+            }))
+        } else {
+            None
+        }
+    };
+
     let result = tokio::select! {
         _ = shutdown_signal() => {
             tracing::info!("shutting down");
@@ -222,5 +254,8 @@ pub async fn run(
     };
     let _ = stop_tx.send(true);
     let _ = tokio::time::timeout(Duration::from_secs(3), server).await;
+    if let Some(p) = ping_server {
+        let _ = tokio::time::timeout(Duration::from_secs(3), p).await;
+    }
     result
 }

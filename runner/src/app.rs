@@ -19,6 +19,9 @@ pub struct AppState {
     pub net_dir: PathBuf,
     pub started: Instant,
     pub service_pubkey: String,
+    pub service_key: secp256k1::SecretKey,
+    /// Ping nonces answered within the replay window, with the time.
+    pub ping_nonces: Mutex<std::collections::HashMap<String, i64>>,
     pub db: Db,
     pub set_log_level: LevelSetter,
     pub node: RwLock<Polled>,
@@ -33,6 +36,17 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Reserves a ping nonce; false if it was answered within the replay window.
+    pub fn reserve_ping_nonce(&self, nonce: &str, now: i64) -> bool {
+        let mut m = self.ping_nonces.lock().unwrap();
+        m.retain(|_, t| now - *t < crate::ping::protocol::REPLAY_WINDOW_SECS);
+        m.insert(nonce.to_string(), now).is_none()
+    }
+
+    pub fn release_ping_nonce(&self, nonce: &str) {
+        self.ping_nonces.lock().unwrap().remove(nonce);
+    }
+
     pub fn log_path(&self) -> PathBuf {
         self.net_dir.join("logs").join("csr.log")
     }
