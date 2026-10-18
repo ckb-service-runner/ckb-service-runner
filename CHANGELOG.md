@@ -10,3 +10,6 @@
 
 ## A1 phase 4
 - Dashboard sessions, login and CSRF protection; `csr set-password` (argon2id); `GET/PUT /api/settings` with deep merge, validation, atomic save with `.bak`, live log level; `GET /api/events` SSE.
+
+## Phase 5
+- Embedded dashboard (Overview, Node, Resources, Settings, Logs), CSP + nosniff headers.

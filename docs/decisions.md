@@ -21,3 +21,7 @@
 - Settings are saved by re-serialising the whole config with `toml` (comments in the file are lost; the `.bak` keeps the previous version). The file is written 0600 via a temp file + rename. `PUT /api/settings` rejects `dashboard.password_set` and `dashboard.password_hash` (400); the password is only changed with `csr set-password`. A `--network` CLI override is persisted if settings are saved while it is active.
 - `csr set-password` reads the file without validating (so a public bind can get its password), validates afterwards, and prompts twice with `stty -echo` when no `--password-stdin` is given. `restart_required` compares against the config currently in memory.
 - SSE `status` events: sent on connect, when the status (ignoring `uptime_s`) changes (checked every 500 ms) and at least every 10 s.
+
+## Phase 5: dashboard
+- Static assets are embedded with `rust-embed` and served by the router fallback; CSP and `X-Content-Type-Options` are added to every response by a middleware layer.
+- Dashboard JS uses SSE with a 10 s polling fallback; theme is stored in localStorage.
