@@ -1,0 +1,117 @@
+//! Operator signing flow: prepare unsigned float transactions, submit signed ones.
+
+use crate::app::AppState;
+use crate::chain::{Chain, DEFAULT_MAX_FEE};
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+type St = State<Arc<AppState>>;
+
+fn fail(code: StatusCode, msg: String) -> Response {
+    (code, Json(json!({"error": msg}))).into_response()
+}
+
+async fn chain(s: &AppState) -> Result<Chain, String> {
+    let cfg = s.config.read().unwrap().clone();
+    Chain::connect(&cfg, &s.service_pubkey)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn reply(r: Result<Value, String>) -> Response {
+    match r {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// A CKB amount given as a JSON number or string.
+fn amount(b: &Value) -> Option<String> {
+    match &b["ckb"] {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn prepared(p: crate::chain::Prepared) -> Value {
+    json!({"file": p.file, "fee_shannons": p.fee_shannons, "tx_hash": p.tx_hash})
+}
+
+pub async fn runner_cell(State(s): St) -> Response {
+    match chain(&s).await {
+        Ok(c) => reply(c.runner_cell_status().await),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+pub async fn float_status(State(s): St) -> Response {
+    match chain(&s).await {
+        Ok(c) => reply(c.float_status().await),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+pub async fn prepare_create(State(s): St, Json(b): Json<Value>) -> Response {
+    let (Some(ckb), Some(owner)) = (amount(&b), b["owner_lock_args"].as_str()) else {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "ckb and owner_lock_args are required".into(),
+        );
+    };
+    let max_fee = b["max_fee_shannons"].as_u64().unwrap_or(DEFAULT_MAX_FEE);
+    match chain(&s).await {
+        Ok(c) => reply(c.prepare_create(&ckb, owner, max_fee).await.map(prepared)),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+pub async fn prepare_topup(State(s): St, Json(b): Json<Value>) -> Response {
+    let Some(ckb) = amount(&b) else {
+        return fail(StatusCode::BAD_REQUEST, "ckb is required".into());
+    };
+    match chain(&s).await {
+        Ok(c) => reply(
+            c.prepare_topup(&ckb, b["owner_lock_args"].as_str())
+                .await
+                .map(prepared),
+        ),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+pub async fn prepare_withdraw(State(s): St, Json(b): Json<Value>) -> Response {
+    let all = b["all"].as_bool().unwrap_or(false);
+    let ckb = amount(&b);
+    if all == ckb.is_some() {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "give either ckb or all = true".into(),
+        );
+    }
+    match chain(&s).await {
+        Ok(c) => reply(
+            c.prepare_withdraw(ckb.as_deref(), all, b["owner_lock_args"].as_str())
+                .await
+                .map(prepared),
+        ),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+pub async fn submit_signed(State(s): St, Json(b): Json<Value>) -> Response {
+    match chain(&s).await {
+        Ok(c) => {
+            let r = c.submit(&b).await;
+            if let Ok(v) = &r {
+                tracing::info!("signed transaction submitted: {}", v["tx_hash"]);
+            }
+            reply(r)
+        }
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}

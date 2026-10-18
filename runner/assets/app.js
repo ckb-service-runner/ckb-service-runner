@@ -396,6 +396,67 @@
     load();
   };
 
+  pages.float = function (root) {
+    var c = card('Float and runner key cell');
+    var info = el('div');
+    var msg = el('p', 'msg');
+    var form = el('div', 'row');
+    var ckb = el('input'); ckb.placeholder = 'CKB'; ckb.size = 10;
+    var owner = el('input'); owner.placeholder = 'owner lock args (0x…, create only)'; owner.size = 44;
+    form.appendChild(ckb); form.appendChild(owner);
+    var btns = el('div', 'row');
+    var signed = el('input'); signed.type = 'file'; signed.accept = '.json,application/json';
+    var submit = el('button', 'btn', 'Submit signed file'); submit.type = 'button';
+    function say(t, bad) { msg.className = 'msg' + (bad ? ' err' : ''); msg.textContent = t; }
+    function download(name, obj) {
+      var u = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2) + '\n'], { type: 'application/json' }));
+      var a = el('a'); a.href = u; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(u); }, 1000);
+    }
+    function prepare(verb, body, name) {
+      api('/api/float/prepare-' + verb, { method: 'POST', body: body }).then(function (j) {
+        download(name, j.file);
+        say('Unsigned transaction downloaded (fee ' + j.fee_shannons + ' shannons). Sign it in your wallet, then submit the signed file below.');
+      }).catch(function (x) { say(x.message, true); });
+    }
+    [['Create float', 'create'], ['Top up', 'topup'], ['Withdraw', 'withdraw']].forEach(function (b) {
+      var btn = el('button', 'btn', b[0]); btn.type = 'button';
+      btn.addEventListener('click', function () {
+        var body = { ckb: ckb.value.trim() };
+        if (owner.value.trim()) body.owner_lock_args = owner.value.trim();
+        prepare(b[1], body, 'float-' + b[1] + '-unsigned.json');
+      });
+      btns.appendChild(btn);
+    });
+    submit.addEventListener('click', function () {
+      var f = signed.files && signed.files[0];
+      if (!f) return say('Choose the signed transaction file first.', true);
+      f.text().then(function (t) {
+        return api('/api/tx/submit-signed', { method: 'POST', body: JSON.parse(t) });
+      }).then(function (j) { say('Submitted: ' + j.tx_hash); load(); })
+        .catch(function (x) { say(x.message, true); });
+    });
+    var sub = el('div', 'row'); sub.appendChild(signed); sub.appendChild(submit);
+    [info, form, btns, sub, msg].forEach(function (n) { c.appendChild(n); });
+    root.appendChild(c);
+    function load() {
+      Promise.all([api('/api/runner-cell'), api('/api/float')]).then(function (r) {
+        info.textContent = '';
+        dl(info, [
+          ['Runner key cell', r[0].found ? r[0].outpoint : 'none'],
+          ['Runner key cell capacity (shannons)', r[0].capacity_shannons],
+          ['Float cell', r[1].found ? r[1].outpoint : 'none'],
+          ['Float capacity (shannons)', r[1].capacity_shannons],
+          ['Max fee (shannons)', r[1].max_fee_shannons],
+          ['Owner lock hash', r[1].owner_lock_hash],
+          ['Runner lock hash', r[1].runner_lock_hash],
+        ]);
+      }).catch(function (x) { info.textContent = x.message; });
+    }
+    load();
+  };
+
   pages.logs = function (root) {
     var c = card('Logs');
     var row = el('div', 'row'), sel = el('select');

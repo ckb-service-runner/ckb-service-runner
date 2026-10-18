@@ -33,6 +33,9 @@ ckb-vm = { version = "=0.24.15", features = ["asm"] }
 blake2b-ref = "0.3.1"
 chacha20poly1305 = "0.10"
 hmac = "0.12"
+ckb-types = "1"
+ckb-jsonrpc-types = "1"
+ckb-hash = "1"
 
 [dev-dependencies]
 tempfile = "3"

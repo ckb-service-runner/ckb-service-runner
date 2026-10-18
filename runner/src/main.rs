@@ -1,4 +1,5 @@
 mod app;
+mod chain;
 mod config;
 mod db;
 mod identity;
@@ -94,10 +95,92 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// The runner key cell
+    RunnerCell {
+        #[command(subcommand)]
+        action: RunnerCellAction,
+    },
+    /// The float cell (prepare unsigned owner transactions, show status)
+    Float {
+        #[command(subcommand)]
+        action: FloatAction,
+    },
+    /// Transactions
+    Tx {
+        #[command(subcommand)]
+        action: TxAction,
+    },
     /// Run the service
     Run {
         #[arg(long)]
         confirm_mainnet: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RunnerCellAction {
+    /// Show the cell(s) under the runner lock
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum FloatAction {
+    /// Unsigned transaction creating the float cell
+    PrepareCreate {
+        #[arg(long)]
+        ckb: String,
+        #[arg(long)]
+        owner_lock_args: String,
+        #[arg(long, default_value_t = chain::DEFAULT_MAX_FEE)]
+        max_fee_shannons: u64,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Unsigned transaction adding CKB to the float cell
+    PrepareTopup {
+        #[arg(long)]
+        ckb: String,
+        /// Needed only if the owner's lock cannot be found on chain
+        #[arg(long)]
+        owner_lock_args: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Unsigned transaction moving CKB from the float cell to the owner
+    PrepareWithdraw {
+        #[arg(long, conflicts_with = "all")]
+        ckb: Option<String>,
+        /// Close the float cell and return everything
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        owner_lock_args: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the float cell
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum TxAction {
+    /// Broadcast a signed transaction file through the local node
+    Submit {
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -173,6 +256,44 @@ fn load_config(cli: &Cli) -> Result<config::Config, String> {
         cfg.validate()?;
     }
     Ok(cfg)
+}
+
+/// Runs a chain command: loads the config and identity, connects to the node and prints the result.
+fn chain_cmd<F, Fut>(cli: &Cli, json: bool, f: F) -> ExitCode
+where
+    F: FnOnce(chain::Chain) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
+{
+    let r = (|| -> Result<serde_json::Value, String> {
+        let cfg = load_config(cli)?;
+        let net_dir = data_root(cli).join(&cfg.network);
+        std::fs::create_dir_all(&net_dir)
+            .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
+        let id = identity::Identity::load_or_create(&net_dir)?;
+        runtime().block_on(async {
+            let c = chain::Chain::connect(&cfg, &id.service_pubkey).await?;
+            f(c).await
+        })
+    })();
+    match r {
+        Ok(j) => {
+            if json {
+                println!("{j}");
+            } else if let Some(o) = j.as_object() {
+                for (k, v) in o {
+                    match v {
+                        serde_json::Value::String(s) => println!("{k}: {s}"),
+                        v => println!("{k}: {v}"),
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -324,6 +445,52 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::RunnerCell {
+            action: RunnerCellAction::Status { json },
+        } => chain_cmd(&cli, *json, |c| async move { c.runner_cell_status().await }),
+        Command::Float { action } => match action {
+            FloatAction::Status { json } => {
+                chain_cmd(&cli, *json, |c| async move { c.float_status().await })
+            }
+            FloatAction::PrepareCreate {
+                ckb,
+                owner_lock_args,
+                max_fee_shannons,
+                out,
+                json,
+            } => chain_cmd(&cli, *json, |c| async move {
+                let p = c
+                    .prepare_create(ckb, owner_lock_args, *max_fee_shannons)
+                    .await?;
+                chain::write_prepared(&p, out)
+            }),
+            FloatAction::PrepareTopup {
+                ckb,
+                owner_lock_args,
+                out,
+                json,
+            } => chain_cmd(&cli, *json, |c| async move {
+                let p = c.prepare_topup(ckb, owner_lock_args.as_deref()).await?;
+                chain::write_prepared(&p, out)
+            }),
+            FloatAction::PrepareWithdraw {
+                ckb,
+                all,
+                owner_lock_args,
+                out,
+                json,
+            } => chain_cmd(&cli, *json, |c| async move {
+                let p = c
+                    .prepare_withdraw(ckb.as_deref(), *all, owner_lock_args.as_deref())
+                    .await?;
+                chain::write_prepared(&p, out)
+            }),
+        },
+        Command::Tx {
+            action: TxAction::Submit { file, json },
+        } => chain_cmd(&cli, *json, |c| async move {
+            c.submit(&chain::read_json(file)?).await
+        }),
         Command::Service {
             action:
                 ServiceAction::RunLocal {

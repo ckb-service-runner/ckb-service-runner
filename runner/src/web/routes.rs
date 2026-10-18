@@ -30,6 +30,24 @@ pub fn routes() -> Router<Arc<AppState>> {
         )
         .route("/api/services", get(services))
         .route("/api/services/{hash}/{verb}", post(service_action))
+        .route("/api/runner-cell", get(super::operator::runner_cell))
+        .route("/api/float", get(super::operator::float_status))
+        .route(
+            "/api/float/prepare-create",
+            post(super::operator::prepare_create),
+        )
+        .route(
+            "/api/float/prepare-topup",
+            post(super::operator::prepare_topup),
+        )
+        .route(
+            "/api/float/prepare-withdraw",
+            post(super::operator::prepare_withdraw),
+        )
+        .route(
+            "/api/tx/submit-signed",
+            post(super::operator::submit_signed),
+        )
         .route("/api/events", get(super::settings::events))
 }
 

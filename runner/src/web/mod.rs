@@ -1,6 +1,7 @@
 //! Dashboard HTTP server.
 
 mod auth;
+mod operator;
 mod routes;
 mod settings;
 

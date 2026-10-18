@@ -8,3 +8,5 @@
 - Outbound check-in cadence on failure: retry sooner than 10 min?
 - `get_peers` / `sync_state` field names were taken from the ckb 0.210 RPC docs; verify against a real node.
 - Transaction file format for offline signing: `csr-dev` and `csr` write the `ckb-cli` tx JSON (`transaction`, `multisig_configs`, `signatures`). Whether Neuron's offline-signing import accepts exactly this (Neuron uses its own export wrapper around the same `transaction` object) is unverified – no Neuron available here. A second export format is not added yet.
+
+- Transaction file format for Neuron offline signing: CSR writes/reads the `ckb-cli` "tx" JSON (`transaction`, `multisig_configs`, `signatures`). Whether Neuron's offline signing accepts exactly this file could not be verified here (no Neuron available); a Neuron-specific export is not implemented.
