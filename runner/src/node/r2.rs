@@ -85,6 +85,8 @@ impl R2Report {
 pub fn expected_chain(network: &str) -> &'static str {
     if network == "mainnet" {
         "ckb"
+    } else if network == "devnet" {
+        "ckb_dev"
     } else {
         "ckb_testnet"
     }
@@ -214,7 +216,8 @@ pub fn evaluate(s: &Snapshot, expected_chain: &str) -> R2Report {
         }
         return r;
     }
-    if r.outbound_peers.unwrap_or(0) == 0 {
+    // A devnet has no peers: the outbound-peer rule does not apply there.
+    if expected_chain != "ckb_dev" && r.outbound_peers.unwrap_or(0) == 0 {
         r.reasons.push("no outbound peers".into());
     }
     if s.indexer_tip.is_none() {

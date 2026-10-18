@@ -41,12 +41,17 @@ struct Cli {
     /// Config file (default: <data-root>/csr.toml)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
-    /// Network override: testnet or mainnet
-    #[arg(long, global = true, value_parser = ["testnet", "mainnet"])]
+    /// Network override: testnet or mainnet (devnet in debug builds)
+    #[arg(long, global = true, value_parser = NETWORKS)]
     network: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
+
+#[cfg(debug_assertions)]
+const NETWORKS: [&str; 3] = ["testnet", "mainnet", "devnet"];
+#[cfg(not(debug_assertions))]
+const NETWORKS: [&str; 2] = ["testnet", "mainnet"];
 
 #[derive(Subcommand)]
 enum Command {
@@ -83,6 +88,11 @@ enum Command {
     Storage {
         #[command(subcommand)]
         action: StorageAction,
+    },
+    /// Print the node's service identity (creates the keys if missing)
+    Identity {
+        #[arg(long)]
+        json: bool,
     },
     /// Run the service
     Run {
@@ -271,6 +281,43 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| data_root(&cli).join("csr.toml"));
             match runtime().block_on(run::run(cfg, path, data_root(&cli), *confirm_mainnet)) {
                 Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Command::Identity { json } => {
+            let r = (|| -> Result<serde_json::Value, String> {
+                let cfg = load_config(&cli)?;
+                let net_dir = data_root(&cli).join(&cfg.network);
+                std::fs::create_dir_all(&net_dir)
+                    .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
+                let id = identity::Identity::load_or_create(&net_dir)?;
+                let (args, hash) = id.runner_lock()?;
+                Ok(serde_json::json!({
+                    "network": cfg.network,
+                    "service_pubkey": id.service_pubkey,
+                    "runner_lock_args": args,
+                    "runner_lock_hash": hash,
+                }))
+            })();
+            match r {
+                Ok(j) => {
+                    if *json {
+                        println!("{j}");
+                    } else {
+                        for k in [
+                            "network",
+                            "service_pubkey",
+                            "runner_lock_args",
+                            "runner_lock_hash",
+                        ] {
+                            println!("{k}: {}", j[k].as_str().unwrap_or(""));
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
                 Err(e) => {
                     eprintln!("{e}");
                     ExitCode::from(1)

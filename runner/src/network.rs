@@ -17,6 +17,7 @@ pub struct NetworkDefaults {
 
 impl NetworkDefaults {
     pub fn for_network(name: &str) -> NetworkDefaults {
+        // devnet has no shipped defaults (no monitor); it reuses the testnet file.
         let text = if name == "mainnet" { MAINNET } else { TESTNET };
         toml::from_str(text).expect("embedded network file is valid")
     }

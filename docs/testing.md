@@ -29,3 +29,7 @@ bash scripts/devnet.sh reset && bash scripts/devnet.sh start
 node --test --test-concurrency=1 acceptance/a3b/p1.test.mjs
 bash scripts/devnet.sh stop
 ```
+
+### `csr-dev`
+
+`target/debug/csr-dev [--rpc URL] [--json] <deploy-contracts|clock-update|attest|fund|sign-tx|owner-lock-args>` – devnet/testnet only (refuses other chains; testnet needs `CSR_DEV_TESTNET_KEY`). Run `bash scripts/build-contracts.sh` first; `deploy-contracts` writes `deployments/devnet.json`. Tests: `node --test --test-concurrency=1 acceptance/a3b/p2.test.mjs` (devnet running).

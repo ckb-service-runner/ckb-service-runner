@@ -16,6 +16,16 @@ pub struct Config {
     pub limits: LimitsCfg,
     pub storage: StorageCfg,
     pub logging: LoggingCfg,
+    /// Only valid with `network = "devnet"` (debug builds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub devnet: Option<DevnetCfg>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DevnetCfg {
+    /// Path to `deployments/devnet.json` written by `csr-dev deploy-contracts`.
+    pub deployments: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -93,6 +103,7 @@ impl Default for Config {
             limits: LimitsCfg::default(),
             storage: StorageCfg::default(),
             logging: LoggingCfg::default(),
+            devnet: None,
         }
     }
 }
@@ -252,7 +263,20 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        one_of("network", &self.network, &["testnet", "mainnet"])?;
+        if cfg!(debug_assertions) {
+            one_of("network", &self.network, &["testnet", "mainnet", "devnet"])?;
+        } else {
+            one_of("network", &self.network, &["testnet", "mainnet"])?;
+        }
+        match (&self.devnet, self.network == "devnet") {
+            (Some(d), true) if d.deployments.trim().is_empty() => {
+                return Err("devnet.deployments must not be empty".into());
+            }
+            (Some(_), false) => {
+                return Err("[devnet] is only valid with network = \"devnet\"".into());
+            }
+            _ => {}
+        }
         one_of(
             "node.node_type",
             &self.node.node_type,
@@ -416,6 +440,14 @@ mod tests {
         assert!(Config::parse("[limits]\nmax_cycles_per_job = 0").is_err());
         assert!(Config::parse("[runtime]\nmin_ckb_per_mcycle = -0.5").is_err());
         assert!(Config::parse("[storage]\nper_service_quota_mb = 999").is_err());
+    }
+
+    #[test]
+    fn devnet_rules() {
+        let dev = "network = \"devnet\"\n[devnet]\ndeployments = \"d.json\"";
+        assert_eq!(Config::parse(dev).is_ok(), cfg!(debug_assertions));
+        assert!(Config::parse("[devnet]\ndeployments = \"d.json\"").is_err());
+        assert!(Config::parse("network = \"mainnet\"\n[devnet]\ndeployments = \"x\"").is_err());
     }
 
     #[test]
