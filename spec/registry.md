@@ -162,10 +162,12 @@ as long as rule 5 holds.
 ## 7. Use by the job lock
 
 `csr-job-lock` (args = hash of this registry type script) reads a registry cell as a **cell dep** and takes
-its `float_lock_hash` as the float that must receive the tip (`job-cell-standard.md`). It does not re-check
-the attestation: a registry cell whose `expiry_ms` has passed (relative to the monitor's `clock_ms`) still
-counts as registered for job runs until its runner refreshes it via the runner path. Off-chain clients
-(the job creator, the monitor) should prefer runners with a fresh attestation. Since `float_lock_hash` can only
+its `float_lock_hash` as the float that must receive the tip (`job-cell-standard.md`). Since the security
+fixes it also requires (F2) an input with the registry cell's runner lock hash (dual-lock `args[32..64]`, the
+node's runner key cell), and (F5) exactly one cell dep with this type script's `config_type_hash` and
+`attestation.expiry_ms > clock_ms` of that config cell. The attestation signature is not verified again (the
+type script verified it when the cell was written). A registry cell whose attestation has expired therefore
+earns nothing until its runner refreshes it via the runner path. Since `float_lock_hash` can only
 be changed by the owner path, a compromised runner key cannot redirect tips.
 
 ## 8. Cycles

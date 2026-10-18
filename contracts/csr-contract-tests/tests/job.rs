@@ -38,6 +38,9 @@ struct S {
     user: Key,
     /// Live registry cell (cell dep of every run).
     registry: OutPoint,
+    /// Monitor config cell (cell dep of every run; `clock_ms = CLOCK_MS`).
+    config: OutPoint,
+    owner: Key,
     reg_type: Script,
     float: Script,
     job_lock: Script,
@@ -50,7 +53,7 @@ fn setup() -> S {
     let service = env.new_key();
     let monitor = env.new_key();
     let user = env.new_key();
-    let (_, config_hash) = env.config_cell(&monitor.pubkey, CLOCK_MS, monitor.lock.clone());
+    let (config, config_hash) = env.config_cell(&monitor.pubkey, CLOCK_MS, monitor.lock.clone());
     let reg_type = env.registry_type_script(&config_hash);
     let dual = env.dual_lock_script(&owner.lock_hash(), &service.lock_hash());
     let float = env.float_lock_script(&owner.lock_hash(), &service.lock_hash(), FLOAT_MAX_FEE);
@@ -66,7 +69,7 @@ fn setup() -> S {
     let reg_hash: [u8; 32] = reg_type.calc_script_hash().unpack();
     let job_lock = env.job_lock_script(&reg_hash);
     let job_type = env.job_type_script(&SERVICE_CODE_HASH);
-    S { env, service, user, registry, reg_type, float, job_lock, job_type }
+    S { env, service, user, registry, config, owner, reg_type, float, job_lock, job_type }
 }
 
 impl S {
@@ -117,7 +120,7 @@ impl S {
     }
 
     /// Run transaction of the registered runner: inputs `[job (since), float, runner key cell]`, outputs
-    /// `[float + tip_paid, runner key cell + key_gain] ++ outs`, cell dep: the registry cell.
+    /// `[float + tip_paid, runner key cell + key_gain] ++ outs`, cell deps: the registry cell and the config cell.
     fn run_tx(&mut self, job: &OutPoint, since: u64, tip_paid: u64, key_gain: u64, outs: Vec<(CellOutput, Bytes)>) -> TransactionView {
         let float = self.float.clone();
         let key_lock = self.service.lock.clone();
@@ -131,7 +134,35 @@ impl S {
         tx_with(vec![self.env.input(job, since), self.env.input(&f, 0), self.env.input(&k, 0)], outputs)
             .as_advanced_builder()
             .cell_dep(cell_dep(&self.registry))
+            .cell_dep(cell_dep(&self.config))
             .build()
+    }
+
+    /// `tx` with cell dep `old` replaced by `new` (`None` = removed).
+    fn replace_dep(tx: TransactionView, old: &OutPoint, new: Option<&OutPoint>) -> TransactionView {
+        let deps: Vec<_> = tx.cell_deps().into_iter().filter(|d| d.out_point() != *old).collect();
+        let b = tx.as_advanced_builder().set_cell_deps(deps);
+        match new {
+            Some(n) => b.cell_dep(cell_dep(n)).build(),
+            None => b.build(),
+        }
+    }
+
+    /// A copy of the config cell (same Type ID type script) whose clock reads `clock_ms`.
+    fn config_at(&mut self, clock_ms: u64) -> OutPoint {
+        let (cell, data) = self.env.ctx.get_cell(&self.config).unwrap();
+        let mut d = data.to_vec();
+        d[33..41].copy_from_slice(&clock_ms.to_le_bytes());
+        self.env.ctx.create_cell(cell, d.into())
+    }
+
+    /// A cell with the registry type script and the registry data, but locked by `dual_lock(owner, runner)`
+    /// (not created through the registry type script).
+    fn registry_with_runner(&mut self, runner: &[u8; 32]) -> OutPoint {
+        let (cell, data) = self.env.ctx.get_cell(&self.registry).unwrap();
+        let owner = self.owner.lock_hash();
+        let dual = self.env.dual_lock_script(&owner, runner);
+        self.env.ctx.create_cell(cell.as_builder().lock(dual).build(), data)
     }
 
     fn run(&mut self, job: &OutPoint, since: u64, tip_paid: u64, key_gain: u64, outs: Vec<(CellOutput, Bytes)>) -> Result<u64, CkbError> {
@@ -283,6 +314,8 @@ fn job_lock_cycles_of_run() {
     let op = s.env.cell(cap, s.job_lock.clone(), None, j.data());
     let anyone = s.env.always_success_script(b"wallet");
     let w = s.env.cell(WALLET, anyone.clone(), None, Bytes::new());
+    // The runner key cell is the always-success wallet, so no system lock runs.
+    let reg = s.registry_with_runner(&anyone.calc_script_hash().unpack());
     let tx = tx_with(
         vec![s.env.input(&op, 0), s.env.input(&w, 0)],
         vec![
@@ -292,7 +325,8 @@ fn job_lock_cycles_of_run() {
         ],
     )
     .as_advanced_builder()
-    .cell_dep(cell_dep(&s.registry))
+    .cell_dep(cell_dep(&reg))
+    .cell_dep(cell_dep(&s.config))
     .build();
     let cycles = s.env.verify(tx).expect("run");
     println!("job lock (OnDemand run, without job type): {cycles} cycles");
@@ -318,6 +352,7 @@ fn job_tip_to_unregistered_float_rejected() {
     )
     .as_advanced_builder()
     .cell_dep(cell_dep(&s.registry))
+    .cell_dep(cell_dep(&s.config))
     .build();
     assert_lock_error(s.env.verify_signed(tx, &[&impostor]), 11);
 }
@@ -343,8 +378,7 @@ fn job_run_with_fake_registry_dep_rejected() {
     let refund = s.refund_output(cap - TIP - MAX_FEE);
     let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
     // replace the registry dep by the fake one
-    let deps: Vec<_> = tx.cell_deps().into_iter().filter(|d| d.out_point() != s.registry).collect();
-    let tx = tx.as_advanced_builder().set_cell_deps(deps).cell_dep(cell_dep(&fake)).build();
+    let tx = S::replace_dep(tx, &s.registry, Some(&fake));
     assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 14);
 }
 
@@ -371,6 +405,110 @@ fn job_two_job_inputs_rejected() {
     let tx = s.run_tx(&a, 0, TIP, 0, vec![refund]);
     let tx = tx.as_advanced_builder().input(s.env.input(&b, 0)).build();
     assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 7);
+}
+
+// --- run path: registered runner (F2) and attestation expiry (F5) ---------------------------------
+
+#[test]
+fn job_run_with_valid_attestation_ok() {
+    // Clock 1 ms before expiry: still valid.
+    let mut s = setup();
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+    let late = s.config_at(EXPIRY_MS - 1);
+    let tx = S::replace_dep(tx, &s.config, Some(&late));
+    s.env.verify_signed(tx, &[&s.service]).expect("run");
+}
+
+#[test]
+fn job_run_without_registered_runner_key_rejected() {
+    // An impostor pays the tip to the registered float, but spends only its own key cell.
+    let mut s = setup();
+    let impostor = s.env.new_key();
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let w = s.env.cell(WALLET, impostor.lock.clone(), None, Bytes::new());
+    let tx = tx_with(
+        vec![s.env.input(&op, 0), s.env.input(&w, 0)],
+        vec![
+            (output(100 * CKB, s.float.clone(), None), Bytes::new()),
+            (output(WALLET - 100 * CKB, impostor.lock.clone(), None), Bytes::new()),
+            s.refund_output(cap - TIP - MAX_FEE),
+        ],
+    )
+    .as_advanced_builder()
+    .cell_dep(cell_dep(&s.registry))
+    .cell_dep(cell_dep(&s.config))
+    .build();
+    assert_lock_error(s.env.verify_signed(tx, &[&impostor]), 15);
+}
+
+#[test]
+fn job_run_with_forged_registry_rejected() {
+    // The registry dep names the real float, but its runner hash belongs to a key that is not in the tx;
+    // the registered float's runner key cell does not help.
+    let mut s = setup();
+    let stranger = s.env.new_key();
+    let forged = s.registry_with_runner(&stranger.lock_hash());
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+    let tx = S::replace_dep(tx, &s.registry, Some(&forged));
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 15);
+}
+
+#[test]
+fn job_run_with_malformed_registry_lock_rejected() {
+    // A registry dep whose lock args are not 64 bytes.
+    let mut s = setup();
+    let (cell, data) = s.env.ctx.get_cell(&s.registry).unwrap();
+    let short = s.env.always_success_script(&s.service.lock_hash());
+    let bad = s.env.ctx.create_cell(cell.as_builder().lock(short).build(), data);
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+    let tx = S::replace_dep(tx, &s.registry, Some(&bad));
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 10);
+}
+
+#[test]
+fn job_run_with_expired_attestation_rejected() {
+    // The monitor clock has advanced to expiry_ms (expiry_ms > clock_ms no longer holds).
+    let mut s = setup();
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+    let advanced = s.config_at(EXPIRY_MS);
+    let tx = S::replace_dep(tx, &s.config, Some(&advanced));
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 17);
+}
+
+#[test]
+fn job_run_without_config_dep_rejected() {
+    let mut s = setup();
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+    let tx = S::replace_dep(tx, &s.config, None);
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 16);
+}
+
+#[test]
+fn job_run_with_two_config_deps_rejected() {
+    // An old (valid) and a new (expired) clock together: ambiguous, rejected.
+    let mut s = setup();
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    let advanced = s.config_at(EXPIRY_MS);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]).as_advanced_builder().cell_dep(cell_dep(&advanced)).build();
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 16);
 }
 
 // --- run path: triggers --------------------------------------------------------------------------

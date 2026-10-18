@@ -1,6 +1,6 @@
 # CSR job cell standard (`csr-job-type`, `csr-job-lock`)
 
-Status: A3a. Reference: CSR-SPEC-v0.2 §9/§10, deployment plan §3.3–3.5.
+Status: A3a, with the A3a security fixes (audit F2, F5–F7). Reference: CSR-SPEC-v0.2 §9/§10, deployment plan §3.3–3.5.
 
 ## 1. Job cell
 
@@ -74,7 +74,15 @@ strict molecule `Job` (exact field count, no trailing bytes; error 6).
   1. The trigger holds (table above).
   2. Exactly one cell dep with type hash `registry_type_hash` exists; its data's `float_lock_hash` = F, and
      Σ capacity(outputs with lock hash F) − Σ capacity(inputs with lock hash F) ≥ `tip_shannons`.
-  3. No siphoning: if `remaining_runs > 1` there is exactly one output with the same job lock and job type
+  3. *Registered runner* (F2): the registry cell dep's **lock** (a `csr-dual-lock`) must parse as a script with
+     64-byte args (else 10); its runner lock hash R = `args[32..64]`. An input with lock hash R must exist – the
+     node's runner key cell, so the transaction is signed with the registered service key (else 15).
+  4. *Live attestation* (F5): `config_type_hash` = the registry cell dep's **type script args** (32 bytes, else
+     10). Exactly one cell dep with type hash `config_type_hash` exists – the monitor config/clock cell (else
+     16; its data must be at least `monitor_pubkey (33) ‖ clock_ms (u64 LE)`, shorter data is also 16). The
+     registry data's `attestation.expiry_ms > clock_ms` (else 17). The attestation signature is **not**
+     verified again: the registry type script verified it when the cell was written.
+  5. No siphoning: if `remaining_runs > 1` there is exactly one output with the same job lock and job type
      (byte-identical scripts), its data equals the input data except `remaining_runs − 1`, and its capacity ≥
      input capacity − `tip_shannons` − `max_fee_shannons`. If `remaining_runs ≤ 1` the job cell is consumed and
      Σ capacity(outputs with `refund_lock_hash`) − Σ capacity(inputs with `refund_lock_hash`) ≥ input capacity
@@ -88,17 +96,34 @@ that is spent and recreated in the same transaction (e.g. the float, or an anyon
 only with the amount actually added.
 
 The **fee is paid from the job's capacity** (capped by `max_fee_shannons`); the float receives at least the
-tip. (This replaces "float pays the fee, job pays it back" from spec §3.3.) The float lock's own runner path
-also allows a fee of up to its `max_fee_shannons`, so a run transaction that merges the tip into the float
-cell is accepted by both locks (see `float-lock.md`).
+tip. (This replaces "float pays the fee, job pays it back" from spec §3.3.) The float lock's runner path
+allows **no loss at all** (audit F4; its `max_fee_shannons` is reserved), so a run transaction that merges the
+tip into the float cell recreates it with input capacity + tip and pays the miner fee from the job cell (see
+`float-lock.md`).
+
+Rule order (determines the reported code): job inputs (7), data (6), refund path, registry dep (14/10),
+trigger (8/9), tip (11), registered runner (10/15), live attestation (10/16/17), recreation/refund (12/13).
 
 ### Limits (by design)
 
-* A run is not bound to a particular runner: anyone may submit a run transaction, but the tip can only go to
-  a float that a live registry cell names. Results are off-chain (part c).
-* The job lock does not re-check the registry cell's attestation expiry: the registry type script checks it
-  on every creation/update, and a registry cell with an expired attestation still counts as registered until
-  its runner refreshes it (see `registry.md`).
+* A run is bound to a registered node (rule 3), but not to a particular one: any node with a live registry
+  cell and a fresh attestation may run any job and collects the tip in its own float. Results are off-chain
+  (part c).
+* Attestation freshness is only as good as the monitor's `clock_ms` updates (rule 4): the clock cell is the
+  upper bound for "now"; a stale clock keeps an attestation valid longer.
+* **F6 – fee may go to any output (documented, no code change).** On the last run (and on every run, for the
+  recreated job's capacity) up to `max_fee_shannons` of the job capacity is not bound to the miner fee: the
+  transaction builder (the runner) may send it to any output, e.g. its own cell. This is bounded by what the
+  consumer chose in `max_fee_shannons` (and prepaid on creation, `runs × (tip + max_fee)`); consumers should
+  set `max_fee_shannons` to a realistic fee, not a large allowance.
+* **F7 – job lock without job type (documented, no code change).** The job lock does not require the job input
+  to carry `csr-job-type`. A cell that has only the job lock skips the creation checks (funding, run counts)
+  and the update rules of the type script; that is the creator's own risk (e.g. `remaining_runs = 0`, an
+  underfunded cell, or several runs of a non-`Every` trigger). CSR discovers jobs by job type **and** job lock
+  and ignores cells with only one of them.
+* **F8 – several registry cells per key (see `registry.md`).** One key holder may create several registry
+  cells; the job lock accepts any one of them as the dep (each must pass rules 2–4). Off-chain consumers
+  (CSR, monitor, CRT) pick the one with the latest attestation.
 * Runs after `expiry_block` remain possible until somebody refunds (a script can only lower-bound time).
 * `max_cycles` and `payload` are not interpreted on-chain; `max_cycles` is the runner's VM limit (part c).
 * The job type args `service_code_hash` are not interpreted on-chain either: they identify the service
@@ -133,6 +158,12 @@ cell is accepted by both locks (see `float-lock.md`).
 | 12 | recreated job cell missing / wrong (count, data, capacity) |
 | 13 | refund too small |
 | 14 | neither path: no registry cell dep and the refund conditions (`since` absolute block ≥ `expiry_block`, `refund_lock_hash` input) do not hold |
+| 15 | `ERR_NOT_REGISTERED_RUNNER`: no input with the registry dep's runner lock hash (`args[32..64]`) |
+| 16 | `ERR_CONFIG_DEP`: not exactly one cell dep with the registry's `config_type_hash`, or its data shorter than 41 bytes |
+| 17 | `ERR_ATTESTATION_EXPIRED`: registry `attestation.expiry_ms ≤ clock_ms` of the config cell |
+
+Error 10 additionally covers a registry dep whose lock args are not 64 bytes or whose type args are not 32
+bytes.
 
 On a run with a forbidden recreation both scripts would fail; CKB runs lock groups before type groups, so the
 job lock's code (12) is reported.
@@ -140,7 +171,8 @@ job lock's code (12) is reported.
 ## 5. Worked examples
 
 *OnDemand run, single.* Inputs `[job cell (since 0), float cell, runner key cell]`, outputs `[float cell
-(+tip), runner key cell, refund cell (capacity − tip − fee)]`, cell deps `[registry cell, code deps]`.
+(+tip), runner key cell, refund cell (capacity − tip − fee)]`, cell deps `[registry cell, monitor config cell,
+code deps]`. The runner key cell (lock hash = the registry's runner lock hash) is signed with the service key.
 
 *Every(10) run.* Inputs `[job cell (since = relative 10 blocks), float cell, runner key cell]`, outputs
 `[float (+tip), runner key cell, job cell with `remaining_runs − 1` and capacity ≥ in − tip − max_fee]`.
@@ -148,16 +180,20 @@ job lock's code (12) is reported.
 *Last Every run.* As above with `remaining_runs == 1`: no recreated job cell, a refund cell instead.
 
 *Refund after expiry.* Inputs `[job cell (since = absolute block ≥ expiry_block), refund-lock cell]`, outputs
-anything; no registry cell dep needed.
+anything; no registry or config cell dep needed.
+
+Every run transaction carries both the registry cell and the monitor config cell as cell deps.
 
 ## 6. Cycles
 
-Measured with ckb-testtool (release build, `opt-level = "s"`; job-type binary ~9 KB, job-lock ~11.5 KB):
+Measured with ckb-testtool (release build, `opt-level = "s"`; job-type binary ~9.3 KB, job-lock ~12.9 KB),
+after the security fixes (registered-runner and attestation-expiry checks):
 
 | transaction | cycles |
 |-------------|-------:|
-| OnDemand run, `csr-job-lock` alone (no job type, always-success wallet) | 38,219 |
-| OnDemand run, whole tx (job lock + job type + float lock + system lock) | 1,738,768 |
-| Every run with recreation, whole tx | 1,794,708 |
+| OnDemand run, `csr-job-lock` alone (no job type; runner key cell and wallet are an always-success cell) | 51,406 |
+| OnDemand run, whole tx (job lock + job type + float lock + system lock) | 1,779,894 |
+| Every run with recreation, whole tx | 1,780,935 |
 
-The system lock's secp256k1 verification dominates; the job scripts themselves are cheap.
+Before the fixes: 38,219 / 1,738,768 / 1,794,708. The extra checks cost ~13 k cycles (one more cell-dep scan,
+the registry lock/type loads); the system lock's secp256k1 verification still dominates.

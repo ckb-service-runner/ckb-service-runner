@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- A3a security fixes, phase 2: `csr-job-lock` run path requires the registered node's runner key cell (F2, error 15) and a live attestation by the monitor config cell dep (F5, errors 16/17); job tests and helpers updated (config dep in every run); F6–F8 documented; job cycles re-measured; downstream impact in `docs/decisions.md`.
+- A3a security fixes, phase 1: `csr-registry` requires the runner key cell on creation/key change (F1, error 17); `csr-float-lock` runner path forbids type/data on the float output (F3, error 10) and any capacity loss (F4; `max_fee_shannons` reserved).
 - A3a phase 4: `csr-job-type` (creation funding, run counts, Every update) and `csr-job-lock` (triggers via `since`, registered-float tip, anti-siphon, refund path) with 42 ckb-testtool tests; job, float and registry standards updated; `docs/milestones/A3a.md`.
 - A3a phases 1–3: contracts workspace (`contracts/`), molecule schemas, `scripts/build-contracts.sh`, ckb-testtool harness, `csr-float-lock`, `csr-dual-lock`, `csr-registry` (in-script secp256k1 attestation check), `spec/float-lock.md`, `spec/registry.md`, `spec/job-cell-standard.md`.
 - A2 phase 5: services registry (SQLite), `csr service add-local|list|approve|revoke|enable|disable`, `GET /api/services`, `POST /api/services/{code_hash}/{approve|revoke|enable|disable}`, dashboard Services page, `docs/milestones/A2.md`. **Milestone A2 complete.**

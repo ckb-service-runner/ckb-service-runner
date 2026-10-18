@@ -30,6 +30,9 @@ const ERR_TIP: i8 = 11;
 const ERR_RECREATE: i8 = 12;
 const ERR_REFUND: i8 = 13;
 const ERR_NO_PATH: i8 = 14;
+const ERR_NOT_REGISTERED_RUNNER: i8 = 15;
+const ERR_CONFIG_DEP: i8 = 16;
+const ERR_ATTESTATION_EXPIRED: i8 = 17;
 
 /// `since` flags (top byte): bit 7 relative, bits 5–6 metric (0 block, 1 epoch, 2 timestamp).
 const SINCE_ABS_BLOCK: u64 = 0x00;
@@ -109,6 +112,57 @@ fn float_lock_hash(registry: &[u8]) -> Option<[u8; 32]> {
     Some(*mol::fixed::<32>(float)?)
 }
 
+/// `attestation.expiry_ms` (field 4, sub-field 3) of `molecule(Registry)`.
+fn attestation_expiry(registry: &[u8]) -> Option<u64> {
+    let [_, _, _, _, attestation, _] = mol::table::<6>(registry)?;
+    let [_, _, _, expiry, _] = mol::table::<5>(attestation)?;
+    Some(u64::from_le_bytes(*mol::fixed::<8>(expiry)?))
+}
+
+/// Run path rule 3: an input with the registry cell's runner lock hash (its dual lock's `args[32..64]`),
+/// i.e. the registered node's runner key cell, proves that the registered node makes the transaction.
+fn check_registered_runner(dep: usize) -> Result<(), i8> {
+    let lock = cell_lock(dep, Source::CellDep)?;
+    let (_, _, args) = mol::script(&lock).ok_or(ERR_REGISTRY_DEP)?;
+    if args.len() != 64 {
+        return Err(ERR_REGISTRY_DEP);
+    }
+    if input_with_lock_hash(&args[32..64])? {
+        Ok(())
+    } else {
+        Err(ERR_NOT_REGISTERED_RUNNER)
+    }
+}
+
+/// Run path rule 4: exactly one cell dep with the registry's `config_type_hash` (its type script args), and
+/// the registry's `attestation.expiry_ms > clock_ms` of that config cell. The signature is not re-verified.
+fn check_attestation_live(dep: usize, registry: &[u8]) -> Result<(), i8> {
+    let reg_type = cell_type(dep, Source::CellDep)?.ok_or(ERR_REGISTRY_DEP)?;
+    let (_, _, config_type_hash) = mol::script(&reg_type).ok_or(ERR_REGISTRY_DEP)?;
+    if config_type_hash.len() != 32 {
+        return Err(ERR_REGISTRY_DEP);
+    }
+    let mut config = None;
+    for_each_hash(Source::CellDep, CellField::TypeHash, |i, h| {
+        if h.map_or(false, |h| h[..] == *config_type_hash) {
+            if config.is_some() {
+                return Err(ERR_CONFIG_DEP);
+            }
+            config = Some(i);
+        }
+        Ok(true)
+    })?;
+    let config = cell_data(config.ok_or(ERR_CONFIG_DEP)?, Source::CellDep)?;
+    // config data: monitor_pubkey (33) ‖ clock_ms (u64 LE) ‖ reserved
+    let clock_ms = u64::from_le_bytes(config.get(33..41).ok_or(ERR_CONFIG_DEP)?.try_into().unwrap());
+    let expiry_ms = attestation_expiry(registry).ok_or(ERR_REGISTRY_DEP)?;
+    if expiry_ms > clock_ms {
+        Ok(())
+    } else {
+        Err(ERR_ATTESTATION_EXPIRED)
+    }
+}
+
 /// Σ outputs − Σ inputs (capacity) of cells with lock hash `h`, ≥ `need`.
 fn net_inflow_at_least(h: &[u8], need: u128) -> Result<bool, i8> {
     let out = capacity_with_lock_hash(Source::Output, h)?;
@@ -116,7 +170,7 @@ fn net_inflow_at_least(h: &[u8], need: u128) -> Result<bool, i8> {
     Ok(out >= inp + need)
 }
 
-/// Run path rule 3, `remaining_runs > 1`: exactly one recreated job cell with runs − 1 and enough capacity.
+/// Run path rule 5, `remaining_runs > 1`: exactly one recreated job cell with runs − 1 and enough capacity.
 fn check_recreated(lock: &[u8], job: &Job, in_data: &[u8], min_cap: u64) -> Result<(), i8> {
     let in_type = cell_type(0, Source::GroupInput)?;
     let mut found = None;
@@ -189,12 +243,19 @@ fn run() -> Result<(), i8> {
     check_trigger(job.trigger, since)?;
 
     // 2. tip to the registered float
-    let float = float_lock_hash(&cell_data(dep, Source::CellDep)?).ok_or(ERR_REGISTRY_DEP)?;
+    let registry = cell_data(dep, Source::CellDep)?;
+    let float = float_lock_hash(&registry).ok_or(ERR_REGISTRY_DEP)?;
     if !net_inflow_at_least(&float, job.tip_shannons as u128)? {
         return Err(ERR_TIP);
     }
 
-    // 3. no siphoning: the job keeps (or refunds) everything but tip and fee
+    // 3. made by the registered node (its runner key cell is an input)
+    check_registered_runner(dep)?;
+
+    // 4. the registry's attestation has not expired by the monitor clock
+    check_attestation_live(dep, &registry)?;
+
+    // 5. no siphoning: the job keeps (or refunds) everything but tip and fee
     let in_cap = capacity(0, Source::GroupInput).map_err(sys)?;
     let min_cap = in_cap.saturating_sub(job.tip_shannons).saturating_sub(job.max_fee_shannons);
     if job.remaining_runs > 1 {

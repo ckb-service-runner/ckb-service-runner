@@ -175,3 +175,44 @@
   Job transactions (A3c) must add the monitor config cell as a cell dep (Phase 2, F5).
 - **F8 (documented, `spec/registry.md` §4):** one key holder may still create several registry cells;
   consumers pick the one with the latest attestation.
+
+## A3a-fix Phase 2 – job lock (audit F2, F5) and documentation (F6–F8)
+- **F2: runs are bound to the registered node.** `csr-job-lock` run path rule 3: the registry cell dep's lock
+  must parse as a script with 64-byte args (else 10, `ERR_REGISTRY_DEP`); an input with lock hash
+  `args[32..64]` (the node's runner key cell) must exist, else `ERR_NOT_REGISTERED_RUNNER = 15`. The dep lock's
+  code hash is not checked: only cells created through `csr-registry` carry its type script, and that type
+  script already forces a `csr-dual-lock`.
+- **F5: expired attestations stop earning.** Rule 4: `config_type_hash` = the registry dep's type script args
+  (32 bytes, else 10); exactly one cell dep with that type hash (`ERR_CONFIG_DEP = 16`, also used for config
+  data shorter than `monitor_pubkey ‖ clock_ms` = 41 bytes – no extra code, the concept fixes the code list);
+  `attestation.expiry_ms > clock_ms` (`ERR_ATTESTATION_EXPIRED = 17`, same strictness as registry rule 4). The
+  signature is not re-verified (it was verified when the cell was written; saves ~7.9 M cycles per run).
+- **Rule order**: trigger (8/9) → tip (11) → registered runner (15) → live attestation (16/17) → recreation /
+  refund (12/13). The new checks come after the tip so that the existing `job_tip_to_unregistered_float_rejected`
+  (impostor's own float and key) keeps reporting 11; with the tip to the registered float the impostor gets 15.
+- Tests: `S::run_tx` adds the monitor config cell as a second cell dep (the registered runner key cell was
+  already an input). New helpers `S::replace_dep`, `S::config_at(clock_ms)` (same Type ID type script, new
+  clock = a later version of the config cell) and `S::registry_with_runner(hash)` (registry data and type with
+  another dual lock, created directly in the test context – the "forged registry" a type script would never
+  have accepted on creation, which is also how a dep from another deployment would look). Extra tests
+  `job_run_with_malformed_registry_lock_rejected` (10) and `job_run_with_two_config_deps_rejected` (16).
+  `job_lock_cycles_of_run` now uses a registry dep whose runner is the always-success wallet, so it still
+  measures the job lock without a system lock: 51,406 cycles (was 38,219); whole OnDemand run 1,779,894.
+- **F6/F7/F8 documented** in `spec/job-cell-standard.md` §3 "Limits" (F8 also in `spec/registry.md` §4):
+  up to `max_fee_shannons` of the job capacity may go to any output (bounded by the consumer's choice); a cell
+  with only the job lock is the creator's risk, CSR discovers jobs by type and lock; several registry cells per
+  key are possible, consumers pick the latest attestation.
+
+## Downstream impact (A3a security fixes F1–F5)
+- **A3b – `csr register prepare`** must add the node's runner key cell (system lock of the service key) as an
+  input and recreate it as an output, and sign that input with the service key – on creation and on an
+  owner-path key rotation (then the **new** key's cell) (F1).
+- **A3c – job transactions** must add the monitor config cell (Type ID, `config_type_hash` = registry type
+  args) as a cell dep next to the registry cell, include the runner key cell as an input signed with the
+  service key (F2, F5), and must not run with an attestation that has expired by the config cell's `clock_ms`
+  (refresh first).
+- **The float never pays fees.** `max_fee_shannons` in the float lock args is reserved/unused (layout of 72
+  bytes unchanged); a runner transaction that spends the float recreates it without type script or data and
+  with at least its input capacity, and pays the miner fee from the job cell or the runner key cell (F3, F4).
+- Off-chain consumers (CSR, monitor, CRT) that see several registry cells for one key pick the one with the
+  latest attestation (F8); CSR ignores cells that carry the job lock without the job type (F7).
