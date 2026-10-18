@@ -26,7 +26,6 @@ fn harness_deploys_all_contracts() {
     let locks = vec![
         env.float_lock_script(&owner, &runner, 1_000),
         env.dual_lock_script(&owner, &runner),
-        env.job_lock_script(&[7u8; 32]),
     ];
     for lock in locks {
         let input = env.min_cell(10 * CKB, lock.clone(), None, Bytes::new());
@@ -61,14 +60,28 @@ fn harness_deploys_all_contracts() {
         .build();
     env.verify_signed(tx, &[&key]).expect("registry creation");
 
-    let always = env.always_success_script(b"");
-    let types = vec![env.job_type_script(&[9u8; 32])];
-    for type_ in types {
-        let input = env.min_cell(10 * CKB, always.clone(), Some(type_.clone()), Bytes::new());
-        let tx = tx_with(
-            vec![env.input(&input, 0)],
-            vec![(output(10 * CKB, always.clone(), Some(type_)), Bytes::new())],
-        );
-        env.verify(tx).expect("type contract placeholder accepts");
-    }
+    // job type + job lock: create an OnDemand job, then refund it after expiry (refund path)
+    let job_lock = env.job_lock_script(&[7u8; 32]);
+    let job_type = env.job_type_script(&[9u8; 32]);
+    let job = JobFields {
+        trigger: Trigger::OnDemand,
+        tip_shannons: CKB,
+        max_fee_shannons: 1_000_000,
+        max_cycles: 1_000_000,
+        payload: Vec::new(),
+        expiry_block: 100,
+        refund_lock_hash: key.lock_hash(),
+        remaining_runs: 1,
+    };
+    let cap = job.required_capacity(&job_lock, &job_type);
+    let wallet = env.min_cell(1000 * CKB, key.lock.clone(), None, Bytes::new());
+    let tx = tx_with(vec![env.input(&wallet, 0)], vec![(output(cap, job_lock.clone(), Some(job_type.clone())), job.data())]);
+    env.verify_signed(tx, &[&key]).expect("job creation");
+    let job_cell = env.cell(cap, job_lock, Some(job_type), job.data());
+    let key_cell = env.min_cell(10 * CKB, key.lock.clone(), None, Bytes::new());
+    let tx = tx_with(
+        vec![env.input(&job_cell, since::abs_block(100)), env.input(&key_cell, 0)],
+        vec![(output(cap, key.lock.clone(), None), Bytes::new())],
+    );
+    env.verify_signed(tx, &[&key]).expect("job refund");
 }

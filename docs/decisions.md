@@ -120,3 +120,30 @@
 - The harness test now creates a real registry cell (valid attestation) instead of the placeholder spend.
 - "Registry without attestation" is tested as an attestation with an all-zero signature (error 10); missing
   fields would be error 7.
+
+## A3a Phase 4 – job type and job lock
+- **Fee from the job, tip to the float** (concept, replaces spec §3.3 "float pays the fee, job pays it back"):
+  same economics with fewer moving parts. The job cell loses at most `tip + max_fee` per run; the float gains
+  at least the tip (net), its own `max_fee_shannons` bound is not used by the run.
+- `csr-job-type` and `csr-job-lock` drop `csr-schemas` and the `ckb-types` feature like the registry; they share
+  `csr-registry/src/mol.rs` and `csr-job-type/src/{job,util}.rs` via `#[path]` includes (no new crate, so
+  `Cargo.lock` only lost entries). Removing the job crates' `ckb-types` feature also removed it from the float
+  lock's build (feature unification), so `csr-float-lock` now uses only `ckb_std::syscalls` too.
+- **Path selection / error codes**: accepted = refund conditions hold, or the run rules hold. If the refund
+  conditions fail and the transaction has **no registry cell dep**, the lock reports 14 ("neither path"); with
+  a registry dep it reports the run-path error. So "refund before expiry" and "refund without refund-lock
+  input" are both error 14; error 10 now means "several registry deps / malformed registry data".
+- **One job input per transaction** = no other input whose lock has the job lock's code hash (any args, any
+  hash type), not only "one cell in the group".
+- **Net sums** for both the tip (float lock hash F) and the final refund (`refund_lock_hash`): Σ outputs − Σ
+  inputs with that lock hash. The concept states the refund as Σ outputs; net is stricter and protects
+  refund locks that do not need a signature (anyone-can-pay).
+- `remaining_runs > 1` → recreation required (exactly one output with byte-identical job lock and type); `≤ 1`
+  (0 only reachable without the job type) → consumed with refund. Outputs with the same lock/type are not
+  forbidden in the last run (a new job may be created in the same tx).
+- Type update additionally requires the output's `remaining_runs ≥ 1` (an Every job with 1 run left must be
+  consumed, never recreated with 0).
+- Epoch triggers are compared as exact fractions; `length = 0` is read as a whole epoch.
+- The job lock does not check registry attestation expiry or bind runs to a runner key (documented as limits
+  in `spec/job-cell-standard.md` §3).
+- The harness test now creates a real job (type script) and refunds it after expiry (job lock).

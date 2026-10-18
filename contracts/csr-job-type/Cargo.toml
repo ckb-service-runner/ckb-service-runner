@@ -5,5 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-ckb-std = { workspace = true }
-csr-schemas = { path = "../csr-schemas" }
+# no `ckb-types` feature and no `csr-schemas` (the `bytes` crate emits atomics, see csr-float-lock);
+# the molecule data is parsed by hand (csr-registry/src/mol.rs, csr-job-type/src/job.rs).
+ckb-std = { version = "=1.1.0", default-features = false, features = ["allocator", "dummy-atomic"] }

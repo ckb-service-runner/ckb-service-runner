@@ -87,3 +87,16 @@ it is not safe.
 
 Worked example: a registry cell (`lock = dual-lock`) is spent with inputs `[registry cell, runner key cell]` →
 the lock passes, the registry type script enforces runner-path rules.
+
+## 4. Use in job runs
+
+A job run (see `job-cell-standard.md`) pays the tip by **merging it into an existing float cell**: inputs
+`[job, float, runner key cell]`, outputs `[float + tip, runner key cell, …]`. The float lock takes its runner
+path (exactly one identical float output, capacity ≥ input − `max_fee_shannons`, here even more), and the job
+lock counts the **net** inflow to the float lock hash (outputs − inputs), so spending and recreating the float
+in the same transaction is fine. The transaction fee is paid from the job cell (≤ the job's
+`max_fee_shannons`), not from the float. A first tip can also be a plain deposit (a new float cell), which does
+not run the float lock at all.
+
+Implementation note: the float lock uses only `ckb_std::syscalls` (no `high_level`), like all CSR contracts,
+because the `ckb-types` feature is not enabled in the contracts' build (see `docs/decisions.md`).

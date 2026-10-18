@@ -381,3 +381,95 @@ impl RegistryFields {
 pub fn cell_dep(op: &OutPoint) -> packed::CellDep {
     packed::CellDep::new_builder().out_point(op.clone()).build()
 }
+
+// --- job ----------------------------------------------------------------------------------------
+
+fn mol_u64(v: u64) -> csr_schemas::Uint64 {
+    csr_schemas::Uint64::new_unchecked(Bytes::copy_from_slice(&v.to_le_bytes()))
+}
+
+/// Job trigger (`spec/job-cell-standard.md` §2).
+#[derive(Clone, Copy, Debug)]
+pub enum Trigger {
+    OnDemand,
+    AtBlock(u64),
+    /// Packed epoch (`EpochNumberWithFraction` full value).
+    AtEpoch(u64),
+    /// Milliseconds.
+    AtTimestamp(u64),
+    Every(u64),
+}
+
+impl Trigger {
+    pub fn mol(&self) -> csr_schemas::Trigger {
+        use csr_schemas::*;
+        let u: TriggerUnion = match *self {
+            Self::OnDemand => OnDemand::default().into(),
+            Self::AtBlock(n) => AtBlock::new_builder().block(mol_u64(n)).build().into(),
+            Self::AtEpoch(e) => AtEpoch::new_builder().epoch(mol_u64(e)).build().into(),
+            Self::AtTimestamp(t) => AtTimestamp::new_builder().timestamp_ms(mol_u64(t)).build().into(),
+            Self::Every(k) => Every::new_builder().blocks(mol_u64(k)).build().into(),
+        };
+        csr_schemas::Trigger::new_builder().set(u).build()
+    }
+}
+
+/// Job cell data (`molecule(Job)`).
+#[derive(Clone, Debug)]
+pub struct JobFields {
+    pub trigger: Trigger,
+    pub tip_shannons: u64,
+    pub max_fee_shannons: u64,
+    pub max_cycles: u64,
+    pub payload: Vec<u8>,
+    pub expiry_block: u64,
+    pub refund_lock_hash: [u8; 32],
+    pub remaining_runs: u32,
+}
+
+impl JobFields {
+    pub fn data(&self) -> Bytes {
+        csr_schemas::Job::new_builder()
+            .trigger(self.trigger.mol())
+            .tip_shannons(mol_u64(self.tip_shannons))
+            .max_fee_shannons(mol_u64(self.max_fee_shannons))
+            .max_cycles(mol_u64(self.max_cycles))
+            .payload(mol_bytes(&self.payload))
+            .expiry_block(mol_u64(self.expiry_block))
+            .refund_lock_hash(csr_schemas::Byte32::new_unchecked(Bytes::copy_from_slice(&self.refund_lock_hash)))
+            .remaining_runs(csr_schemas::Uint32::new_unchecked(Bytes::copy_from_slice(&self.remaining_runs.to_le_bytes())))
+            .build()
+            .as_bytes()
+    }
+
+    /// The same job after one run.
+    pub fn next_run(&self) -> Self {
+        JobFields { remaining_runs: self.remaining_runs - 1, ..self.clone() }
+    }
+
+    /// Capacity the job type requires on creation: occupied + runs × (tip + max_fee).
+    pub fn required_capacity(&self, lock: &Script, type_: &Script) -> u64 {
+        min_capacity(lock, Some(type_), self.data().len())
+            + self.remaining_runs as u64 * (self.tip_shannons + self.max_fee_shannons)
+    }
+}
+
+/// `since` values (CKB RFC 0017).
+pub mod since {
+    pub fn abs_block(n: u64) -> u64 {
+        n
+    }
+    pub fn abs_epoch(packed: u64) -> u64 {
+        0x2000_0000_0000_0000 | packed
+    }
+    pub fn abs_timestamp_secs(t: u64) -> u64 {
+        0x4000_0000_0000_0000 | t
+    }
+    pub fn rel_block(n: u64) -> u64 {
+        0x8000_0000_0000_0000 | n
+    }
+    /// Packed epoch `number ‖ index ‖ length`.
+    pub fn epoch(number: u64, index: u64, length: u64) -> u64 {
+        number | (index << 24) | (length << 40)
+    }
+}

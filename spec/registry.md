@@ -133,7 +133,16 @@ Owner presence on update/destroy is taken from the **input** cell's lock args (`
 bytes of its dual-lock args). On the owner path the output may carry a different dual lock (e.g. a new owner),
 as long as rule 5 holds.
 
-## 7. Cycles
+## 7. Use by the job lock
+
+`csr-job-lock` (args = hash of this registry type script) reads a registry cell as a **cell dep** and takes
+its `float_lock_hash` as the float that must receive the tip (`job-cell-standard.md`). It does not re-check
+the attestation: a registry cell whose `expiry_ms` has passed (relative to the monitor's `clock_ms`) still
+counts as registered for job runs until its runner refreshes it via the runner path. Off-chain clients
+(the job creator, the monitor) should prefer runners with a fresh attestation. Since `float_lock_hash` can only
+be changed by the owner path, a compromised runner key cannot redirect tips.
+
+## 8. Cycles
 
 Measured with ckb-testtool (`registry_create_cycles_of_type_script`, `registry_create_with_valid_attestation_ok`,
 `registry_runner_refreshes_attestation_ok`; peer ID of 40 bytes, release build `opt-level = "s"`):

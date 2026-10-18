@@ -3,7 +3,6 @@
 
 use ckb_std::ckb_constants::{CellField, Source};
 use ckb_std::error::SysError;
-use ckb_std::high_level::{load_cell_capacity, load_cell_lock_hash, QueryIter};
 use ckb_std::syscalls;
 
 ckb_std::entry!(program_entry);
@@ -54,8 +53,23 @@ fn script_args(s: &[u8]) -> Option<&[u8]> {
     s.get(start + 4..start + 4 + len)
 }
 
-fn has_input_with_lock_hash(hash: &[u8]) -> bool {
-    QueryIter::new(load_cell_lock_hash, Source::Input).any(|h| h[..] == *hash)
+fn load_cell_capacity(i: usize, src: Source) -> Result<u64, SysError> {
+    let mut b = [0u8; 8];
+    syscalls::load_cell_by_field(&mut b, 0, i, src, CellField::Capacity)?;
+    Ok(u64::from_le_bytes(b))
+}
+
+fn has_input_with_lock_hash(hash: &[u8]) -> Result<bool, i8> {
+    let mut h = [0u8; 32];
+    for i in 0.. {
+        match syscalls::load_cell_by_field(&mut h, 0, i, Source::Input, CellField::LockHash) {
+            Ok(_) if h[..] == *hash => return Ok(true),
+            Ok(_) => {}
+            Err(SysError::IndexOutOfBound) => break,
+            Err(e) => return Err(sys(e)),
+        }
+    }
+    Ok(false)
 }
 
 fn run() -> Result<(), i8> {
@@ -73,11 +87,11 @@ fn run() -> Result<(), i8> {
     let max_fee = u64::from_le_bytes(fee);
 
     // Owner path: anything allowed.
-    if has_input_with_lock_hash(owner) {
+    if has_input_with_lock_hash(owner)? {
         return Ok(());
     }
     // Runner path.
-    if !has_input_with_lock_hash(runner) {
+    if !has_input_with_lock_hash(runner)? {
         return Err(ERR_NO_KEY_CELL);
     }
 

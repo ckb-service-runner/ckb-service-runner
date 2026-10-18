@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- A3a phase 4: `csr-job-type` (creation funding, run counts, Every update) and `csr-job-lock` (triggers via `since`, registered-float tip, anti-siphon, refund path) with 42 ckb-testtool tests; job, float and registry standards updated; `docs/milestones/A3a.md`.
+- A3a phases 1–3: contracts workspace (`contracts/`), molecule schemas, `scripts/build-contracts.sh`, ckb-testtool harness, `csr-float-lock`, `csr-dual-lock`, `csr-registry` (in-script secp256k1 attestation check), `spec/float-lock.md`, `spec/registry.md`, `spec/job-cell-standard.md`.
 - A2 phase 5: services registry (SQLite), `csr service add-local|list|approve|revoke|enable|disable`, `GET /api/services`, `POST /api/services/{code_hash}/{approve|revoke|enable|disable}`, dashboard Services page, `docs/milestones/A2.md`. **Milestone A2 complete.**
 - A2 phase 4: C (`hello-c`, vendored ckb-c-stdlib) and JavaScript (`hello-js` on the vendored ckb-js-vm) example services; `build-services.sh` builds C and verifies the JS artefacts.
 - Add `GET /api/network` and the monitor public-API client with a 5-minute cache (A1+ phase 1).
