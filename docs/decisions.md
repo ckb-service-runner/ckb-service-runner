@@ -42,3 +42,7 @@
 - A 404 for the node is a successful "not ranked" (`node: null`). Any other failure of either request fails the whole refresh: cached data is served with `stale: true` + `error`; with no cache `network`/`node` are `null` and `error` is set (HTTP 200).
 - After a failed refresh the monitor is not asked again for 15 s (avoids hammering on every dashboard poll). Requests: 10 s timeout, no proxy, no redirects. Unknown reply fields are ignored.
 - If the node's peer ID is not known yet, only `/v1/network` is fetched and `node` is `null`.
+
+## A1+ Phase 2: Network page
+- Per-country view is an SVG bar list sorted by count (no map, no style attributes). The Overview ranking card calls `/api/network` only when `ranking.join` is true; the page polls every 30 s (server cache is 5 min).
+- Monitor public API documented in the new `spec/monitor-public-api.md`.

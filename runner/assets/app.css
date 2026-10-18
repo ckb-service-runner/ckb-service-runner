@@ -38,3 +38,6 @@ pre.log{background:var(--card);border:1px solid var(--bd);padding:.5rem;overflow
 .row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.6rem}
 .row select{width:auto}
 @media(max-width:480px){.view{padding:.5rem}.nav a{padding:.3rem .45rem}}
+.msg.stale{color:var(--warn);font-weight:700}
+svg.bars{height:auto}
+svg.bars .bar{fill:var(--ac)}

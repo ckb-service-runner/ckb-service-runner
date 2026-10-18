@@ -121,6 +121,41 @@
     view.appendChild(c);
   }
 
+  function fmtTime(t) { return t ? new Date(t * 1000).toLocaleString() : 'never'; }
+  function pct(v) { return typeof v === 'number' ? (v * 100).toFixed(2) + '%' : '–'; }
+  function clear(c) { while (c.children.length > 1) c.removeChild(c.lastChild); }
+  function stale(c, j) {
+    if (j.stale) c.appendChild(el('p', 'msg stale', 'Stale data: showing the last cached monitor reply. ' + (j.error || '')));
+    else if (j.error) c.appendChild(el('p', 'msg err', j.error));
+  }
+  function checkType(t) { return t === 'p2p_verified' ? 'P2P-verified' : t === 'challenge_only' ? 'challenge-only' : t; }
+  function countryBars(list) {
+    var rows = (list || []).slice().sort(function (a, b) { return b.count - a.count || (a.code < b.code ? -1 : 1); });
+    var h = 16, w = 400, lw = 34, max = rows.length ? rows[0].count : 1;
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'chart bars');
+    svg.setAttribute('viewBox', '0 0 ' + w + ' ' + Math.max(h, rows.length * h));
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', 'nodes per country');
+    rows.forEach(function (r, i) {
+      var y = i * h;
+      var t = document.createElementNS(NS, 'text');
+      t.setAttribute('x', 2); t.setAttribute('y', y + 12);
+      t.textContent = r.code;
+      svg.appendChild(t);
+      var b = document.createElementNS(NS, 'rect');
+      b.setAttribute('class', 'bar');
+      b.setAttribute('x', lw); b.setAttribute('y', y + 2); b.setAttribute('height', h - 4);
+      b.setAttribute('width', Math.max(1, (r.count / max) * (w - lw - 40)).toFixed(1));
+      svg.appendChild(b);
+      var n = document.createElementNS(NS, 'text');
+      n.setAttribute('x', lw + Math.max(1, (r.count / max) * (w - lw - 40)) + 4); n.setAttribute('y', y + 12);
+      n.textContent = String(r.count);
+      svg.appendChild(n);
+    });
+    return svg;
+  }
+
   var pages = {};
 
   pages.overview = function (root) {
@@ -139,6 +174,17 @@
       dl(cr, [['State', pill(s.runtime.state)], ['Reason', s.runtime.reason], ['Mainnet unlock', s.mainnet_runtime_unlocked ? 'yes' : 'no']]);
       var r = s.ranking || {};
       dl(ck, [['Join', r.join ? 'yes' : 'no'], ['Mode', r.ping_mode], ['Last check ok', r.last_check_ok_at ? new Date(r.last_check_ok_at * 1000).toLocaleString() : 'never']]);
+      if (r.join) {
+        var rk = el('div');
+        ck.appendChild(rk);
+        api('/api/network').then(function (j) {
+          var n = j.node;
+          dl(rk, [['Rank', n ? n.rank + ' / ' + n.of : 'not ranked'], ['Availability 30 d', n ? pct(n.availability.d30) : '–']]);
+          if (j.stale) rk.appendChild(el('p', 'msg stale', 'stale'));
+        }).catch(function () {});
+      } else {
+        ck.appendChild(el('p', '', 'Join the ranking to see stats'));
+      }
     }
     function res() {
       api('/api/resources').then(function (r) {
@@ -151,6 +197,41 @@
     }
     onStatus = paint; paint(); res();
     timers.push(setInterval(res, 5000));
+  };
+
+  pages.network = function (root) {
+    var cw = card('Nodes worldwide'), cr = card('My rank'), cc = card('Countries');
+    var g = el('div', 'grid');
+    g.appendChild(cw); g.appendChild(cr);
+    root.appendChild(g); root.appendChild(cc);
+    function load() {
+      api('/api/network').then(function (j) {
+        clear(cw); clear(cr); clear(cc);
+        if (!j.join) {
+          cw.appendChild(el('p', '', j.message || 'Join the ranking to see stats'));
+          return;
+        }
+        stale(cw, j);
+        var nw = j.network, n = j.node;
+        dl(cw, [['Nodes worldwide', nw ? nw.nodes_total : null], ['Nodes reachable', nw ? nw.nodes_reachable : null],
+          ['Updated', nw ? fmtTime(nw.updated_at) : null], ['Fetched', fmtTime(j.fetched_at)], ['Monitor', j.monitor_url]]);
+        var ping = j.ping || {};
+        if (n) {
+          var a = n.attestation || {};
+          dl(cr, [['Rank', n.rank + ' / ' + n.of], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
+            ['Availability 365 d', pct(n.availability.d365)], ['Check type', checkType(n.check_type)],
+            ['Attestation', a.status + (a.expiry ? ' (expires ' + fmtTime(a.expiry) + ')' : '')],
+            ['Last check', fmtTime(n.last_check_at)], ['Ping mode', ping.mode], ['Last successful check', fmtTime(ping.last_check_ok_at)]]);
+        } else {
+          cr.appendChild(el('p', '', nw ? 'Not ranked yet.' : 'No data available.'));
+          dl(cr, [['Ping mode', ping.mode], ['Last successful check', fmtTime(ping.last_check_ok_at)]]);
+        }
+        if (nw && nw.countries && nw.countries.length) cc.appendChild(countryBars(nw.countries));
+        else cc.appendChild(el('p', '', 'No country data.'));
+      }).catch(function (x) { clear(cw); cw.appendChild(el('p', 'msg err', x.message)); });
+    }
+    load();
+    timers.push(setInterval(load, 30000));
   };
 
   pages.node = function (root) {
