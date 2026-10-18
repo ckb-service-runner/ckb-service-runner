@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "csr-schemas",
+    "csr-float-lock",
+    "csr-dual-lock",
+    "csr-registry",
+    "csr-job-type",
+    "csr-job-lock",
+    "csr-contract-tests",
+]
+resolver = "2"
+
+[workspace.dependencies]
+ckb-std = { version = "=1.1.0", default-features = false, features = ["allocator", "ckb-types", "dummy-atomic"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true

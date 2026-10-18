@@ -1,0 +1,41 @@
+# CSR example configuration (testnet). All keys are optional; unknown keys are errors.
+network = "testnet"                 # testnet | mainnet
+
+[node]
+rpc_url = "http://127.0.0.1:8114"   # host must be 127.0.0.1, localhost or [::1]; http only
+node_type = "auto"                  # auto | ckb | neuron
+
+[dashboard]
+bind = "127.0.0.1:8130"             # non-loopback bind requires password_hash (see `csr set-password`)
+password_hash = ""
+
+[ranking]
+join = true
+ping_mode = "inbound"               # inbound | outbound | both
+ping_bind = "0.0.0.0:8131"
+
+[monitor]
+url = ""                            # empty = network default
+pubkey = ""                         # empty = network default; 0x + 66 hex (compressed secp256k1)
+
+[runtime]
+enabled = false
+allowed_services = []
+min_ckb_per_mcycle = 0.0
+
+[limits]
+max_concurrent_jobs = 2             # 1..=64
+max_cycles_per_job = 70000000
+max_vm_memory_mb = 4                # 1..=64
+max_job_wall_seconds = 30           # 1..=3600
+pause_above_cpu_percent = 85        # 1..=100
+min_free_ram_mb = 1024
+min_free_disk_gb = 10
+
+[storage]
+path = "service_data"
+total_quota_mb = 256
+per_service_quota_mb = 64           # <= total_quota_mb
+
+[logging]
+level = "info"                      # error | warn | info | debug | trace

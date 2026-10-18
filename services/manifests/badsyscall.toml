@@ -1,0 +1,4 @@
+name = "badsyscall"
+language = "rust"
+elf = "../rust/target/riscv64imac-unknown-none-elf/release/badsyscall"
+args = "0x"

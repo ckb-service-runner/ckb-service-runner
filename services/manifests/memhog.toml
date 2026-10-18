@@ -1,0 +1,4 @@
+name = "memhog"
+language = "rust"
+elf = "../rust/target/riscv64imac-unknown-none-elf/release/memhog"
+args = "0x"

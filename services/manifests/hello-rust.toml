@@ -1,0 +1,4 @@
+name = "hello-rust"
+language = "rust"
+elf = "../rust/target/riscv64imac-unknown-none-elf/release/hello"
+args = "0x"

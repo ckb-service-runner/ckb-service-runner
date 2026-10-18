@@ -1,19 +1,10 @@
-# Rust
-/target/
-**/*.rs.bk
-
-# Node / web
-node_modules/
+target/
+.acc-tmp/
+.tools/
+services/c/*/build/
+services/js/node_modules/
+contracts/target/
+contracts/build/
+.devnet/
+deployments/devnet.json
 dist/
-
-# Local config, keys and data — never commit
-*.pem
-*.key
-ckb-service-runner.toml
-service_data/
-
-# Editors / OS
-.vscode/
-.idea/
-.DS_Store
-*:Zone.Identifier

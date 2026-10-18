@@ -1,0 +1,9 @@
+name = "hello-js"
+language = "js"
+# ckb-js-vm runs in the VM; it loads the JavaScript from the cell dep named in `args`.
+elf = "../vendor/ckb-js-vm"
+identity = "../js/hello/hello.js"
+data_cells = ["../js/hello/hello.js"]
+# ckb-js-vm args: flags (u16 LE, 0 = no file system) ‖ data hash of hello.js ‖ hash_type (4 = data2).
+# scripts/build-services.sh checks that the hash matches hello.js.
+args = "0x0000bbfb00c9cf21861fe697330f2097ddca64922660e94feb4e77a319ddabaa607104"

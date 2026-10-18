@@ -1,0 +1,6 @@
+[build]
+jobs = 2
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false

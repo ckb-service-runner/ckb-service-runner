@@ -1,0 +1,10 @@
+[package]
+name = "csr-job-type"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# no `ckb-types` feature and no `csr-schemas` (the `bytes` crate emits atomics, see csr-float-lock);
+# the molecule data is parsed by hand (csr-registry/src/mol.rs, csr-job-type/src/job.rs).
+ckb-std = { version = "=1.1.0", default-features = false, features = ["allocator", "dummy-atomic"] }

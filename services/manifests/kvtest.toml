@@ -1,0 +1,4 @@
+name = "kvtest"
+language = "rust"
+elf = "../rust/target/riscv64imac-unknown-none-elf/release/kvtest"
+args = "0x"

@@ -1,0 +1,41 @@
+[package]
+name = "csr"
+version = "0.1.0"
+edition = "2021"
+description = "CSR - CKB Service Runner"
+
+[[bin]]
+name = "csr"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+sha2 = "0.10"
+secp256k1 = { version = "0.29", features = ["recovery"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "time", "net", "io-util", "signal", "sync"] }
+axum = "0.8.9"
+sysinfo = "0.39.6"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+rand = "0.8"
+argon2 = "0.5"
+futures-util = { version = "0.3", default-features = false }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+rust-embed = "8"
+ckb-vm = { version = "=0.24.15", features = ["asm"] }
+blake2b-ref = "0.3.1"
+chacha20poly1305 = "0.10"
+hmac = "0.12"
+ckb-types = "1"
+ckb-jsonrpc-types = "1"
+ckb-hash = "1"
+
+[dev-dependencies]
+tempfile = "3"

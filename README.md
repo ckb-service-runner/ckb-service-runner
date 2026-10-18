@@ -1,104 +1,81 @@
-# CKB Service Runner
+# CSR – CKB Service Runner
 
-**Run a CKB full node — and let it do more.**
+CSR is a Rust side application that runs next to a fully synced [CKB](https://github.com/nervosnetwork/ckb) full node.
+Milestone **A1** delivers the `csr` binary with:
 
-CKB Service Runner is a side application you install next to a fully synced
-[CKB](https://github.com/nervosnetwork/ckb) full node. It gives node operators a
-dashboard for their node, a public node ranking, and — later — a sandboxed
-runtime that executes decentralised services published as cells on CKB.
+- node monitoring and the **R2 sync guard** (is the node synced, connected and indexed?),
+- a resource monitor (CPU, RAM, disk),
+- an **embedded web dashboard** (Overview, Node, Resources, Settings, Logs) served by `csr` itself – no separate web server, no build step,
+- dashboard authentication (argon2id password, sessions, CSRF protection),
+- the **ping responder** (inbound challenge endpoint and outbound NAT check-in) the CSR Network Monitor uses to rank nodes.
 
-> **Status: concept / pre-alpha. Testnet only. No release yet.**
-> The design is open for discussion — see [Discussions](../../discussions).
+CSR never sends a transaction in A1 and never edits your `ckb.toml`.
 
----
+## Install from source
 
-## Why
+```sh
+. "$HOME/.cargo/env"
+cargo build --release
+./target/release/csr version
+```
 
-CKB full nodes are run by volunteers at their own cost. At the same time,
-many applications need things a smart contract alone can't do: hold a secret
-and delete it on time, watch the chain, keep data, sign attestations.
+## Quick start
 
-CKB Service Runner aims to be a platform where **independent full nodes provide
-those services to truly decentralised applications** — a win for users,
-developers, the CKB network and node operators. Fees for operators are a
-by-product, not the goal.
+```sh
+csr detect            # inspect the configured node (add --probe to try 127.0.0.1:8114 and :8124)
+csr check             # one R2 check; exit 0 = Synced, 2 = not Synced / unreachable
+csr set-password      # optional: protect the dashboard
+csr run               # start the service (testnet by default); Ctrl-C / SIGTERM stops it
+```
 
-The first service planned is **CRT (CKB Revocable Timelock)**: a timelock with
-cancellation, where key shares are spread across many independent nodes and
-deleted when the switch cell is consumed.
+`csr detect` tells you if the node is reachable, which chain it serves, and whether the Indexer module is enabled.
+If it is not, add `"Indexer"` to `modules` under `[rpc]` in `ckb.toml` yourself and restart the node.
 
-## What it is — and isn't
+Global options: `--data-root DIR` (default `~/.csr`), `--config FILE` (default `<data-root>/csr.toml`; built-in defaults if absent),
+`--network testnet|mainnet`. Mainnet needs `csr run --confirm-mainnet` once.
 
-| It is | It isn't |
-|---|---|
-| A separate process beside your node, talking to it over local RPC | A change to the `ckb` binary or to consensus |
-| Opt-in: nothing runs unless the operator enables it | Auto-running arbitrary code found on-chain |
-| Trust-minimised: secure unless a threshold of nodes collude | Trustless |
-| Paid to one payout address you choose (multisig or JoyID possible) | A hot wallet on your server |
+## Configuration
+
+Copy `config/csr.example.toml` to `~/.csr/csr.toml`. Every key is optional, unknown keys are errors, and `csr config validate`
+checks a file without creating anything. The main sections: `[node]` (RPC URL, loopback only), `[dashboard]` (bind address, password hash),
+`[ranking]` (join, ping mode and port), `[monitor]`, `[runtime]`, `[limits]`, `[storage]`, `[logging]`.
+Per-network state lives in `<data-root>/<network>/` (keys, SQLite database, logs).
+
+## Dashboard
+
+Open `http://127.0.0.1:8130/` after `csr run`. Pages: `#/overview`, `#/node`, `#/network`, `#/resources`, `#/settings`, `#/logs`.
+A non-loopback bind requires a password (`csr set-password`). All writes need the session cookie and the CSRF token.
+The JSON API (`/api/status`, `/api/node`, `/api/resources`, `/api/settings`, `/api/events`, …) is documented in `docs/milestones/A1.md`.
+
+The **Network** page shows nodes worldwide/reachable, a per-country bar list, your rank, availability (7/30/365 d), check type and attestation,
+fed by the monitor's public API (`spec/monitor-public-api.md`, cached 5 min; stale data is flagged). See `docs/milestones/A1plus.md`.
+
+## Ranking (ping responder)
+
+With `ranking.join = true` the CSR Network Monitor can verify that your node is online, synced and bound to your service key.
+
+- `ping_mode = "inbound"`: CSR listens on `ranking.ping_bind` (default `0.0.0.0:8131`) and answers signed challenges at `POST /v1/challenge`.
+- `ping_mode = "outbound"`: for nodes behind NAT. CSR checks in with the monitor every 10 minutes and answers the challenge it gets back. The ping port stays closed.
+- `ping_mode = "both"`: both.
+
+Protocol details: `spec/ping-protocol.md`. The monitor URL and key are placeholders until the real monitor exists (see `docs/open-questions.md`).
+
+## Services (A2)
+Build the example services with `bash scripts/build-services.sh`, then
+`csr service run-local --manifest services/manifests/hello-rust.toml --payload 0x0102`.
+Register with `csr service add-local --manifest PATH`, manage with `csr service list|approve|revoke|enable|disable`
+or on the dashboard page `#/services`. Host interface: `spec/host-interface.md`. Details: `docs/milestones/A2.md`.
+
+## Jobs and earnings (A3c)
+With `runtime.enabled = true`, `csr run` discovers keeper job cells on the chain, runs approved on-chain services (`csr service add-onchain`), submits the job transactions and tracks settlement. `csr jobs plan --json` shows the selection. Dashboard pages `#/jobs` and `#/earnings`. Demo: `docs/milestones/A3c.md`.
 
 ## Roadmap
 
-### Phase 1 — Node Runner dashboard and ranking (testnet first)
+| Milestone | Content |
+|---|---|
+| **A1** | Runner, R2 guard, resource monitor, dashboard, auth, ping responder (this release) |
+| **A2** | Service runtime: CKB-VM sandbox, host interface, encrypted storage, local runs, Rust/C/JS example services, Services page (`docs/milestones/A2.md`) |
+| A3 | Services, job market and on-chain interaction |
+| A4 | Production hardening, mainnet unlock via the monitor |
 
-- Web dashboard based on a CKB fork of [mempool](https://github.com/mempool/mempool),
-  restyled to make CKB's cell model easy to understand.
-- Node scoring for nodes running CKB Service Runner: availability, age, sync
-  status, peers, version, network diversity (ASN, region, country).
-- Weekly stats summary written to a **stat cell** under an anyone-can-pay lock
-  (funded by the project at start).
-- One probe/scoring server at launch, to be decentralised onto the runners themselves.
-- "Join the node ranking" setting, **on by default**.
-- Service Runtime toggle visible but **inactive**.
-
-### Phase 2 — Service Runtime
-
-Activated once **both** are true:
-
-- 12 months of Phase 1 operation, and
-- at least **60 diverse nodes** in the ranking (ASN, region, country).
-
-Then: services run from cells in CKB-VM, starting with CRT. Being in the
-ranking is required to be assigned jobs.
-
-Details: [docs/roadmap.md](docs/roadmap.md).
-
-## Hard requirements
-
-- **R1 — Node reputation ledger.** Public, verifiable record of availability,
-  sync, version, age and diversity, collected by independent probes.
-- **R2 — Fully synced full node, enforced and proven.** Checked in code (not a
-  config option) and provable to others over P2P.
-- **R3 — Secure execution.** Services are isolated from the host: no access to
-  node data, keys or files; no outbound network; fixed CPU, memory, time and
-  storage limits.
-- **R4 — Persistent service storage.** Per-service storage that survives
-  restarts, with quotas, encryption at rest and deletion triggered by on-chain events.
-
-Details: [docs/architecture.md](docs/architecture.md).
-
-## Repository layout
-
-```
-docs/          design, roadmap, open questions
-config/        example configuration
-runner/        (planned) the runner process — Rust
-probe/         (planned) probe / scoring server
-spec/          (planned) service-cell format and host interface — RFC candidates
-```
-
-The dashboard (mempool fork) lives in its own repository because of its
-AGPL-3.0 licence.
-
-## Get involved
-
-This project is meant to be built together by CKB developers and node operators.
-
-- Design questions → [Discussions](../../discussions)
-- Concrete, agreed work → [Issues](../../issues)
-- Background: ["A Revenue Layer for CKB Nodes" on Nervos Talk](https://talk.nervos.org/t/a-revenue-layer-for-ckb-nodes/10734)
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
-
-## Licence
-
-MIT — see [LICENSE](LICENSE).
+See `docs/spec/` for the full specification.

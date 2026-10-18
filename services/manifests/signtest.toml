@@ -1,0 +1,4 @@
+name = "signtest"
+language = "rust"
+elf = "../rust/target/riscv64imac-unknown-none-elf/release/signtest"
+args = "0x"
