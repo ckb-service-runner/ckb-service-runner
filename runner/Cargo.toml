@@ -15,3 +15,9 @@ secp256k1 = "0.29"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "time", "net", "io-util"] }
+
+[dev-dependencies]
+tempfile = "3"

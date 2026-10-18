@@ -1,5 +1,6 @@
 mod config;
 mod network;
+mod node;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -83,6 +84,13 @@ fn load_config(cli: &Cli) -> Result<config::Config, String> {
     Ok(cfg)
 }
 
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match &cli.command {
@@ -102,6 +110,72 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Command::Check { json } => {
+            let cfg = match load_config(&cli) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let res = runtime().block_on(node::check(&cfg));
+            if *json {
+                println!("{}", res.json);
+            } else {
+                node::print_check_human(&res.json, &res.report);
+            }
+            if res.report.state == node::r2::R2State::Synced {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(2)
+            }
+        }
+        Command::Detect { json, probe } => {
+            let cfg = match load_config(&cli) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let rt = runtime();
+            let mut res = rt.block_on(node::detect_url(&cfg, &cfg.node.rpc_url));
+            let mut probes = Vec::new();
+            if *probe {
+                for url in ["http://127.0.0.1:8114", "http://127.0.0.1:8124"] {
+                    probes.push(rt.block_on(node::detect_url(&cfg, url)).json);
+                }
+                res.json["probes"] = serde_json::Value::Array(probes.clone());
+            }
+            if *json {
+                println!("{}", res.json);
+            } else {
+                for j in std::iter::once(&res.json).chain(probes.iter()) {
+                    let s = |k: &str| match &j[k] {
+                        serde_json::Value::Null => "-".to_string(),
+                        serde_json::Value::String(s) => s.clone(),
+                        v => v.to_string(),
+                    };
+                    println!(
+                        "{}: reachable={} chain={} version={} type={} indexer={}",
+                        s("rpc_url"),
+                        s("reachable"),
+                        s("chain"),
+                        s("node_version"),
+                        s("node_type"),
+                        s("indexer_enabled")
+                    );
+                    if !j["hint"].is_null() {
+                        println!("  hint: {}", s("hint"));
+                    }
+                }
+            }
+            if res.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(2)
+            }
+        }
         _ => {
             eprintln!("not implemented");
             ExitCode::from(1)
