@@ -1,0 +1,9 @@
+[package]
+name = "kvtest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ckb-std = { workspace = true }
+csr-svc = { path = "../csr-svc" }

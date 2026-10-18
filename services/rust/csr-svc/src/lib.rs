@@ -3,6 +3,12 @@
 
 pub const RESULT_PUT: u64 = 7031;
 pub const JOB_PAYLOAD: u64 = 7001;
+pub const KV_GET: u64 = 7010;
+pub const KV_PUT: u64 = 7011;
+pub const KV_DELETE: u64 = 7012;
+pub const KV_MARK_SECRET: u64 = 7013;
+pub const DELETE_ON_CONSUME: u64 = 7014;
+pub const SIGN: u64 = 7020;
 
 /// Raw RISC-V `ecall` with up to six arguments.
 ///
@@ -45,4 +51,58 @@ pub fn job_payload(buf: &mut [u8]) -> (u64, u64) {
         )
     };
     (r, len)
+}
+
+/// `kv_get`: copies the value into `buf`; returns (status, full value length).
+pub fn kv_get(key: &[u8], buf: &mut [u8]) -> (u64, u64) {
+    let mut len = buf.len() as u64;
+    let r = unsafe {
+        syscall(
+            KV_GET,
+            [
+                key.as_ptr() as u64,
+                key.len() as u64,
+                buf.as_mut_ptr() as u64,
+                &mut len as *mut u64 as u64,
+                0,
+                0,
+            ],
+        )
+    };
+    (r, len)
+}
+
+/// `kv_put`; returns the host status (0 ok, 10 quota exceeded, 11 too large).
+pub fn kv_put(key: &[u8], val: &[u8]) -> u64 {
+    unsafe {
+        syscall(
+            KV_PUT,
+            [key.as_ptr() as u64, key.len() as u64, val.as_ptr() as u64, val.len() as u64, 0, 0],
+        )
+    }
+}
+
+/// `kv_delete`; 0 ok, 1 missing.
+pub fn kv_delete(key: &[u8]) -> u64 {
+    unsafe { syscall(KV_DELETE, [key.as_ptr() as u64, key.len() as u64, 0, 0, 0, 0]) }
+}
+
+/// `kv_mark_secret`; 0 ok, 1 missing.
+pub fn kv_mark_secret(key: &[u8]) -> u64 {
+    unsafe { syscall(KV_MARK_SECRET, [key.as_ptr() as u64, key.len() as u64, 0, 0, 0, 0]) }
+}
+
+/// `delete_on_consume(key, outpoint)` with a 36-byte outpoint.
+pub fn delete_on_consume(key: &[u8], outpoint: &[u8; 36]) -> u64 {
+    unsafe {
+        syscall(
+            DELETE_ON_CONSUME,
+            [key.as_ptr() as u64, key.len() as u64, outpoint.as_ptr() as u64, 0, 0, 0],
+        )
+    }
+}
+
+/// `sign(msg32, sig_out64)`.
+pub fn sign(msg: &[u8; 32], sig: &mut [u8; 64]) -> u64 {
+    unsafe { syscall(SIGN, [msg.as_ptr() as u64, sig.as_mut_ptr() as u64, 0, 0, 0, 0]) }
 }

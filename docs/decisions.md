@@ -59,3 +59,9 @@
 - `run-local` creates `<data-root>/<network>/keys/` like `csr run`; it does not otherwise touch the data root yet.
 - The Rust services workspace (`services/rust/`) is excluded from the root workspace; it uses `ckb-std =1.1.0` and a tiny local crate `csr-svc` for the raw `ecall`s of the service calls (`result_put`, `job_payload`). `hello-rust` reads witness 0 through ckb-std and returns via `result_put`.
 - `scripts/build-services.sh` currently builds the Rust workspace (adds the riscv target through rustup if missing); C and JS follow in later phases.
+
+## A2 Phase 2: service calls, storage, signing
+- Storage uses `chacha20poly1305` + `hmac`/`sha2` (pure Rust). File name = HMAC-SHA256(storage key, "csr-storage-name-v1" ‖ key); the file name is the AEAD associated data. Usage is derived from file sizes (plaintext = size − 31 B overhead), the quotas are checked on every `kv_put` by listing the service directories.
+- Return codes beyond the concept: storage/sign calls return 12 for an empty or over-long key (`kv_get`/`kv_delete`/`kv_mark_secret`/`delete_on_consume`); `kv_put` returns 11 for key > 256 B. `delete_on_consume` accepts a key that does not exist yet. Storage I/O or authentication errors stop the run as `script_error`.
+- `sign` signs SHA-256 of the domain-prefixed message with the service's identity-file code hash (same as `code_hash` in the JSON). `simulate-consumed` applies rules of all services in the network's storage and prints `{"deleted":N}`.
+- `dottest` was added too (needs only the calls of this phase). The Services registry and CLI come in a later phase.

@@ -12,6 +12,7 @@ mod resources;
 mod run;
 mod runtime;
 mod service;
+mod storage;
 mod web;
 
 /// Scratch directory for unit tests (`/tmp` may be read-only).
@@ -77,6 +78,11 @@ enum Command {
         #[command(subcommand)]
         action: ServiceAction,
     },
+    /// Storage tools
+    Storage {
+        #[command(subcommand)]
+        action: StorageAction,
+    },
     /// Run the service
     Run {
         #[arg(long)]
@@ -102,6 +108,16 @@ enum ServiceAction {
         /// TIP:EPOCH:MEDIAN_MS
         #[arg(long)]
         block_info: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum StorageAction {
+    /// Apply the delete_on_consume rules as if the outpoint had been consumed
+    SimulateConsumed {
+        /// 0x<64 hex>:<index>
+        #[arg(long)]
+        outpoint: String,
     },
 }
 
@@ -271,6 +287,27 @@ fn main() -> ExitCode {
             match service::run_local(&cfg, &data_root(&cli), &args) {
                 Ok(j) => {
                     println!("{j}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Command::Storage {
+            action: StorageAction::SimulateConsumed { outpoint },
+        } => {
+            let cfg = match load_config(&cli) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+            };
+            match service::simulate_consumed(&cfg, &data_root(&cli), outpoint) {
+                Ok(n) => {
+                    println!("{}", serde_json::json!({ "deleted": n }));
                     ExitCode::SUCCESS
                 }
                 Err(e) => {

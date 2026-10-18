@@ -1,5 +1,5 @@
 [workspace]
-members = ["csr-svc", "hello", "loop", "memhog", "badsyscall", "bigresult"]
+members = ["csr-svc", "hello", "loop", "memhog", "badsyscall", "bigresult", "kvtest", "quotatest", "signtest", "dottest"]
 resolver = "2"
 
 [workspace.dependencies]

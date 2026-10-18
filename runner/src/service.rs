@@ -6,6 +6,7 @@ use crate::runtime::host::HostState;
 use crate::runtime::manifest::Manifest;
 use crate::runtime::vtx::VirtualTx;
 use crate::runtime::{self, Limits};
+use crate::storage::{self, Store};
 use serde_json::json;
 use std::path::Path;
 
@@ -47,6 +48,36 @@ pub fn parse_block_info(s: &str) -> Result<[u64; 3], String> {
     ])
 }
 
+/// `<data-root>/<network>/<storage.path>`.
+pub fn storage_root(cfg: &Config, data_root: &Path) -> std::path::PathBuf {
+    data_root.join(&cfg.network).join(&cfg.storage.path)
+}
+
+/// `csr storage simulate-consumed`: applies the `delete_on_consume` rules for an outpoint.
+pub fn simulate_consumed(cfg: &Config, data_root: &Path, outpoint: &str) -> Result<usize, String> {
+    let (hash, index) = outpoint
+        .split_once(':')
+        .ok_or("--outpoint must be 0x<64 hex>:<index>")?;
+    let hash = parse_hex(hash, "outpoint hash")?;
+    let index: u32 = index.parse().map_err(|_| "invalid outpoint index")?;
+    if hash.len() != 32 {
+        return Err("outpoint hash must be 32 bytes".into());
+    }
+    let mut op = hash;
+    op.extend_from_slice(&index.to_le_bytes());
+    let op: [u8; 36] = op.try_into().expect("36 bytes");
+    let net_dir = data_root.join(&cfg.network);
+    let identity = Identity::load_or_create(&net_dir)?;
+    let root = storage_root(cfg, data_root);
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join("deletions.log"))
+        .map_err(|e| format!("cannot open deletion log: {e}"))?;
+    storage::simulate_consumed(&root, &identity.storage_key, &op, &mut log)
+}
+
 /// Runs a service once in the sandbox and returns the JSON object to print.
 pub fn run_local(
     cfg: &Config,
@@ -68,7 +99,7 @@ pub fn run_local(
     };
     // Same as `csr run`: the network's keys are created when they are missing.
     let net_dir = data_root.join(&cfg.network);
-    Identity::load_or_create(&net_dir)?;
+    let identity = Identity::load_or_create(&net_dir)?;
 
     let code_hash = service.code_hash;
     let vtx = VirtualTx::new(
@@ -77,7 +108,17 @@ pub fn run_local(
         service.manifest.args,
         payload,
     );
-    let (out, _) = runtime::run(&service.elf, HostState::new(vtx, block_info), limits)?;
+    let store = Store::new(
+        &storage_root(cfg, data_root),
+        &hex::encode(code_hash),
+        identity.storage_key,
+        cfg.storage.per_service_quota_mb,
+        cfg.storage.total_quota_mb,
+    );
+    let state = HostState::new(vtx, block_info)
+        .with_store(store)
+        .with_signer(identity.service_key, code_hash);
+    let (out, _) = runtime::run(&service.elf, state, limits)?;
     if let Some(e) = &out.error {
         eprintln!("vm: {e}");
     }

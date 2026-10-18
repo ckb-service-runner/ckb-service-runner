@@ -2,9 +2,14 @@
 //! (7001–7099, see `spec/host-interface.md`).
 
 use super::vtx::VirtualTx;
+use crate::storage::{Put, Store, MAX_KEY_BYTES};
 use ckb_vm::registers::{A0, A1, A2, A3, A4, A5, A7};
 use ckb_vm::{Error, Memory, Register, SupportMachine, Syscalls};
+use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
+
+/// Domain prefix of service signatures (`sign`, 7020).
+pub const SIGN_DOMAIN: &[u8] = b"CSR-SERVICE-SIGN-v1\n";
 
 pub const MAX_RESULT_BYTES: usize = 65_536;
 pub const MAX_DEBUG_LINES: usize = 64;
@@ -19,7 +24,10 @@ const ITEM_MISSING: u64 = 2;
 
 // Return codes of service calls.
 pub const SVC_OK: u64 = 0;
+pub const SVC_MISSING: u64 = 1;
 pub const SVC_NOT_SUPPORTED: u64 = 2;
+pub const SVC_QUOTA_EXCEEDED: u64 = 10;
+pub const SVC_TOO_LARGE: u64 = 11;
 pub const SVC_INVALID_ARGUMENT: u64 = 12;
 
 /// Tags carried in `Error::External` to stop a run with a specific status.
@@ -39,6 +47,10 @@ pub struct HostState {
     pub debug: Vec<String>,
     pub result: Option<Vec<u8>>,
     pub skeleton: Option<Vec<u8>>,
+    /// Encrypted storage of the service; `None` makes the storage calls return 2.
+    pub store: Option<Store>,
+    /// Service key and code hash for `sign`; `None` makes it return 2.
+    pub signer: Option<(secp256k1::SecretKey, [u8; 32])>,
 }
 
 impl HostState {
@@ -49,7 +61,19 @@ impl HostState {
             debug: Vec::new(),
             result: None,
             skeleton: None,
+            store: None,
+            signer: None,
         }
+    }
+
+    pub fn with_store(mut self, store: Store) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    pub fn with_signer(mut self, key: secp256k1::SecretKey, code_hash: [u8; 32]) -> Self {
+        self.signer = Some((key, code_hash));
+        self
     }
 
     /// The result: `result_put` bytes, else the last `CSR-RESULT:0x<hex>` debug line, else empty.
@@ -92,6 +116,22 @@ fn write_partial<Mac: SupportMachine>(
     m.memory_mut()
         .store64(&Mac::REG::from_u64(len_ptr), &Mac::REG::from_u64(full))?;
     Ok(SUCCESS)
+}
+
+fn storage_error(e: String) -> Error {
+    Error::External(format!("csr:storage: {e}"))
+}
+
+/// Reads a storage key; `None` when its length is 0 or above the limit.
+fn read_key<Mac: SupportMachine>(
+    m: &mut Mac,
+    addr: u64,
+    len: u64,
+) -> Result<Option<Vec<u8>>, Error> {
+    if len == 0 || len as usize > MAX_KEY_BYTES {
+        return Ok(None);
+    }
+    read_mem(m, addr, len).map(Some)
 }
 
 fn read_mem<Mac: SupportMachine>(m: &mut Mac, addr: u64, len: u64) -> Result<Vec<u8>, Error> {
@@ -288,7 +328,86 @@ impl Host {
                 st.result = Some(read_mem(m, a0, a1)?);
                 SVC_OK
             }
-            // chain_read, cells_query, storage, sign, CRT calls: not available in this build/mode.
+            // kv_get(key, key_len, addr, len_ptr, offset)
+            7010 => {
+                let Some(store) = &st.store else {
+                    return Ok(SVC_NOT_SUPPORTED);
+                };
+                let Some(key) = read_key(m, a0, a1)? else {
+                    return Ok(SVC_INVALID_ARGUMENT);
+                };
+                match store.get(&key).map_err(storage_error)? {
+                    Some(v) => {
+                        write_partial(m, &v, a2, a3, a4)?;
+                        SVC_OK
+                    }
+                    None => SVC_MISSING,
+                }
+            }
+            // kv_put(key, key_len, val, val_len)
+            7011 => {
+                let Some(store) = &st.store else {
+                    return Ok(SVC_NOT_SUPPORTED);
+                };
+                if a1 as usize > MAX_KEY_BYTES || a3 as usize > crate::storage::MAX_VALUE_BYTES {
+                    return Ok(SVC_TOO_LARGE);
+                }
+                let key = read_mem(m, a0, a1)?;
+                let val = read_mem(m, a2, a3)?;
+                match store.put(&key, &val).map_err(storage_error)? {
+                    Put::Ok => SVC_OK,
+                    Put::QuotaExceeded => SVC_QUOTA_EXCEEDED,
+                    Put::TooLarge => SVC_TOO_LARGE,
+                    Put::InvalidArgument => SVC_INVALID_ARGUMENT,
+                }
+            }
+            // kv_delete(key, key_len)
+            7012 | 7013 => {
+                let Some(store) = &st.store else {
+                    return Ok(SVC_NOT_SUPPORTED);
+                };
+                let Some(key) = read_key(m, a0, a1)? else {
+                    return Ok(SVC_INVALID_ARGUMENT);
+                };
+                let found = if n == 7012 {
+                    store.delete(&key)
+                } else {
+                    store.mark_secret(&key)
+                };
+                if found.map_err(storage_error)? {
+                    SVC_OK
+                } else {
+                    SVC_MISSING
+                }
+            }
+            // delete_on_consume(key, key_len, outpoint)
+            7014 => {
+                let Some(store) = &st.store else {
+                    return Ok(SVC_NOT_SUPPORTED);
+                };
+                let Some(key) = read_key(m, a0, a1)? else {
+                    return Ok(SVC_INVALID_ARGUMENT);
+                };
+                let op: [u8; 36] = read_mem(m, a2, 36)?.try_into().expect("36 bytes");
+                store.delete_on_consume(&key, &op).map_err(storage_error)?;
+                SVC_OK
+            }
+            // sign(msg32, sig_out64)
+            7020 => {
+                let Some((key, code_hash)) = &st.signer else {
+                    return Ok(SVC_NOT_SUPPORTED);
+                };
+                let msg = read_mem(m, a0, 32)?;
+                let mut h = Sha256::new();
+                h.update(SIGN_DOMAIN);
+                h.update(code_hash);
+                h.update(&msg);
+                let digest = secp256k1::Message::from_digest(h.finalize().into());
+                let sig = secp256k1::Secp256k1::signing_only().sign_ecdsa(&digest, key);
+                m.memory_mut().store_bytes(a1, &sig.serialize_compact())?;
+                SVC_OK
+            }
+            // chain_read, cells_query, CRT calls and unassigned numbers: not available.
             _ => SVC_NOT_SUPPORTED,
         })
     }

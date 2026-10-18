@@ -1,0 +1,4 @@
+name = "quotatest"
+language = "rust"
+elf = "../rust/target/riscv64imac-unknown-none-elf/release/quotatest"
+args = "0x"
