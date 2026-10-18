@@ -204,6 +204,53 @@ impl Config {
         }
     }
 
+    /// Reads a config file without validating it (missing file = defaults).
+    pub fn load_unvalidated(path: &Path) -> Result<Config, String> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => toml::from_str(&text).map_err(|e| format!("invalid config: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+            Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+        }
+    }
+
+    /// Atomically writes the config (mode 0600, it may hold the password hash).
+    /// An existing file is kept as `<path>.bak`.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let text =
+            toml::to_string_pretty(self).map_err(|e| format!("cannot serialise config: {e}"))?;
+        let err = |what: &str, e: std::io::Error| format!("{what} {}: {e}", path.display());
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir).map_err(|e| err("cannot create directory for", e))?;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let tmp = path.with_file_name(format!("{name}.tmp"));
+        let mut bak = path.as_os_str().to_owned();
+        bak.push(".bak");
+        let write = || -> std::io::Result<()> {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(text.as_bytes())?;
+            f.sync_all()?;
+            if path.exists() {
+                std::fs::copy(path, &bak)?;
+            }
+            std::fs::rename(&tmp, path)
+        };
+        write().map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            err("cannot write", e)
+        })
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         one_of("network", &self.network, &["testnet", "mainnet"])?;
         one_of(

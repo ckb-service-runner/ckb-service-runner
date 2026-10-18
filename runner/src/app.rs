@@ -13,8 +13,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
-// `config_path`, `set_log_level` and `config_write` serve the settings API (next phase).
-#[allow(dead_code)]
 pub struct AppState {
     pub config: RwLock<Config>,
     pub config_path: PathBuf,
@@ -30,6 +28,8 @@ pub struct AppState {
     pub last_check_ok_at: AtomicI64,
     /// Serialises writes of the config file.
     pub config_write: Mutex<()>,
+    /// Dashboard sessions (in memory only).
+    pub sessions: Mutex<std::collections::HashMap<String, crate::web::Session>>,
 }
 
 impl AppState {

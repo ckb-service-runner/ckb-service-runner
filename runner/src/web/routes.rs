@@ -5,7 +5,7 @@ use crate::logs;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -21,6 +21,13 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/resources", get(resources))
         .route("/api/resources/history", get(history))
         .route("/api/logs", get(logs_route))
+        .route("/api/session", get(super::auth::session))
+        .route("/api/login", post(super::auth::login))
+        .route(
+            "/api/settings",
+            get(super::settings::get).put(super::settings::put),
+        )
+        .route("/api/events", get(super::settings::events))
 }
 
 async fn status(State(s): St) -> Json<Value> {

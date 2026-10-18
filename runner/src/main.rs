@@ -5,6 +5,7 @@ mod identity;
 mod logs;
 mod network;
 mod node;
+mod password;
 mod resources;
 mod run;
 mod web;
@@ -211,9 +212,18 @@ fn main() -> ExitCode {
                 }
             }
         }
-        _ => {
-            eprintln!("not implemented");
-            ExitCode::from(1)
+        Command::SetPassword { password_stdin } => {
+            let path = cli
+                .config
+                .clone()
+                .unwrap_or_else(|| data_root(&cli).join("csr.toml"));
+            match password::set_password(&path, *password_stdin) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
+            }
         }
     }
 }
