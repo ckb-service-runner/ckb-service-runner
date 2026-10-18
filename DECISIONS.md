@@ -10,3 +10,8 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
   Short config data also reports 16. The dep lock's code hash is not checked (only args length, as specified).
   Extra tests: malformed registry lock (10), two config deps (16). Docs: job/registry specs, decisions
   ("Downstream impact"), milestone "Security fixes", CHANGELOG (also an entry for Phase 1).
+
+## A3b Phase 1 – devnet harness
+- Genesis/funding account = dev-chain key `d00c06…` (20 B CKB, args `0xc8328a…`); block assembler = second well-known key `63d867…` (args `0x470dcd…`) so mining rewards don't mix with the funding account. Monitor key is an invented fixed test key. All in `devtools/devnet-keys.json`.
+- Pinned ckb v0.210.0 `x86_64-unknown-linux-gnu` (non-portable build; works here), SHA-256 `68a94c19…7bdf`.
+- Indexer RPC module enabled; `Subscription`/`Terminal` dropped from the default module list, `IntegrationTest` added.

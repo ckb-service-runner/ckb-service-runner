@@ -1,0 +1,16 @@
+{
+  "_comment": "PUBLIC DEVNET TEST KEYS. Never use on mainnet. genesis = well-known dev-chain key (ckb repo, specs/dev.toml); miner = block assembler key of the devnet; monitor = devnet 'monitor' key made up for CSR tests.",
+  "genesis": {
+    "privkey": "0xd00c06bfd800d27397002dca6fb0993d5ba6399b4238b2f29ee9deb97593d2bc",
+    "lock_args": "0xc8328aabcd9b9e8e64fbc566c4385c3bdeb219d7"
+  },
+  "miner": {
+    "privkey": "0x63d86723e08f0f813a36ce6aa123bb2289d90680ae1e99d4de8cdb334553f24d",
+    "lock_args": "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+  },
+  "monitor": {
+    "privkey": "0x5d1b2c3e4f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091a2b3c4d5e6f70812",
+    "pubkey": "0x031ee69e71a83ca2ff16539d56188eacc7bac98f08448d03fce80f2f5a12b484a4",
+    "lock_args": "0x9a8d9aa937744fbfaa0a21d0eb83e3600c6a9134"
+  }
+}
