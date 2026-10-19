@@ -174,17 +174,28 @@ fn load_deployed(v: &Value, name: &str, file: &str) -> Result<Deployed, String> 
     })
 }
 
+/// The CSR testnet deployment shipped with the runner.
+const TESTNET_DEPLOYMENTS: &str = include_str!("../../deployments/testnet.json");
+
 fn load_deployments(cfg: &Config) -> Result<Deployments, String> {
-    let Some(dev) = cfg.devnet.as_ref().filter(|_| cfg.network == "devnet") else {
-        // TODO: shipped script hashes of testnet/mainnet once the scripts are deployed there.
-        return Err(format!(
-            "the CSR scripts are not deployed on {} yet",
-            cfg.network
-        ));
-    };
-    let f = &dev.deployments;
-    let text = std::fs::read_to_string(f).map_err(|e| format!("cannot read {f}: {e}"))?;
-    let v: Value = serde_json::from_str(&text).map_err(|e| format!("{f} is not JSON: {e}"))?;
+    match cfg.network.as_str() {
+        "testnet" => parse_deployments(TESTNET_DEPLOYMENTS, "deployments/testnet.json"),
+        "devnet" => {
+            let dev = cfg
+                .devnet
+                .as_ref()
+                .ok_or_else(|| "the CSR scripts are not deployed on devnet yet".to_string())?;
+            let f = &dev.deployments;
+            let text = std::fs::read_to_string(f).map_err(|e| format!("cannot read {f}: {e}"))?;
+            parse_deployments(&text, f)
+        }
+        other => Err(format!("the CSR scripts are not deployed on {other} yet")),
+    }
+}
+
+fn parse_deployments(text: &str, source: &str) -> Result<Deployments, String> {
+    let f = source;
+    let v: Value = serde_json::from_str(text).map_err(|e| format!("{f} is not JSON: {e}"))?;
     let hex32 = |x: &Value, what: &str| -> Result<Vec<u8>, String> {
         hex::decode(x.as_str().unwrap_or("").trim_start_matches("0x"))
             .map_err(|_| format!("{f}: bad {what}"))
@@ -1566,6 +1577,15 @@ pub fn write_prepared(p: &Prepared, out: &Path) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn embedded_testnet_deployment_parses() {
+        let d = parse_deployments(TESTNET_DEPLOYMENTS, "deployments/testnet.json").unwrap();
+        assert_eq!(
+            format!("{:x}", d.registry.code_hash),
+            "47fee83ea91eabdfc8827045f63fe051b8fee5c05b9280a35f42f2e3597d3f36"
+        );
+    }
+
     use super::*;
 
     #[test]

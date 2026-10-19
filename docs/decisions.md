@@ -289,3 +289,8 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - Release profile without LTO (`codegen-units = 16`); size checked against the 30 MB target.
 - Runtime toggle is a disabled checkbox in the Overview runtime card (no toggle existed before).
 - `LICENSE` is packaged only if present (none in the repo).
+
+## A5 – Testnet registration
+
+- **Embedded testnet deployment.** `deployments/testnet.json` is compiled into the runner (`include_str!`), so a testnet node needs no deployment file. `load_deployments` chooses by network (testnet: embedded, devnet: `[devnet] deployments` file, otherwise "not deployed yet"); `parse_deployments(text, source)` holds the JSON parsing.
+- **Testnet monitor defaults.** `config/networks/testnet.toml` now carries the real monitor `https://monitor-testnet.vericell.net` and its key (also the owner of the config cell). `mainnet.toml` keeps its placeholders.
