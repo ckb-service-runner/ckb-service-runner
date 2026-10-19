@@ -1,4 +1,5 @@
 mod app;
+mod attest;
 mod chain;
 mod config;
 mod db;
@@ -208,6 +209,13 @@ enum RegisterAction {
         #[arg(long)]
         json: bool,
     },
+    /// Request the monitor's attestation for this node and write it to a file
+    Attest {
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the registry cell of this node
     Status {
         #[arg(long)]
@@ -324,6 +332,11 @@ where
             f(c).await
         })
     })();
+    print_result(r, json)
+}
+
+/// Prints a command result (one JSON line, or `key: value` lines); errors go to stderr.
+fn print_result(r: Result<serde_json::Value, String>, json: bool) -> ExitCode {
     match r {
         Ok(j) => {
             if json {
@@ -538,6 +551,17 @@ fn main() -> ExitCode {
         Command::Register { action } => match action {
             RegisterAction::Status { json } => {
                 chain_cmd(&cli, *json, |c| async move { c.register_status().await })
+            }
+            RegisterAction::Attest { out, json } => {
+                let r = (|| {
+                    let cfg = load_config(&cli)?;
+                    let net_dir = data_root(&cli).join(&cfg.network);
+                    std::fs::create_dir_all(&net_dir)
+                        .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
+                    let id = identity::Identity::load_or_create(&net_dir)?;
+                    runtime().block_on(attest::run(&cfg, &id, out))
+                })();
+                print_result(r, *json)
             }
             RegisterAction::Prepare {
                 attestation,

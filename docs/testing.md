@@ -62,16 +62,13 @@ csr register status --json
 
 Prerequisites: a synced testnet CKB node (full node with the Indexer module), a funded testnet key, the built contracts.
 
-1. **Deploy the scripts (developer).** `bash scripts/build-contracts.sh`, then
-   `CSR_DEV_TESTNET_KEY=0x<privkey> target/debug/csr-dev --rpc http://127.0.0.1:<testnet rpc port> deploy-contracts --out deployments/testnet.json`.
-   `csr-dev` refuses any chain except `ckb_dev` and `ckb_testnet`. The key pays for the code cells and acts as the monitor key; keep the deployments file.
-   Copy the resulting hashes into `config/networks/testnet.toml` (TODO: shipped values do not exist yet; until then `csr` chain commands fail with "scripts not deployed").
-2. **Keep the clock fresh.** `csr-dev clock-update` regularly (the real monitor does this in production).
+1. **Deployment.** The testnet deployment is embedded in the runner (`deployments/testnet.json`, compiled in) and `config/networks/testnet.toml` carries the real monitor; nothing to configure. (Developers redeploy with `bash scripts/build-contracts.sh` and `csr-dev deploy-contracts --out deployments/testnet.json`.)
+2. **Clock.** The monitor `monitor-testnet.vericell.net` keeps the on-chain clock fresh; no `csr-dev clock-update` is needed.
 3. **Identity.** `csr identity --json` (network `testnet`), fund `runner_lock_args` with ≥ 100 CKB from any wallet.
 4. **Float.** `csr float prepare-create --ckb N --owner-lock-args <your wallet lock args> --out float.json`. Open `float.json` for signing:
    - ckb-cli: `ckb-cli tx sign-inputs --tx-file float.json --privkey-path <key> --add-signatures` (or `ckb-cli wallet`-based signing), then `ckb-cli tx send --tx-file float.json`; or
    - Neuron: offline signing import of the same file (see `docs/open-questions.md`: acceptance is unverified).
    Alternatively submit with `csr tx submit float.signed.json`.
-5. **Attestation.** `csr-dev attest --peer-id <node peer id> --service-pubkey <pubkey> --network testnet --out att.json` (testnet monitor stand-in).
+5. **Attestation.** `csr register attest --out att.json` asks the real testnet monitor (`POST /v1/attest`) and checks the answer. It needs `[ranking] join = true` and successful checks in the last 24 hours, otherwise the monitor replies `not_eligible`.
 6. **Register.** `csr register prepare --attestation att.json --owner-lock-args <args> --out reg.json`; the owner signs only the owner input (the runner key cell input is already signed by CSR); submit; `csr register status --json` shows `registered: true`.
 7. **Top up / withdraw.** `csr float prepare-topup|prepare-withdraw …` and the same sign/submit steps, or the dashboard Float page buttons (Create, Top up, Withdraw, Register, upload signed file).

@@ -294,3 +294,7 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 
 - **Embedded testnet deployment.** `deployments/testnet.json` is compiled into the runner (`include_str!`), so a testnet node needs no deployment file. `load_deployments` chooses by network (testnet: embedded, devnet: `[devnet] deployments` file, otherwise "not deployed yet"); `parse_deployments(text, source)` holds the JSON parsing.
 - **Testnet monitor defaults.** `config/networks/testnet.toml` now carries the real monitor `https://monitor-testnet.vericell.net` and its key (also the owner of the config cell). `mainnet.toml` keeps its placeholders.
+- **`csr register attest`.** `runner/src/attest.rs`; needs only `local_node_info` (no deployments, no sync). Monitor URL/key come from `[monitor]` when non-empty, else the network defaults, like the outbound check-in. The node is asked first, so an unreachable node fails before the monitor is contacted.
+- **Verification before writing.** The attestation is checked (peer, service key, network, expiry, recovered signer) and only then written, exactly as the monitor returned it (pretty-printed). `attestation_message` is duplicated from `csr-dev` (the runner must not depend on devtools).
+- **Error reporting.** `403 not_eligible` gets a hint (checks in the last 24 hours, `[ranking] join = true`); other non-200 replies report `monitor replied <status> <error>`.
+- **Output.** The printing of `chain_cmd` moved to the shared `print_result`.
