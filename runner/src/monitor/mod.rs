@@ -24,6 +24,44 @@ pub struct NetworkStats {
     #[serde(default)]
     pub countries: Vec<Country>,
     pub updated_at: i64,
+    #[serde(default)]
+    pub locations: Vec<Location>,
+    #[serde(default)]
+    pub unlocated: u64,
+    #[serde(default)]
+    pub locations_available: bool,
+}
+
+/// Centre of a 2° cell with the number of runners in it (display only).
+#[derive(Debug, Clone, PartialEq, Deserialize, serde::Serialize)]
+pub struct Location {
+    pub lat: f64,
+    pub lon: f64,
+    pub count: u64,
+}
+
+const MAX_LOCATIONS: usize = 2000;
+
+/// Lenient parse of a `/v1/locations` reply: `None` unless it has a `locations` array.
+fn parse_locations(v: &Value) -> Option<(Vec<Location>, u64)> {
+    let arr = v.get("locations")?.as_array()?;
+    let list = arr
+        .iter()
+        .filter_map(|e| {
+            let lat = e.get("lat")?.as_f64()?;
+            let lon = e.get("lon")?.as_f64()?;
+            let count = e.get("count")?.as_u64()?;
+            let ok = lat.is_finite()
+                && lon.is_finite()
+                && (-90.0..=90.0).contains(&lat)
+                && (-180.0..=180.0).contains(&lon)
+                && count > 0;
+            ok.then_some(Location { lat, lon, count })
+        })
+        .take(MAX_LOCATIONS)
+        .collect();
+    let unlocated = v.get("unlocated").and_then(Value::as_u64).unwrap_or(0);
+    Some((list, unlocated))
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -121,8 +159,14 @@ async fn fetch(
     let net = get(&http, &format!("{base}/v1/network"))
         .await?
         .ok_or_else(|| "monitor has no /v1/network".to_string())?;
-    let network: NetworkStats =
+    let mut network: NetworkStats =
         serde_json::from_value(net).map_err(|e| format!("bad /v1/network reply: {e}"))?;
+    let parsed = match get(&http, &format!("{base}/v1/locations")).await {
+        Ok(Some(v)) => parse_locations(&v),
+        _ => None,
+    };
+    network.locations_available = parsed.is_some();
+    (network.locations, network.unlocated) = parsed.unwrap_or_default();
     let node = match peer_id {
         None => None,
         Some(id) => match get(&http, &format!("{base}/v1/nodes/{}", encode_segment(id))).await? {
@@ -179,7 +223,7 @@ pub async fn network_json(state: &AppState) -> Value {
         (c.ranking.join, c.ranking.ping_mode.clone())
     };
     if !join {
-        return json!({"join": false, "message": "Join the ranking to see stats"});
+        return json!({"join": false, "message": "Join the CSR monitor to see stats"});
     }
     refresh(state).await;
     let base = monitor_base(state);
@@ -230,5 +274,34 @@ mod tests {
         }))
         .unwrap();
         assert!(n.countries.is_empty());
+    }
+
+    #[test]
+    fn locations_valid_list_and_dropped_entries() {
+        let (l, u) = parse_locations(&json!({"unlocated": 3, "locations": [
+            {"lat": 53, "lon": 13, "count": 2}, {"lat": 95, "lon": 0, "count": 1},
+            {"lat": 1, "lon": -181, "count": 1}, {"lat": 1, "lon": 1, "count": 0},
+            {"lat": "5", "lon": 1, "count": 1}, {"lat": 1, "lon": 1, "count": 1.5},
+            {"lat": -33, "lon": 151, "count": 1}, 7
+        ]}))
+        .unwrap();
+        assert_eq!(u, 3);
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0], Location { lat: 53.0, lon: 13.0, count: 2 });
+        assert_eq!(l[1].lat, -33.0);
+    }
+
+    #[test]
+    fn locations_capped() {
+        let arr: Vec<Value> = (0..2500).map(|_| json!({"lat": 1, "lon": 1, "count": 1})).collect();
+        let (l, u) = parse_locations(&json!({"locations": arr})).unwrap();
+        assert_eq!((l.len(), u), (2000, 0));
+    }
+
+    #[test]
+    fn locations_missing_array() {
+        assert!(parse_locations(&json!({"unlocated": 1})).is_none());
+        assert!(parse_locations(&json!({"locations": "x"})).is_none());
+        assert!(parse_locations(&json!([])).is_none());
     }
 }
