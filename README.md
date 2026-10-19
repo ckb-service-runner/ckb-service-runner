@@ -47,7 +47,7 @@ Open `http://127.0.0.1:8130/` after `csr run`. Pages: `#/overview`, `#/node`, `#
 A non-loopback bind requires a password (`csr set-password`). All writes need the session cookie and the CSRF token.
 The JSON API (`/api/status`, `/api/node`, `/api/resources`, `/api/settings`, `/api/events`, …) is documented in `docs/milestones/A1.md`.
 
-The **Network** page shows nodes worldwide/reachable, a per-country bar list, your rank, availability (7/30/365 d), check type and attestation,
+The **CSR monitor** page (`#/network`) shows a world map of the CSR network (2° areas, from the monitor's `/v1/locations`), nodes worldwide/reachable, a per-country bar list, your rank, availability (7/30/365 d), check type and attestation,
 fed by the monitor's public API (`spec/monitor-public-api.md`, cached 5 min; stale data is flagged). See `docs/milestones/A1plus.md`.
 
 ## Ranking (ping responder)

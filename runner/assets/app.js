@@ -161,7 +161,7 @@
   pages.overview = function (root) {
     var g = el('div', 'grid');
     var cs = card('Network'), cn = card('Node'), cr = card('Runtime'), cres = card('Resources');
-    var cf = card('Float'), ck = card('Ranking');
+    var cf = card('Float'), ck = card('CSR monitor');
     [cs, cn, cr, cres, cf, ck].forEach(function (c) { g.appendChild(c); });
     root.appendChild(g);
     function paint() {
@@ -187,9 +187,10 @@
           var n = j.node;
           dl(rk, [['Rank', n ? n.rank + ' / ' + n.of : 'not ranked'], ['Availability 30 d', n ? pct(n.availability.d30) : '–']]);
           if (j.stale) rk.appendChild(el('p', 'msg stale', 'stale'));
+          var ol = el('a', '', 'Open CSR monitor'); ol.href = '#/network'; rk.appendChild(ol);
         }).catch(function () {});
       } else {
-        ck.appendChild(el('p', '', 'Join the ranking to see stats'));
+        ck.appendChild(el('p', '', 'Join the CSR monitor to see stats'));
       }
     }
     function floatCard() {
@@ -214,19 +215,40 @@
   };
 
   pages.network = function (root) {
-    var cw = card('Nodes worldwide'), cr = card('My rank'), cc = card('Countries');
+    var cw = card('Nodes worldwide'), cr = card('My rank'), cm = card('Map'), cc = card('Countries');
     var g = el('div', 'grid');
     g.appendChild(cw); g.appendChild(cr);
-    root.appendChild(g); root.appendChild(cc);
+    var mapBox = el('div', 'map'), mapInfo = el('p', '', 'Tap a dot for details.'), dots = [];
+    mapInfo.id = 'map-info';
+    cm.appendChild(mapBox); cm.appendChild(mapInfo);
+    cm.appendChild(el('p', 'credit', 'Map: Natural Earth \u00b7 IP geolocation: DB-IP.com (CC BY 4.0) \u00b7 dots show 2\u00b0 areas, not exact places'));
+    mapBox.addEventListener('click', function (ev) {
+      var t = ev.target;
+      while (t && t !== mapBox && !(t.getAttribute && t.getAttribute('data-index') !== null && t.nodeName.toLowerCase() === 'circle')) t = t.parentNode;
+      if (!t || t === mapBox) return;
+      var d = dots[Number(t.getAttribute('data-index'))];
+      if (d) mapInfo.textContent = d.label;
+    });
+    function drawMap(nw) {
+      var ok = !!(nw && nw.locations_available);
+      var list = ok ? (nw.locations || []) : [];
+      mapBox.innerHTML = window.CSRWorldMap.svg(list, {label: 'CSR runners on a world map'});
+      dots = window.CSRWorldMap.dots(list);
+      mapInfo.textContent = ok ? 'Tap a dot for details.' : 'Location data is not available from the monitor.';
+    }
+    root.appendChild(g); root.appendChild(cm); root.appendChild(cc);
     function load() {
       api('/api/network').then(function (j) {
         clear(cw); clear(cr); clear(cc);
         if (!j.join) {
-          cw.appendChild(el('p', '', j.message || 'Join the ranking to see stats'));
+          cw.appendChild(el('p', '', j.message || 'Join the CSR monitor to see stats'));
+          cm.hidden = true;
           return;
         }
+        cm.hidden = false;
         stale(cw, j);
         var nw = j.network, n = j.node;
+        drawMap(nw);
         dl(cw, [['Nodes worldwide', nw ? nw.nodes_total : null], ['Nodes reachable', nw ? nw.nodes_reachable : null],
           ['Updated', nw ? fmtTime(nw.updated_at) : null], ['Fetched', fmtTime(j.fetched_at)], ['Monitor', j.monitor_url]]);
         var ping = j.ping || {};
@@ -294,7 +316,7 @@
     ['node.rpc_url', 'Node RPC URL', 'text', true],
     ['node.node_type', 'Node type', 'select:auto,ckb,neuron'],
     ['dashboard.bind', 'Dashboard bind', 'text', true],
-    ['ranking.join', 'Join ranking', 'bool'],
+    ['ranking.join', 'Join the CSR monitor', 'bool'],
     ['ranking.ping_mode', 'Ping mode', 'select:inbound,outbound,both'],
     ['ranking.ping_bind', 'Ping bind', 'text', true],
     ['monitor.url', 'Monitor URL', 'text'],

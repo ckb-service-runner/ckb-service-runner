@@ -298,3 +298,9 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - **Verification before writing.** The attestation is checked (peer, service key, network, expiry, recovered signer) and only then written, exactly as the monitor returned it (pretty-printed). `attestation_message` is duplicated from `csr-dev` (the runner must not depend on devtools).
 - **Error reporting.** `403 not_eligible` gets a hint (checks in the last 24 hours, `[ranking] join = true`); other non-200 replies report `monitor replied <status> <error>`.
 - **Output.** The printing of `chain_cmd` moved to the shared `print_result`.
+
+## A6: CSR monitor map
+- **Shared `worldmap.js`.** `runner/assets/worldmap.js` is a byte-for-byte copy of the file the monitor's public page uses (Natural Earth 1:110m shapes, public domain). It is never edited here, so both pages draw the same map.
+- **No tile server or CDN.** The map is inline SVG from a local script: no external requests, the CSP stays `'self'`, the dashboard works offline and leaks nothing, and all assets stay under the 200 KB budget.
+- **2° cells.** The monitor publishes only centres of 2° × 2° cells, so exact positions are never exposed; the credit line says dots are areas, not places. Coordinates are display-only, never logged or stored.
+- **Unknown locations are not drawn.** Runners without a location are only counted (`unlocated`). A missing or failing `/v1/locations` yields a map without dots and the note "Location data is not available from the monitor."; it never marks the network data stale.

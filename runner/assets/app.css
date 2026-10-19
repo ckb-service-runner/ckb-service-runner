@@ -1,5 +1,5 @@
-:root{--bg:#f6f7f9;--fg:#1b1f24;--card:#fff;--bd:#d8dce2;--mut:#667085;--ok:#1a7f37;--warn:#b7791f;--bad:#c62828;--ac:#2b6cb0}
-:root[data-theme=dark]{--bg:#12151a;--fg:#e6e8eb;--card:#1b2027;--bd:#2e3540;--mut:#9aa4b2;--ok:#4ac26b;--warn:#e0a63a;--bad:#ef6b6b;--ac:#6aa9ee}
+:root{--bg:#f6f7f9;--fg:#1b1f24;--card:#fff;--bd:#d8dce2;--mut:#667085;--ok:#1a7f37;--warn:#b7791f;--bad:#c62828;--ac:#2b6cb0;--wm-land:#fff;--wm-border:#d6d9df;--wm-shadow:#e4e1f5;--wm-dot:#8b7cf6}
+:root[data-theme=dark]{--bg:#12151a;--fg:#e6e8eb;--card:#1b2027;--bd:#2e3540;--mut:#9aa4b2;--ok:#4ac26b;--warn:#e0a63a;--bad:#ef6b6b;--ac:#6aa9ee;--wm-land:#262d35;--wm-border:#3a434d;--wm-shadow:#0b0e11;--wm-dot:#a497ff}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif}
 .top{display:flex;align-items:center;gap:.6rem;padding:.6rem .8rem;border-bottom:1px solid var(--bd);background:var(--card)}
@@ -50,3 +50,10 @@ tr.click{cursor:pointer}
 .pill.Paused,.pill.Queued,.pill.Scheduled{background:var(--warn)}
 .pill.Failed,.pill.Rejected,.pill.Lost,.pill.Expired{background:var(--bad)}
 .runtime-toggle.disabled { opacity: .45; cursor: not-allowed; }
+
+.map{background:var(--bg);border-radius:6px;padding:.4rem}
+.wm{display:block;width:100%;height:auto}
+.wm-shadow path{fill:var(--wm-shadow)}
+.wm-c{fill:var(--wm-land);stroke:var(--wm-border);stroke-width:.3;stroke-linejoin:round;stroke-linecap:round}
+.wm-dot{fill:var(--wm-dot);fill-opacity:.75;stroke:var(--wm-land);stroke-width:.3;cursor:pointer}
+.credit{color:var(--mut);font-size:.75rem;margin:.4rem 0 0}
