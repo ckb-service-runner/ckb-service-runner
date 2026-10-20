@@ -106,15 +106,15 @@ fn registry_dep(registry_type_hash: &[u8]) -> Result<Option<usize>, i8> {
     Ok(found)
 }
 
-/// `float_lock_hash` (field 2) of `molecule(Registry)`.
-fn float_lock_hash(registry: &[u8]) -> Option<[u8; 32]> {
-    let [_, _, float, _, _, _] = mol::table::<6>(registry)?;
-    Some(*mol::fixed::<32>(float)?)
+/// `payout_lock_hash` (field 2) of `molecule(Registry)` (7 fields; a v1 table is rejected).
+fn payout_lock_hash(registry: &[u8]) -> Option<[u8; 32]> {
+    let [_, _, payout, _, _, _, _] = mol::table::<7>(registry)?;
+    Some(*mol::fixed::<32>(payout)?)
 }
 
 /// `attestation.expiry_ms` (field 4, sub-field 3) of `molecule(Registry)`.
 fn attestation_expiry(registry: &[u8]) -> Option<u64> {
-    let [_, _, _, _, attestation, _] = mol::table::<6>(registry)?;
+    let [_, _, _, _, attestation, _, _] = mol::table::<7>(registry)?;
     let [_, _, _, expiry, _] = mol::table::<5>(attestation)?;
     Some(u64::from_le_bytes(*mol::fixed::<8>(expiry)?))
 }
@@ -242,10 +242,10 @@ fn run() -> Result<(), i8> {
     // 1. trigger
     check_trigger(job.trigger, since)?;
 
-    // 2. tip to the registered float
+    // 2. tip to the registered payout cell
     let registry = cell_data(dep, Source::CellDep)?;
-    let float = float_lock_hash(&registry).ok_or(ERR_REGISTRY_DEP)?;
-    if !net_inflow_at_least(&float, job.tip_shannons as u128)? {
+    let payout = payout_lock_hash(&registry).ok_or(ERR_REGISTRY_DEP)?;
+    if !net_inflow_at_least(&payout, job.tip_shannons as u128)? {
         return Err(ERR_TIP);
     }
 

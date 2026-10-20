@@ -2,7 +2,7 @@
 use ckb_testtool::bytes::Bytes;
 use ckb_testtool::ckb_error::Error as CkbError;
 use ckb_testtool::ckb_types::core::{ScriptHashType, TransactionView};
-use ckb_testtool::ckb_types::packed::{OutPoint, Script};
+use ckb_testtool::ckb_types::packed::{Byte32, OutPoint, Script};
 use ckb_testtool::ckb_types::prelude::*;
 use csr_contract_tests::*;
 
@@ -29,6 +29,8 @@ struct S {
     config: OutPoint,
     reg_type: Script,
     dual: Script,
+    /// The owner's DAO deposit (`MIN_STAKE`), the registry's `stake`.
+    stake: OutPoint,
     fields: RegistryFields,
 }
 
@@ -40,20 +42,22 @@ fn setup() -> S {
     let (config, config_hash) = env.config_cell(&monitor.pubkey, CLOCK_MS, monitor.lock.clone());
     let reg_type = env.registry_type_script(&config_hash);
     let dual = env.dual_lock_script(&owner.lock_hash(), &service.lock_hash());
-    let float = env.float_lock_script(&owner.lock_hash(), &service.lock_hash(), CKB);
+    let payout = env.always_success_script(b"payout");
+    let stake = env.stake(owner.lock.clone());
     let fields = RegistryFields {
         peer_id: b"12D3KooWExamplePeerIdForTheRegistryTests".to_vec(),
         service_pubkey: service.pubkey,
-        float_lock_hash: float.calc_script_hash().unpack(),
+        payout_lock_hash: payout.calc_script_hash().unpack(),
         network: 2,
         prekeys: Vec::new(),
+        stake: stake.clone(),
     };
-    S { env, owner, service, monitor, config, reg_type, dual, fields }
+    S { env, owner, service, monitor, config, reg_type, dual, stake, fields }
 }
 
 impl S {
     /// Creation: owner wallet cell + runner (service) key cell in, registry cell (minimal capacity) + change +
-    /// key cell out, config cell as dep.
+    /// key cell out, cell deps `[stake of the data, config cell]`.
     fn create_tx(&mut self, data: Bytes, lock: Script, with_config: bool) -> TransactionView {
         let config = if with_config { Some(self.config.clone()) } else { None };
         let reg_type = self.reg_type.clone();
@@ -62,8 +66,26 @@ impl S {
 
     fn create(&mut self, data: Bytes, lock: Script) -> Result<u64, CkbError> {
         let tx = self.create_tx(data, lock, true);
+        self.verify_create(tx)
+    }
+
+    fn verify_create(&mut self, tx: TransactionView) -> Result<u64, CkbError> {
         let (owner, service) = (&self.owner, &self.service);
         self.env.verify_signed(tx, &[owner, service])
+    }
+
+    /// Creation with `stake` as the registry's stake (the deposit must exist) and the default lock.
+    fn create_with_stake(&mut self, stake: &OutPoint) -> Result<u64, CkbError> {
+        let tx = self.create_tx_with_stake(stake);
+        self.verify_create(tx)
+    }
+
+    fn create_tx_with_stake(&mut self, stake: &OutPoint) -> TransactionView {
+        let mut f = self.fields.clone();
+        f.stake = stake.clone();
+        let data = f.signed_data(&self.monitor, EXPIRY_MS);
+        let dual = self.dual.clone();
+        self.create_tx(data, dual, true)
     }
 
     /// A live registry cell with valid data and 10 CKB above its occupied capacity. Returns (out point, capacity).
@@ -81,6 +103,17 @@ impl S {
 
     /// Like `spend`, plus a key cell of `extra` (in and out, signed), e.g. the new runner key.
     fn spend_with(&mut self, key_is_owner: bool, registry: Option<(u64, Script, Bytes)>, extra: Option<&Key>) -> Result<u64, CkbError> {
+        self.spend_with_deps(key_is_owner, registry, extra, Vec::new())
+    }
+
+    /// Like `spend_with`, with `deps` placed first in the cell deps (e.g. the new stake).
+    fn spend_with_deps(
+        &mut self,
+        key_is_owner: bool,
+        registry: Option<(u64, Script, Bytes)>,
+        extra: Option<&Key>,
+        deps: Vec<OutPoint>,
+    ) -> Result<u64, CkbError> {
         let (reg, reg_cap) = self.live_registry();
         let key = if key_is_owner { &self.owner } else { &self.service };
         let key_lock = key.lock.clone();
@@ -99,6 +132,7 @@ impl S {
             outputs.push((output(KEY_CELL, x.lock.clone(), None), Bytes::new()));
         }
         let tx = tx_with(inputs, outputs).as_advanced_builder().cell_dep(cell_dep(&self.config)).build();
+        let tx = with_deps_first(tx, deps.iter().map(cell_dep).collect());
         let key = if key_is_owner { &self.owner } else { &self.service };
         let mut keys = vec![key];
         keys.extend(extra);
@@ -142,6 +176,7 @@ fn registry_create_cycles_of_type_script() {
         ],
     )
     .as_advanced_builder()
+    .cell_dep(cell_dep(&s.stake))
     .cell_dep(cell_dep(&s.config))
     .build();
     let total = s.env.verify_signed(tx, &[&s.service]).expect("create");
@@ -164,13 +199,14 @@ fn registry_create_without_runner_key_rejected() {
 #[test]
 fn registry_create_with_copied_attestation_rejected() {
     // The attacker copies the victim's (public) attestation and registers the victim's peer_id and service key
-    // with the attacker as owner and the attacker's float; the attacker's own key cell is no runner key.
+    // with the attacker as owner (and stake) and the attacker's payout cell; the attacker's own key cell is no
+    // runner key.
     let mut s = setup();
     let attacker = s.env.new_key();
-    let attacker_float = s.env.float_lock_script(&attacker.lock_hash(), &attacker.lock_hash(), CKB);
     let victim_attestation = s.fields.attestation_fields(EXPIRY_MS).sign(&s.monitor);
     let mut f = s.fields.clone();
-    f.float_lock_hash = attacker_float.calc_script_hash().unpack();
+    f.payout_lock_hash = attacker.lock_hash();
+    f.stake = s.env.stake(attacker.lock.clone());
     let data = f.data(&victim_attestation);
     let lock = s.env.dual_lock_script(&attacker.lock_hash(), &s.service.lock_hash());
     let (reg_type, config) = (s.reg_type.clone(), s.config.clone());
@@ -356,14 +392,14 @@ fn registry_create_malformed_data_rejected() {
 fn registry_two_outputs_in_group_rejected() {
     let mut s = setup();
     let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
-    let wallet = s.env.min_cell(WALLET, s.owner.lock.clone(), None, Bytes::new());
+    let wallet = s.env.min_cell(2 * WALLET, s.owner.lock.clone(), None, Bytes::new());
     let reg_cap = min_capacity(&s.dual, Some(&s.reg_type), data.len());
     let tx = tx_with(
         vec![s.env.input(&wallet, 0)],
         vec![
             (output(reg_cap, s.dual.clone(), Some(s.reg_type.clone())), data.clone()),
             (output(reg_cap, s.dual.clone(), Some(s.reg_type.clone())), data),
-            (output(WALLET - 2 * reg_cap, s.owner.lock.clone(), None), Bytes::new()),
+            (output(2 * WALLET - 2 * reg_cap, s.owner.lock.clone(), None), Bytes::new()),
         ],
     )
     .as_advanced_builder()
@@ -404,10 +440,10 @@ fn registry_runner_refresh_with_expired_attestation_rejected() {
 }
 
 #[test]
-fn registry_runner_changes_float_lock_hash_rejected() {
+fn registry_runner_changes_payout_lock_hash_rejected() {
     let mut s = setup();
     let mut f = s.fields.clone();
-    f.float_lock_hash = [0x66; 32]; // e.g. the runner's own float
+    f.payout_lock_hash = s.service.lock_hash(); // e.g. the runner's own wallet
     let data = f.signed_data(&s.monitor, EXPIRY_MS);
     let (cap, dual) = (s.reg_cap(), s.dual.clone());
     assert_script_error(s.spend(false, Some((cap, dual, data))), "Inputs[0].Type", 14);
@@ -451,10 +487,11 @@ fn registry_runner_destroys_cell_rejected() {
 // --- owner path ---------------------------------------------------------------------------------
 
 #[test]
-fn registry_owner_changes_float_lock_hash_ok() {
+fn registry_owner_changes_payout_lock_hash_ok() {
+    // No stake dep needed: neither the stake nor the owner changes.
     let mut s = setup();
     let mut f = s.fields.clone();
-    f.float_lock_hash = [0x77; 32];
+    f.payout_lock_hash = [0x77; 32];
     let data = f.signed_data(&s.monitor, EXPIRY_MS);
     let (cap, dual) = (s.reg_cap() - CKB, s.dual.clone());
     s.spend(true, Some((cap, dual, data))).expect("owner update");
@@ -516,7 +553,7 @@ fn registry_owner_changes_service_pubkey_with_old_runner_key_rejected() {
 fn registry_owner_update_still_needs_valid_attestation_rejected() {
     let mut s = setup();
     let mut f = s.fields.clone();
-    f.float_lock_hash = [0x77; 32];
+    f.payout_lock_hash = [0x77; 32];
     let data = f.signed_data(&s.monitor, CLOCK_MS);
     let (cap, dual) = (s.reg_cap(), s.dual.clone());
     assert_script_error(s.spend(true, Some((cap, dual, data))), "Inputs[0].Type", 12);
@@ -526,6 +563,275 @@ fn registry_owner_update_still_needs_valid_attestation_rejected() {
 fn registry_owner_destroys_cell_ok() {
     let mut s = setup();
     s.spend(true, None).expect("owner destroy");
+}
+
+// --- data format ------------------------------------------------------------------------------
+
+/// A molecule table of the given (already encoded) fields.
+fn mol_table(fields: &[&[u8]]) -> Vec<u8> {
+    let header = 4 * (fields.len() + 1);
+    let total = header + fields.iter().map(|f| f.len()).sum::<usize>();
+    let mut out = (total as u32).to_le_bytes().to_vec();
+    let mut off = header;
+    for f in fields {
+        out.extend_from_slice(&(off as u32).to_le_bytes());
+        off += f.len();
+    }
+    for f in fields {
+        out.extend_from_slice(f);
+    }
+    out
+}
+
+/// Field slices of a molecule table.
+fn mol_fields(t: &[u8]) -> Vec<&[u8]> {
+    let u = |at: usize| u32::from_le_bytes(t[at..at + 4].try_into().unwrap()) as usize;
+    let n = u(4) / 4 - 1;
+    (0..n).map(|i| &t[u(4 + 4 * i)..if i + 1 < n { u(8 + 4 * i) } else { t.len() }]).collect()
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn unhex(s: &str) -> Vec<u8> {
+    let s = s.trim_start_matches("0x");
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+}
+
+#[test]
+fn registry_v1_data_rejected() {
+    // The v1 table (6 fields: no stake) with a valid attestation.
+    let mut s = setup();
+    let v2 = s.fields.signed_data(&s.monitor, EXPIRY_MS);
+    let fields = mol_fields(&v2);
+    assert_eq!(fields.len(), 7);
+    let v1 = mol_table(&fields[..6]);
+    let dual = s.dual.clone();
+    let tx = s.create_tx(v1.into(), dual, true);
+    let stake = s.stake.clone();
+    let tx = with_deps_first(tx, vec![cell_dep(&stake)]);
+    assert_script_error(s.verify_create(tx), "Outputs[0].Type", 7);
+}
+
+#[test]
+fn registry_v2_data_matches_monitor_vector() {
+    // The cross-check vector of the CSR Network Monitor (`spec/registry.md` §2).
+    const VECTOR: &str = "7501000020000000540000007500000095000000960000004d0100005101000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27777777777777777777777777777777777777777777777777777777777777777701b7000000180000004c0000006d0000006e0000007600000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f270100505c18a301000004d5db9878eceb46d700d0c55677777b3b1d2a401773b24dae15789c071ef7d36794160555e176e0b1ca6b997892e7c9ce7320b2a2016e3102c46a495421ed5f01000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a03000000";
+    let peer_id = b"QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB".to_vec();
+    let service_pubkey: [u8; 33] =
+        unhex("0x02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").try_into().unwrap();
+    let signature: [u8; 65] = unhex("0x04d5db9878eceb46d700d0c55677777b3b1d2a401773b24dae15789c071ef7d36794160555e176e0b1ca6b997892e7c9ce7320b2a2016e3102c46a495421ed5f01").try_into().unwrap();
+    let stake = OutPoint::new_builder().tx_hash(Byte32::from([0x5a; 32])).index(3u32).build();
+    let fields = RegistryFields {
+        peer_id,
+        service_pubkey,
+        payout_lock_hash: [0x77; 32],
+        network: 1,
+        prekeys: Vec::new(),
+        stake,
+    };
+    let att = fields.attestation_fields(1_800_000_000_000).with_signature(signature);
+    assert_eq!(hex(&fields.data(&att)), VECTOR);
+}
+
+// --- stake (DAO deposit) --------------------------------------------------------------------------
+
+#[test]
+fn registry_create_stake_exactly_min_ok() {
+    let mut s = setup();
+    let owner_lock = s.owner.lock.clone();
+    let stake = s.env.deposit(MIN_STAKE, owner_lock);
+    assert_eq!(MIN_STAKE, 1_000_000_000_000);
+    let cycles = s.create_with_stake(&stake).expect("create with a deposit of exactly MIN_STAKE");
+    println!("registry creation with stake: {cycles} cycles");
+}
+
+#[test]
+fn registry_create_without_stake_dep_rejected() {
+    let mut s = setup();
+    let stake = s.stake.clone();
+    let tx = s.create_tx_with_stake(&stake);
+    let tx = without_dep(tx, &stake);
+    assert_script_error(s.verify_create(tx), "Outputs[0].Type", 18);
+}
+
+#[test]
+fn registry_create_stake_dep_after_dep_group_rejected() {
+    // A dep group before the stake shifts the `Source::CellDep` indices; the position is not accepted.
+    let mut s = setup();
+    let anyone = s.env.always_success_script(b"member");
+    let member = s.env.cell(100 * CKB, anyone, None, Bytes::from_static(b"some code"));
+    let group = s.env.dep_group(&[member]);
+    let stake = s.stake.clone();
+    let tx = s.create_tx_with_stake(&stake);
+    let tx = with_deps_first(tx, vec![dep_group_dep(&group)]);
+    assert_script_error(s.verify_create(tx), "Outputs[0].Type", 18);
+}
+
+#[test]
+fn registry_create_stake_dep_is_dep_group_rejected() {
+    // The registry's `stake` names a dep group (which lists a real deposit) referenced as `dep_group`.
+    let mut s = setup();
+    let deposit = s.stake.clone();
+    let group = s.env.dep_group(&[deposit]);
+    let tx = s.create_tx_with_stake(&group);
+    let tx = with_deps_first(without_dep(tx, &group), vec![dep_group_dep(&group)]);
+    assert_script_error(s.verify_create(tx), "Outputs[0].Type", 18);
+}
+
+#[test]
+fn registry_create_stake_outpoint_mismatch_rejected() {
+    // A valid deposit of the owner is a dep, but it is not the registry's `stake`.
+    let mut s = setup();
+    let owner_lock = s.owner.lock.clone();
+    let other = s.env.stake(owner_lock);
+    let stake = s.stake.clone();
+    let tx = s.create_tx_with_stake(&stake);
+    let tx = with_deps_first(without_dep(tx, &stake), vec![cell_dep(&other)]);
+    assert_script_error(s.verify_create(tx), "Outputs[0].Type", 18);
+}
+
+#[test]
+fn registry_create_stake_not_dao_rejected() {
+    let mut s = setup();
+    let other_type = s.env.always_success_script(b"not the dao");
+    let owner_lock = s.owner.lock.clone();
+    let stake = s.env.cell(MIN_STAKE, owner_lock, Some(other_type), deposit_data());
+    assert_script_error(s.create_with_stake(&stake), "Outputs[0].Type", 19);
+}
+
+#[test]
+fn registry_create_stake_without_type_rejected() {
+    let mut s = setup();
+    let owner_lock = s.owner.lock.clone();
+    let stake = s.env.cell(MIN_STAKE, owner_lock, None, deposit_data());
+    assert_script_error(s.create_with_stake(&stake), "Outputs[0].Type", 19);
+}
+
+#[test]
+fn registry_create_stake_dao_args_not_empty_rejected() {
+    let mut s = setup();
+    let dao = dao_type_script().as_builder().args(Bytes::from_static(&[0]).pack()).build();
+    let owner_lock = s.owner.lock.clone();
+    let stake = s.env.cell(MIN_STAKE, owner_lock, Some(dao), deposit_data());
+    assert_script_error(s.create_with_stake(&stake), "Outputs[0].Type", 19);
+}
+
+#[test]
+fn registry_create_stake_dao_hash_type_data_rejected() {
+    let mut s = setup();
+    let dao = dao_type_script().as_builder().hash_type(ScriptHashType::Data1).build();
+    let owner_lock = s.owner.lock.clone();
+    let stake = s.env.cell(MIN_STAKE, owner_lock, Some(dao), deposit_data());
+    assert_script_error(s.create_with_stake(&stake), "Outputs[0].Type", 19);
+}
+
+#[test]
+fn registry_create_stake_withdrawing_rejected() {
+    // Phase 1 withdrawing cell: same DAO type, data = the deposit block number.
+    let mut s = setup();
+    let owner_lock = s.owner.lock.clone();
+    let stake = s.env.cell(MIN_STAKE, owner_lock, Some(dao_type_script()), Bytes::copy_from_slice(&1234u64.to_le_bytes()));
+    assert_script_error(s.create_with_stake(&stake), "Outputs[0].Type", 19);
+}
+
+#[test]
+fn registry_create_stake_below_min_rejected() {
+    // 9,999.99999999 CKB
+    let mut s = setup();
+    let owner_lock = s.owner.lock.clone();
+    let stake = s.env.deposit(MIN_STAKE - 1, owner_lock);
+    assert_script_error(s.create_with_stake(&stake), "Outputs[0].Type", 20);
+}
+
+#[test]
+fn registry_create_stake_of_other_owner_rejected() {
+    let mut s = setup();
+    let other = s.env.new_key();
+    let stake = s.env.stake(other.lock.clone());
+    assert_script_error(s.create_with_stake(&stake), "Outputs[0].Type", 21);
+}
+
+#[test]
+fn registry_runner_changes_stake_rejected() {
+    let mut s = setup();
+    let owner_lock = s.owner.lock.clone();
+    let new_stake = s.env.stake(owner_lock);
+    let mut f = s.fields.clone();
+    f.stake = new_stake.clone();
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    assert_script_error(s.spend_with_deps(false, Some((cap, dual, data)), None, vec![new_stake]), "Inputs[0].Type", 14);
+}
+
+#[test]
+fn registry_runner_refresh_without_stake_dep_ok() {
+    let mut s = setup();
+    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS + 3_600_000);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    s.spend(false, Some((cap, dual, data))).expect("refresh needs no stake dep");
+}
+
+#[test]
+fn registry_owner_changes_stake_with_new_deposit_ok() {
+    let mut s = setup();
+    let owner_lock = s.owner.lock.clone();
+    let new_stake = s.env.stake(owner_lock);
+    let mut f = s.fields.clone();
+    f.stake = new_stake.clone();
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    s.spend_with_deps(true, Some((cap, dual, data)), None, vec![new_stake]).expect("owner moves the stake");
+}
+
+#[test]
+fn registry_owner_changes_stake_without_dep_rejected() {
+    let mut s = setup();
+    let owner_lock = s.owner.lock.clone();
+    let new_stake = s.env.stake(owner_lock);
+    let mut f = s.fields.clone();
+    f.stake = new_stake;
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    // the old deposit as dep does not help
+    let old = s.stake.clone();
+    assert_script_error(s.spend_with_deps(true, Some((cap, dual, data)), None, vec![old]), "Inputs[0].Type", 18);
+}
+
+#[test]
+fn registry_owner_changes_owner_with_old_deposit_rejected() {
+    // The owner hands the registration to a new owner, keeping the old owner's deposit as stake.
+    let mut s = setup();
+    let new_owner = s.env.new_key();
+    let lock = s.env.dual_lock_script(&new_owner.lock_hash(), &s.service.lock_hash());
+    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
+    let cap = s.reg_cap();
+    let stake = s.stake.clone();
+    assert_script_error(s.spend_with_deps(true, Some((cap, lock, data)), None, vec![stake]), "Inputs[0].Type", 21);
+}
+
+#[test]
+fn registry_owner_changes_owner_with_new_deposit_ok() {
+    let mut s = setup();
+    let new_owner = s.env.new_key();
+    let lock = s.env.dual_lock_script(&new_owner.lock_hash(), &s.service.lock_hash());
+    let new_stake = s.env.stake(new_owner.lock.clone());
+    let mut f = s.fields.clone();
+    f.stake = new_stake.clone();
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let cap = s.reg_cap();
+    s.spend_with_deps(true, Some((cap, lock, data)), None, vec![new_stake]).expect("owner transfer with new deposit");
+}
+
+#[test]
+fn registry_owner_changes_owner_without_stake_dep_rejected() {
+    let mut s = setup();
+    let new_owner = s.env.new_key();
+    let lock = s.env.dual_lock_script(&new_owner.lock_hash(), &s.service.lock_hash());
+    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
+    let cap = s.reg_cap();
+    assert_script_error(s.spend(true, Some((cap, lock, data))), "Inputs[0].Type", 18);
 }
 
 // --- dual lock ----------------------------------------------------------------------------------

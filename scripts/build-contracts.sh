@@ -27,4 +27,4 @@ build() {
 echo "== CSR contracts =="
 # csr-registry embeds the code hash of the built csr-dual-lock (csr-registry/build.rs), so the dual lock comes first.
 build csr-dual-lock
-build csr-float-lock csr-registry csr-job-type csr-job-lock
+build csr-registry csr-job-type csr-job-lock

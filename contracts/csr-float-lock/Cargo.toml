@@ -1,9 +1,0 @@
-[package]
-name = "csr-float-lock"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-# no `ckb-types` feature: the `bytes` crate emits atomic instructions that ckb-vm rejects
-ckb-std = { version = "=1.1.0", default-features = false, features = ["allocator", "dummy-atomic"] }

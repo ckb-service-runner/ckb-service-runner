@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-# no `ckb-types` feature and no `csr-schemas`: both pull the `bytes` crate (atomics, see csr-float-lock);
+# no `ckb-types` feature and no `csr-schemas`: both pull the `bytes` crate (atomic instructions that ckb-vm rejects);
 # the molecule data is parsed by hand in `mol.rs`.
 ckb-std = { version = "=1.1.0", default-features = false, features = ["allocator", "dummy-atomic"] }
 blake2b-ref = "0.3"

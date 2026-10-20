@@ -29,6 +29,18 @@ const ERR_RUNNER_FIELD: i8 = 14;
 const ERR_RUNNER_CAPACITY: i8 = 15;
 const ERR_DESTROY: i8 = 16;
 const ERR_NO_RUNNER_KEY: i8 = 17;
+const ERR_STAKE_DEP: i8 = 18;
+const ERR_STAKE_NOT_DEPOSIT: i8 = 19;
+const ERR_STAKE_CAPACITY: i8 = 20;
+const ERR_STAKE_OWNER: i8 = 21;
+
+/// Minimum capacity of the stake deposit: 10,000 CKB.
+const MIN_STAKE: u64 = 1_000_000_000_000;
+/// Type script code hash of the Nervos DAO (hash type `type`, empty args; the same on every chain).
+const DAO_TYPE_CODE_HASH: [u8; 32] = hex32("82d76d1b75fe2fd9a27dfbaa65a039221a380d76c926f378d3f81cf3e7e13f2e");
+/// Size of a molecule `CellDep`: `OutPoint (36) ‖ dep_type (1)`.
+const CELL_DEP_SIZE: usize = 37;
+const DEP_TYPE_CODE: u8 = 0;
 
 /// Domain separator of the attestation message.
 const ATTEST_DOMAIN: &[u8] = b"CSR-ATTEST-v1";
@@ -161,20 +173,22 @@ fn group_count(src: Source) -> Result<usize, i8> {
 struct Registry<'a> {
     peer_id: &'a [u8],
     service_pubkey: &'a [u8],
-    float_lock_hash: &'a [u8],
+    payout_lock_hash: &'a [u8],
     network: &'a [u8],
     att_peer_id: &'a [u8],
     att_service_pubkey: &'a [u8],
     att_network: &'a [u8],
     att_expiry: &'a [u8],
     att_signature: &'a [u8; 65],
+    /// Out point of the stake deposit cell (`tx_hash (32) ‖ index (u32 LE)`).
+    stake: &'a [u8; 36],
 }
 
 fn parse_registry(d: &[u8]) -> Option<Registry<'_>> {
-    let [peer_id, service_pubkey, float_lock_hash, network, attestation, prekeys] = mol::table::<6>(d)?;
+    let [peer_id, service_pubkey, payout_lock_hash, network, attestation, prekeys, stake] = mol::table::<7>(d)?;
     mol::bytes(peer_id)?;
     mol::fixed::<33>(service_pubkey)?;
-    mol::fixed::<32>(float_lock_hash)?;
+    mol::fixed::<32>(payout_lock_hash)?;
     if mol::fixed::<1>(network)?[0] > 2 {
         return None;
     }
@@ -187,13 +201,14 @@ fn parse_registry(d: &[u8]) -> Option<Registry<'_>> {
     Some(Registry {
         peer_id,
         service_pubkey,
-        float_lock_hash,
+        payout_lock_hash,
         network,
         att_peer_id,
         att_service_pubkey,
         att_network,
         att_expiry,
         att_signature: mol::fixed::<65>(att_signature)?,
+        stake: mol::fixed::<36>(stake)?,
     })
 }
 
@@ -298,9 +313,7 @@ fn check_output(config_type_hash: &[u8], r: &Registry, lock: &[u8]) -> Result<()
 
 /// Owner hash from a registry cell's dual-lock args, and whether an input with it is present.
 fn owner_present(lock: &[u8]) -> Result<bool, i8> {
-    let (_, _, args) = mol::script(lock).ok_or(ERR_LOCK)?;
-    let owner = args.get(0..32).ok_or(ERR_LOCK)?;
-    input_with_lock_hash(owner)
+    input_with_lock_hash(owner_hash(lock)?)
 }
 
 /// Runner hash (`args[32..64]`) of a registry cell's dual lock.
@@ -319,6 +332,90 @@ fn check_runner_key(out_lock: &[u8]) -> Result<(), i8> {
     } else {
         Err(ERR_NO_RUNNER_KEY)
     }
+}
+
+/// Fills `buf` from the transaction at `offset` (a longer remainder is fine).
+fn load_tx_at(buf: &mut [u8], offset: usize) -> Result<(), i8> {
+    match syscalls::load_transaction(buf, offset) {
+        Ok(n) if n >= buf.len() => Ok(()),
+        Err(SysError::LengthNotEnough(n)) if n >= buf.len() => Ok(()),
+        Ok(_) => Err(3),
+        Err(e) => Err(sys(e)),
+    }
+}
+
+fn read_u32(b: &[u8], at: usize) -> usize {
+    u32::from_le_bytes(b[at..at + 4].try_into().unwrap()) as usize
+}
+
+/// `RawTransaction.cell_deps` of the current transaction (fixvec items, 37 bytes each).
+fn raw_cell_deps() -> Result<Vec<u8>, i8> {
+    // Transaction: total ‖ off(raw) ‖ off(witnesses); RawTransaction: total ‖ 6 field offsets.
+    let mut tx_header = [0u8; 12];
+    load_tx_at(&mut tx_header, 0)?;
+    let raw = read_u32(&tx_header, 4);
+    let mut raw_header = [0u8; 28];
+    load_tx_at(&mut raw_header, raw)?;
+    let (start, end) = (read_u32(&raw_header, 8), read_u32(&raw_header, 12));
+    if end < start + 4 {
+        return Err(ERR_STAKE_DEP);
+    }
+    let mut deps = alloc::vec![0u8; end - start];
+    load_tx_at(&mut deps, raw + start)?;
+    let items = &deps[4..];
+    if items.len() != read_u32(&deps, 0) * CELL_DEP_SIZE {
+        return Err(ERR_STAKE_DEP);
+    }
+    Ok(items.to_vec())
+}
+
+/// Stake rules 1–4 (`spec/registry.md` §4.1): the registry's `stake` is a code cell dep at a position where its
+/// raw index equals its `Source::CellDep` index, it is a Nervos DAO deposit of at least `MIN_STAKE`, and it is
+/// owned by the registry owner (`owner_lock_hash`, the dual lock's `args[0..32]`).
+fn check_stake(stake: &[u8; 36], owner_lock_hash: &[u8]) -> Result<(), i8> {
+    // 1. position j: the stake entry is code and so is every entry before it
+    let deps = raw_cell_deps()?;
+    let mut found = None;
+    for (j, dep) in deps.chunks_exact(CELL_DEP_SIZE).enumerate() {
+        if dep[36] != DEP_TYPE_CODE {
+            break;
+        }
+        if dep[..36] == stake[..] {
+            found = Some(j);
+            break;
+        }
+    }
+    let j = found.ok_or(ERR_STAKE_DEP)?;
+
+    // 2. a Nervos DAO deposit: DAO type script with empty args, data = 8 zero bytes
+    let type_script = load_all(|b, o| syscalls::load_cell_by_field(b, o, j, Source::CellDep, CellField::Type))
+        .map_err(|_| ERR_STAKE_NOT_DEPOSIT)?;
+    let (code_hash, hash_type, args) = mol::script(&type_script).ok_or(ERR_STAKE_NOT_DEPOSIT)?;
+    if *code_hash != DAO_TYPE_CODE_HASH || hash_type != HASH_TYPE_TYPE || !args.is_empty() {
+        return Err(ERR_STAKE_NOT_DEPOSIT);
+    }
+    if cell_data(j, Source::CellDep)? != [0u8; 8] {
+        return Err(ERR_STAKE_NOT_DEPOSIT);
+    }
+
+    // 3. capacity
+    if load_cell_capacity(j, Source::CellDep).map_err(sys)? < MIN_STAKE {
+        return Err(ERR_STAKE_CAPACITY);
+    }
+
+    // 4. owned by the registry owner
+    let mut lock_hash = [0u8; 32];
+    syscalls::load_cell_by_field(&mut lock_hash, 0, j, Source::CellDep, CellField::LockHash).map_err(sys)?;
+    if lock_hash[..] != *owner_lock_hash {
+        return Err(ERR_STAKE_OWNER);
+    }
+    Ok(())
+}
+
+/// Owner hash (`args[0..32]`) of a registry cell's dual lock.
+fn owner_hash(lock: &[u8]) -> Result<&[u8], i8> {
+    let (_, _, args) = mol::script(lock).ok_or(ERR_LOCK)?;
+    args.get(0..32).ok_or(ERR_LOCK)
 }
 
 fn run() -> Result<(), i8> {
@@ -340,29 +437,37 @@ fn run() -> Result<(), i8> {
     let out = parse_registry(&out_data).ok_or(ERR_DATA)?;
     let out_lock = cell_lock(0, Source::GroupOutput)?;
 
-    // Rule 6 applies on creation and whenever the owner changes the service key / runner lock.
+    // Rule 6 applies on creation and whenever the owner changes the service key / runner lock;
+    // the stake rules on creation and whenever the owner changes the stake or the owner.
     let mut need_runner_key = n_in == 0;
+    let mut need_stake = n_in == 0;
     if n_in == 1 {
         let in_lock = cell_lock(0, Source::GroupInput)?;
         if owner_present(&in_lock)? {
             let in_data = cell_data(0, Source::GroupInput)?;
-            let new_key = match parse_registry(&in_data) {
-                Some(inp) => inp.service_pubkey != out.service_pubkey,
-                None => true,
+            let (new_key, new_stake) = match parse_registry(&in_data) {
+                Some(inp) => (inp.service_pubkey != out.service_pubkey, inp.stake != out.stake),
+                None => (true, true),
             };
             let new_runner = match (runner_hash(&in_lock), runner_hash(&out_lock)) {
                 (Ok(a), Ok(b)) => a != b,
                 _ => true,
             };
+            let new_owner = match (owner_hash(&in_lock), owner_hash(&out_lock)) {
+                (Ok(a), Ok(b)) => a != b,
+                _ => true,
+            };
             need_runner_key = new_key || new_runner;
+            need_stake = new_stake || new_owner;
         } else {
-            // runner path: only attestation and prekeys may change
+            // runner path: only attestation and prekeys may change (no stake check: `stake` stays fixed)
             let in_data = cell_data(0, Source::GroupInput)?;
             let inp = parse_registry(&in_data).ok_or(ERR_DATA)?;
             if inp.peer_id != out.peer_id
                 || inp.service_pubkey != out.service_pubkey
-                || inp.float_lock_hash != out.float_lock_hash
+                || inp.payout_lock_hash != out.payout_lock_hash
                 || inp.network != out.network
+                || inp.stake != out.stake
                 || in_lock != out_lock
             {
                 return Err(ERR_RUNNER_FIELD);
@@ -377,6 +482,9 @@ fn run() -> Result<(), i8> {
     check_output(config_type_hash, &out, &out_lock)?;
     if need_runner_key {
         check_runner_key(&out_lock)?;
+    }
+    if need_stake {
+        check_stake(out.stake, owner_hash(&out_lock)?)?;
     }
     Ok(())
 }

@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "csr-schemas",
-    "csr-float-lock",
     "csr-dual-lock",
     "csr-registry",
     "csr-job-type",

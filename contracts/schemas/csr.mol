@@ -26,13 +26,20 @@ table Attestation {
     signature:      Signature,
 }
 
+// Out point of a live cell (same layout as `OutPoint` in blockchain.mol).
+struct OutPoint {
+    tx_hash: Byte32,
+    index:   Uint32,
+}
+
 table Registry {
-    peer_id:         Bytes,
-    service_pubkey:  Byte33,
-    float_lock_hash: Byte32,
-    network:         byte,
-    attestation:     Attestation,
-    prekeys:         Bytes,
+    peer_id:          Bytes,
+    service_pubkey:   Byte33,
+    payout_lock_hash: Byte32,       // lock hash of the operator's payout cell
+    network:          byte,
+    attestation:      Attestation,
+    prekeys:          Bytes,
+    stake:            OutPoint,     // the operator's Nervos DAO deposit cell
 }
 
 // --- job --------------------------------------------------------------------

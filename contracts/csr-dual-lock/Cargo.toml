@@ -5,5 +5,5 @@ edition = "2021"
 publish = false
 
 [dependencies]
-# no `ckb-types` feature: see csr-float-lock (atomics of the `bytes` crate)
+# no `ckb-types` feature: the `bytes` crate emits atomic instructions that ckb-vm rejects
 ckb-std = { version = "=1.1.0", default-features = false, features = ["allocator", "dummy-atomic"] }

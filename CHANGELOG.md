@@ -4,6 +4,7 @@
 - First Phase 1 release: release profile, `scripts/package.sh` (tarball + SHA256SUMS), `config/csr.service`, `docs/install.md`, greyed-out runtime toggle on mainnet; `docs/milestones/A4.md`.
 
 ## Unreleased
+- A7 phase 1 (D-A7-1): Registry v2 (`payout_lock_hash`, `stake` = Nervos DAO deposit out point); `csr-registry` checks the stake deposit (errors 18–21, `MIN_STAKE` 10,000 CKB); `csr-job-lock` pays tips to the registered payout cell; `csr-float-lock` and its tests removed; `spec/registry.md` rewritten for v2.
 - A6: dashboard "Network" tab becomes "CSR monitor" with a world map of the CSR network (`GET /v1/locations`, shared `worldmap.js`, 2° dots); Overview card "Ranking" and setting "Join ranking" renamed; `docs/milestones/A6.md`.
 - A5: testnet registration: chain commands work on testnet with the embedded `deployments/testnet.json`, real testnet monitor defaults, and `csr register attest --out FILE` fetches and verifies the monitor attestation; `docs/milestones/A5.md`.
 - A3c phase 3: race between two runners on one devnet node (loser → `Lost` on pool double-spend errors), dashboard Earnings & float page and Overview float card; `docs/milestones/A3c.md`, `docs/testing.md`, README.

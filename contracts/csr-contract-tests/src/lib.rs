@@ -1,5 +1,6 @@
-//! Test harness for the CSR contracts: deploys the five binaries, the system
-//! secp256k1-blake160 lock and a Type ID config cell, and builds/signs transactions.
+//! Test harness for the CSR contracts: deploys the four binaries, the system
+//! secp256k1-blake160 lock and a Type ID config cell, creates Nervos DAO deposit cells (stakes),
+//! and builds/signs transactions.
 //!
 //! Contract binaries come from `contracts/build/release/` (run `scripts/build-contracts.sh`).
 
@@ -7,7 +8,7 @@ use ckb_testtool::bytes::Bytes;
 use ckb_testtool::ckb_crypto::secp::{Generator, Privkey};
 use ckb_testtool::ckb_error::Error as CkbError;
 use ckb_testtool::ckb_hash::{blake2b_256, new_blake2b};
-use ckb_testtool::ckb_types::core::{Capacity, ScriptHashType, TransactionBuilder, TransactionView};
+use ckb_testtool::ckb_types::core::{Capacity, DepType, ScriptHashType, TransactionBuilder, TransactionView};
 use ckb_testtool::ckb_types::packed::{self, Byte32, CellInput, CellOutput, OutPoint, Script};
 use ckb_testtool::ckb_types::prelude::*;
 use ckb_testtool::context::Context;
@@ -16,8 +17,15 @@ use std::path::PathBuf;
 pub const MAX_CYCLES: u64 = 70_000_000;
 pub const CKB: u64 = 100_000_000;
 
-pub const CONTRACT_NAMES: [&str; 5] = [
-    "csr-float-lock",
+/// Minimum stake of a registration (`csr-registry` `MIN_STAKE`): 10,000 CKB.
+pub const MIN_STAKE: u64 = 10_000 * CKB;
+/// Type script code hash of the Nervos DAO (hash type `type`, empty args).
+pub const DAO_TYPE_CODE_HASH: [u8; 32] = [
+    0x82, 0xd7, 0x6d, 0x1b, 0x75, 0xfe, 0x2f, 0xd9, 0xa2, 0x7d, 0xfb, 0xaa, 0x65, 0xa0, 0x39, 0x22, 0x1a, 0x38, 0x0d,
+    0x76, 0xc9, 0x26, 0xf3, 0x78, 0xd3, 0xf8, 0x1c, 0xf3, 0xe7, 0xe1, 0x3f, 0x2e,
+];
+
+pub const CONTRACT_NAMES: [&str; 4] = [
     "csr-dual-lock",
     "csr-registry",
     "csr-job-type",
@@ -66,7 +74,6 @@ impl Key {
 /// Everything a test needs: a context with all contracts deployed.
 pub struct Env {
     pub ctx: Context,
-    pub float_lock: OutPoint,
     pub dual_lock: OutPoint,
     pub registry: OutPoint,
     pub job_type: OutPoint,
@@ -82,7 +89,6 @@ pub struct Env {
 impl Env {
     pub fn new() -> Self {
         let mut ctx = Context::new_with_deterministic_rng();
-        let float_lock = ctx.deploy_cell(load_contract("csr-float-lock"));
         let dual_lock = ctx.deploy_cell(load_contract("csr-dual-lock"));
         let registry = ctx.deploy_cell(load_contract("csr-registry"));
         let job_type = ctx.deploy_cell(load_contract("csr-job-type"));
@@ -92,7 +98,7 @@ impl Env {
             std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/secp256k1_data")).expect("secp data").into(),
         );
         let always_success = ctx.deploy_cell(ckb_testtool::builtin::ALWAYS_SUCCESS.clone());
-        Env { ctx, float_lock, dual_lock, registry, job_type, job_lock, secp, secp_data, always_success, seed: 1 }
+        Env { ctx, dual_lock, registry, job_type, job_lock, secp, secp_data, always_success, seed: 1 }
     }
 
     /// Script referencing a deployed binary by data hash (hash type data1).
@@ -113,16 +119,6 @@ impl Env {
         let secp = self.secp.clone();
         let lock = self.script(&secp, Bytes::copy_from_slice(&blake160(&compressed)));
         Key { privkey, pubkey: compressed, lock }
-    }
-
-    /// Lock args of the `csr-float-lock` for given hashes.
-    pub fn float_lock_script(&mut self, owner: &[u8; 32], runner: &[u8; 32], max_fee: u64) -> Script {
-        let mut args = Vec::with_capacity(72);
-        args.extend_from_slice(owner);
-        args.extend_from_slice(runner);
-        args.extend_from_slice(&max_fee.to_le_bytes());
-        let op = self.float_lock.clone();
-        self.script(&op, args.into())
     }
 
     pub fn dual_lock_script(&mut self, owner: &[u8; 32], runner: &[u8; 32]) -> Script {
@@ -160,6 +156,24 @@ impl Env {
         self.cell(cap, lock, type_, data)
     }
 
+    /// A Nervos DAO deposit cell (DAO type script, data = 8 zero bytes) of `capacity` owned by `lock`.
+    /// The DAO type script does not run for a cell dep, so no DAO binary is deployed.
+    pub fn deposit(&mut self, capacity: u64, lock: Script) -> OutPoint {
+        self.cell(capacity, lock, Some(dao_type_script()), deposit_data())
+    }
+
+    /// The standard stake: a deposit of `MIN_STAKE` owned by `lock`.
+    pub fn stake(&mut self, lock: Script) -> OutPoint {
+        self.deposit(MIN_STAKE, lock)
+    }
+
+    /// A dep group cell (data = `OutPointVec`) listing `members`.
+    pub fn dep_group(&mut self, members: &[OutPoint]) -> OutPoint {
+        let data = packed::OutPointVec::new_builder().set(members.to_vec()).build().as_bytes();
+        let lock = self.always_success_script(b"dep group");
+        self.min_cell(0, lock, None, data)
+    }
+
     /// Creates the monitor config cell (Type ID type script, data = pubkey ‖ clock_ms ‖ reserved).
     /// Returns (out point, type script hash = `config_type_hash`).
     pub fn config_cell(&mut self, monitor_pubkey: &[u8; 33], clock_ms: u64, monitor_lock: Script) -> (OutPoint, [u8; 32]) {
@@ -171,7 +185,9 @@ impl Env {
     }
 
     /// Registry creation (`spec/registry.md` §6): inputs `[wallet cell of wallet, runner key cell of runner_key]`,
-    /// outputs `[registry cell (minimal capacity), change, runner key cell]`, the config cell as dep (if given).
+    /// outputs `[registry cell (minimal capacity), change, runner key cell]`, cell deps `[stake, config cell]`.
+    /// The stake is the out point in `data` (its last 36 bytes); if no cell exists there yet, a deposit of
+    /// `MIN_STAKE` owned by `wallet` is created at it. The config cell is added if given.
     /// Rule 6 requires the runner key cell; pass `None` only to test its absence. Sign with both keys.
     pub fn registry_create_tx(
         &mut self,
@@ -185,6 +201,11 @@ impl Env {
         const WALLET: u64 = 1000 * CKB;
         const KEY_CELL: u64 = 100 * CKB;
         const FEE: u64 = 100_000;
+        let stake = registry_stake(&data);
+        if self.ctx.get_cell(&stake).is_none() {
+            let out = output(MIN_STAKE, wallet.lock.clone(), Some(dao_type_script()));
+            self.ctx.create_cell_with_out_point(stake.clone(), out, deposit_data());
+        }
         let w = self.min_cell(WALLET, wallet.lock.clone(), None, Bytes::new());
         let wallet_cap = min_capacity(&wallet.lock, None, 0) + WALLET;
         let reg_cap = min_capacity(&reg_lock, Some(&reg_type), data.len());
@@ -198,7 +219,7 @@ impl Env {
             inputs.push(self.input(&kc, 0));
             outputs.push((output(KEY_CELL, k.lock.clone(), None), Bytes::new()));
         }
-        let tx = tx_with(inputs, outputs);
+        let tx = tx_with(inputs, outputs).as_advanced_builder().cell_dep(cell_dep(&stake)).build();
         match config {
             Some(c) => tx.as_advanced_builder().cell_dep(cell_dep(c)).build(),
             None => tx,
@@ -227,6 +248,34 @@ impl Env {
         let tx = sign_tx(&self.ctx, tx, keys);
         self.ctx.verify_tx(&tx, MAX_CYCLES)
     }
+}
+
+/// The Nervos DAO type script (hash type `type`, empty args).
+pub fn dao_type_script() -> Script {
+    Script::new_builder().code_hash(DAO_TYPE_CODE_HASH.pack()).hash_type(ScriptHashType::Type).build()
+}
+
+/// Data of a DAO deposit cell: 8 zero bytes.
+pub fn deposit_data() -> Bytes {
+    Bytes::from(vec![0u8; 8])
+}
+
+/// `stake` out point of `molecule(Registry)` data (its last field, 36 bytes).
+pub fn registry_stake(data: &[u8]) -> OutPoint {
+    OutPoint::from_slice(&data[data.len() - 36..]).expect("registry data ends with the stake out point")
+}
+
+/// `tx` with the cell dep on `op` removed.
+pub fn without_dep(tx: TransactionView, op: &OutPoint) -> TransactionView {
+    let deps: Vec<_> = tx.cell_deps().into_iter().filter(|d| d.out_point() != *op).collect();
+    tx.as_advanced_builder().set_cell_deps(deps).build()
+}
+
+/// `tx` with `deps` inserted before its existing cell deps.
+pub fn with_deps_first(tx: TransactionView, deps: Vec<packed::CellDep>) -> TransactionView {
+    let mut all = deps;
+    all.extend(tx.cell_deps());
+    tx.as_advanced_builder().set_cell_deps(all).build()
 }
 
 impl Default for Env {
@@ -378,9 +427,11 @@ impl AttestationFields {
 pub struct RegistryFields {
     pub peer_id: Vec<u8>,
     pub service_pubkey: [u8; 33],
-    pub float_lock_hash: [u8; 32],
+    pub payout_lock_hash: [u8; 32],
     pub network: u8,
     pub prekeys: Vec<u8>,
+    /// Out point of the owner's DAO deposit.
+    pub stake: OutPoint,
 }
 
 impl RegistryFields {
@@ -388,10 +439,11 @@ impl RegistryFields {
         csr_schemas::Registry::new_builder()
             .peer_id(mol_bytes(&self.peer_id))
             .service_pubkey(csr_schemas::Byte33::new_unchecked(Bytes::copy_from_slice(&self.service_pubkey)))
-            .float_lock_hash(csr_schemas::Byte32::new_unchecked(Bytes::copy_from_slice(&self.float_lock_hash)))
+            .payout_lock_hash(csr_schemas::Byte32::new_unchecked(Bytes::copy_from_slice(&self.payout_lock_hash)))
             .network(packed::Byte::new(self.network))
             .attestation(attestation.clone())
             .prekeys(mol_bytes(&self.prekeys))
+            .stake(csr_schemas::OutPoint::new_unchecked(self.stake.as_bytes()))
             .build()
             .as_bytes()
     }
@@ -412,9 +464,14 @@ impl RegistryFields {
     }
 }
 
-/// Cell dep on a live cell (e.g. the config cell).
+/// Cell dep on a live cell (e.g. the config cell), dep type code.
 pub fn cell_dep(op: &OutPoint) -> packed::CellDep {
     packed::CellDep::new_builder().out_point(op.clone()).build()
+}
+
+/// Cell dep with dep type `dep_group`.
+pub fn dep_group_dep(op: &OutPoint) -> packed::CellDep {
+    packed::CellDep::new_builder().out_point(op.clone()).dep_type(DepType::DepGroup).build()
 }
 
 // --- job ----------------------------------------------------------------------------------------

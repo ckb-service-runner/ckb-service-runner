@@ -10,8 +10,7 @@ const CLOCK_MS: u64 = 1_760_000_000_000;
 const EXPIRY_MS: u64 = CLOCK_MS + 7 * 24 * 3600 * 1000;
 const TIP: u64 = 2 * CKB;
 const MAX_FEE: u64 = 1_000_000;
-const FLOAT: u64 = 1000 * CKB;
-const FLOAT_MAX_FEE: u64 = CKB;
+const PAYOUT: u64 = 1000 * CKB;
 const KEY_CELL: u64 = 100 * CKB;
 const WALLET: u64 = 1000 * CKB;
 const FEE: u64 = 100_000;
@@ -32,7 +31,7 @@ fn assert_lock_error(res: Result<u64, CkbError>, code: i8) {
 
 struct S {
     env: Env,
-    /// The runner's service key: its system lock is the runner lock of the float and the registry.
+    /// The runner's service key: its system lock is the runner lock of the registry.
     service: Key,
     /// The job's creator; its system lock is `refund_lock_hash`.
     user: Key,
@@ -42,7 +41,8 @@ struct S {
     config: OutPoint,
     owner: Key,
     reg_type: Script,
-    float: Script,
+    /// The registered payout cell lock (always-success: the job lock only compares lock hashes).
+    payout: Script,
     job_lock: Script,
     job_type: Script,
 }
@@ -56,20 +56,22 @@ fn setup() -> S {
     let (config, config_hash) = env.config_cell(&monitor.pubkey, CLOCK_MS, monitor.lock.clone());
     let reg_type = env.registry_type_script(&config_hash);
     let dual = env.dual_lock_script(&owner.lock_hash(), &service.lock_hash());
-    let float = env.float_lock_script(&owner.lock_hash(), &service.lock_hash(), FLOAT_MAX_FEE);
+    let payout = env.always_success_script(b"payout of the owner");
+    let stake = env.stake(owner.lock.clone());
     let fields = RegistryFields {
         peer_id: b"12D3KooWExamplePeerIdForTheJobTests".to_vec(),
         service_pubkey: service.pubkey,
-        float_lock_hash: float.calc_script_hash().unpack(),
+        payout_lock_hash: payout.calc_script_hash().unpack(),
         network: 2,
         prekeys: Vec::new(),
+        stake,
     };
     let data = fields.signed_data(&monitor, EXPIRY_MS);
     let registry = env.min_cell(10 * CKB, dual, Some(reg_type.clone()), data);
     let reg_hash: [u8; 32] = reg_type.calc_script_hash().unpack();
     let job_lock = env.job_lock_script(&reg_hash);
     let job_type = env.job_type_script(&SERVICE_CODE_HASH);
-    S { env, service, user, registry, config, owner, reg_type, float, job_lock, job_type }
+    S { env, service, user, registry, config, owner, reg_type, payout, job_lock, job_type }
 }
 
 impl S {
@@ -119,15 +121,16 @@ impl S {
         (output(cap, self.user.lock.clone(), None), Bytes::new())
     }
 
-    /// Run transaction of the registered runner: inputs `[job (since), float, runner key cell]`, outputs
-    /// `[float + tip_paid, runner key cell + key_gain] ++ outs`, cell deps: the registry cell and the config cell.
+    /// Run transaction of the registered runner: inputs `[job (since), payout cell, runner key cell]`, outputs
+    /// `[payout cell + tip_paid, runner key cell + key_gain] ++ outs`, cell deps: the registry cell and the config
+    /// cell.
     fn run_tx(&mut self, job: &OutPoint, since: u64, tip_paid: u64, key_gain: u64, outs: Vec<(CellOutput, Bytes)>) -> TransactionView {
-        let float = self.float.clone();
+        let payout = self.payout.clone();
         let key_lock = self.service.lock.clone();
-        let f = self.env.cell(FLOAT, float.clone(), None, Bytes::new());
+        let f = self.env.cell(PAYOUT, payout.clone(), None, Bytes::new());
         let k = self.env.cell(KEY_CELL, key_lock.clone(), None, Bytes::new());
         let mut outputs = vec![
-            (output(FLOAT + tip_paid, float, None), Bytes::new()),
+            (output(PAYOUT + tip_paid, payout, None), Bytes::new()),
             (output(KEY_CELL + key_gain, key_lock, None), Bytes::new()),
         ];
         outputs.extend(outs);
@@ -297,15 +300,15 @@ fn job_type_update_non_every_rejected() {
 // --- run path: tip -------------------------------------------------------------------------------
 
 #[test]
-fn job_ondemand_run_tip_to_registered_float_ok() {
+fn job_ondemand_run_tip_to_registered_payout_ok() {
     let mut s = setup();
     let cycles = s.run_single(Trigger::OnDemand, 0).expect("run");
-    println!("OnDemand run: {cycles} cycles (whole transaction incl. system lock and float lock)");
+    println!("OnDemand run: {cycles} cycles (whole transaction incl. system lock)");
 }
 
 #[test]
 fn job_lock_cycles_of_run() {
-    // Cycles of the job lock alone: the tip is a new float cell paid from an always-success wallet,
+    // Cycles of the job lock alone: the tip is a new payout cell paid from an always-success wallet,
     // and the job cell has no type script.
     let mut s = setup();
     let mut j = s.job(Trigger::OnDemand, 1);
@@ -319,7 +322,7 @@ fn job_lock_cycles_of_run() {
     let tx = tx_with(
         vec![s.env.input(&op, 0), s.env.input(&w, 0)],
         vec![
-            (output(200 * CKB, s.float.clone(), None), Bytes::new()),
+            (output(200 * CKB, s.payout.clone(), None), Bytes::new()),
             s.refund_output(cap - 200 * CKB - MAX_FEE),
             (output(WALLET, anyone, None), Bytes::new()),
         ],
@@ -333,19 +336,19 @@ fn job_lock_cycles_of_run() {
 }
 
 #[test]
-fn job_tip_to_unregistered_float_rejected() {
-    // The tip goes to the float of another runner, which is not the one in the registry cell dep.
+fn job_tip_to_unregistered_payout_rejected() {
+    // The tip goes to the payout cell of another operator, which is not the one in the registry cell dep.
     let mut s = setup();
     let impostor = s.env.new_key();
-    let other_float = s.env.float_lock_script(&impostor.lock_hash(), &impostor.lock_hash(), FLOAT_MAX_FEE);
+    let other_payout = s.env.always_success_script(b"payout of an impostor");
     let j = s.job(Trigger::OnDemand, 1);
     let (op, cap) = s.live_job(&j);
-    let f = s.env.cell(FLOAT, other_float.clone(), None, Bytes::new());
+    let f = s.env.cell(PAYOUT, other_payout.clone(), None, Bytes::new());
     let k = s.env.cell(KEY_CELL, impostor.lock.clone(), None, Bytes::new());
     let tx = tx_with(
         vec![s.env.input(&op, 0), s.env.input(&f, 0), s.env.input(&k, 0)],
         vec![
-            (output(FLOAT + TIP, other_float, None), Bytes::new()),
+            (output(PAYOUT + TIP, other_payout, None), Bytes::new()),
             (output(KEY_CELL, impostor.lock.clone(), None), Bytes::new()),
             s.refund_output(cap - TIP - MAX_FEE),
         ],
@@ -380,6 +383,29 @@ fn job_run_with_fake_registry_dep_rejected() {
     // replace the registry dep by the fake one
     let tx = S::replace_dep(tx, &s.registry, Some(&fake));
     assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 14);
+}
+
+#[test]
+fn job_run_with_v1_registry_dep_rejected() {
+    // A registry cell dep with v1 data (6 fields, no stake): its payout lock hash is not read.
+    let mut s = setup();
+    let (reg_cell, reg_data) = s.env.ctx.get_cell(&s.registry).unwrap();
+    let u = |at: usize| u32::from_le_bytes(reg_data[at..at + 4].try_into().unwrap()) as usize;
+    // drop the last field (stake): 6 offsets, total shrinks by 4 (header) + 36 (stake)
+    let stake_at = u(4 + 4 * 6);
+    let mut v1 = Vec::new();
+    v1.extend_from_slice(&((stake_at - 4) as u32).to_le_bytes());
+    for i in 0..6 {
+        v1.extend_from_slice(&((u(4 + 4 * i) - 4) as u32).to_le_bytes());
+    }
+    v1.extend_from_slice(&reg_data[u(4)..stake_at]);
+    let old = s.env.ctx.create_cell(reg_cell, v1.into());
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+    let tx = S::replace_dep(tx, &s.registry, Some(&old));
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 10);
 }
 
 #[test]
@@ -424,7 +450,7 @@ fn job_run_with_valid_attestation_ok() {
 
 #[test]
 fn job_run_without_registered_runner_key_rejected() {
-    // An impostor pays the tip to the registered float, but spends only its own key cell.
+    // An impostor pays the tip to the registered payout cell, but spends only its own key cell.
     let mut s = setup();
     let impostor = s.env.new_key();
     let j = s.job(Trigger::OnDemand, 1);
@@ -433,7 +459,7 @@ fn job_run_without_registered_runner_key_rejected() {
     let tx = tx_with(
         vec![s.env.input(&op, 0), s.env.input(&w, 0)],
         vec![
-            (output(100 * CKB, s.float.clone(), None), Bytes::new()),
+            (output(100 * CKB, s.payout.clone(), None), Bytes::new()),
             (output(WALLET - 100 * CKB, impostor.lock.clone(), None), Bytes::new()),
             s.refund_output(cap - TIP - MAX_FEE),
         ],
@@ -447,8 +473,8 @@ fn job_run_without_registered_runner_key_rejected() {
 
 #[test]
 fn job_run_with_forged_registry_rejected() {
-    // The registry dep names the real float, but its runner hash belongs to a key that is not in the tx;
-    // the registered float's runner key cell does not help.
+    // The registry dep names the real payout cell, but its runner hash belongs to a key that is not in the tx;
+    // the registered node's runner key cell does not help.
     let mut s = setup();
     let stranger = s.env.new_key();
     let forged = s.registry_with_runner(&stranger.lock_hash());
