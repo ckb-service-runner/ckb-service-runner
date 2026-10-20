@@ -7,39 +7,39 @@
   },
   "monitor_pubkey": "0x03db2a5f9af76cf37294137ec5d5533abf014b6c399cd4ca0722778ffa07980c7c",
   "network": "testnet",
-  "registry_type_hash": "0xf14abcad3683d19297e88572aeaf01cbedda1235a37f8aa8694277b7cf3a2229",
+  "registry_type_hash": "0x5d94fe8c6bec821dcaa7ae97c336cf03e266f6e97be412ee988e678822bd470d",
   "rpc": "http://127.0.0.1:8112",
   "scripts": {
     "anyone_can_pay": {
       "code_hash": "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356",
+      "dep_type": "dep_group",
       "hash_type": "type",
-      "tx_hash": "0xec26b0f85ed839ece5f11c4c4e837ec359f5adc4420410f6453b1f6b60fb96a6",
       "index": 0,
-      "dep_type": "dep_group"
+      "tx_hash": "0xec26b0f85ed839ece5f11c4c4e837ec359f5adc4420410f6453b1f6b60fb96a6"
     },
     "dual_lock": {
       "code_hash": "0xe81c8076b9fd9e18e2394a5933f841b6ce924d398d52bdcd26f876378a7feb76",
       "hash_type": "data2",
       "index": 0,
-      "tx_hash": "0xa5611ddffff513aa390a89a8efdaa5a767f5e9137a234c428c4484961ac7f83d"
+      "tx_hash": "0x21ba95ed7e34f694d4bf2302e6197ee3f396d93abde79373d4621a7dd267728e"
     },
     "job_lock": {
-      "code_hash": "0x7dc04432bf57078a8865e119aae43644adee88f3098467375939eb4c9364a66b",
+      "code_hash": "0x93122d3717533f248c22b7a4cf208f1bcf5226799b890fc758dc494e9d3d0657",
       "hash_type": "data2",
       "index": 0,
-      "tx_hash": "0x6e956d091ae29c4541e2518715f7582423082d3c55e77ee7cf175cc2d4a698b6"
+      "tx_hash": "0x87470ffb6c19732bb2323fa3c2e2d6a59533154e3ba26ebe5f0e1ca481acf431"
     },
     "job_type": {
       "code_hash": "0x05d4c13da30a7aeeb85d7dca5b578d65ee7e53a5393bedae1b3d21ad30711f64",
       "hash_type": "data2",
       "index": 0,
-      "tx_hash": "0xa4fb35350fdac391a404a8458982143b29abe878d540bf8f82f5e32edca21bfc"
+      "tx_hash": "0xc39018b91d82f324e9c56b02d21963c48a768838cc68b7e390a8b5846926d276"
     },
     "registry": {
-      "code_hash": "0x47fee83ea91eabdfc8827045f63fe051b8fee5c05b9280a35f42f2e3597d3f36",
+      "code_hash": "0x4796879ebfc99db2cfd6205545382ab81a662bfdac7cc276d438f8aaef1788eb",
       "hash_type": "data2",
       "index": 0,
-      "tx_hash": "0xff4ed417d4f0c53f3c3e86fdb93a38cd4c65a73d371188142c7ea7c1e15a4546"
+      "tx_hash": "0x949a7b65ac4168bbcff944afa973d0862af45730995f4bd9a5e805187c59f98a"
     }
   }
 }
