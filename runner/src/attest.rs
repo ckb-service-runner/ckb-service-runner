@@ -94,8 +94,9 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Requests an attestation from the monitor, checks it and writes it to `out`.
-pub async fn run(cfg: &Config, id: &Identity, out: &Path) -> Result<Value, String> {
+/// Requests an attestation from the monitor for the registration staking `stake` (a checked,
+/// lower-case `0x<tx>:<index>`), checks it and writes it to `out`.
+pub async fn run(cfg: &Config, id: &Identity, stake: &str, out: &Path) -> Result<Value, String> {
     let defaults = crate::network::NetworkDefaults::for_network(&cfg.network);
     let url = if cfg.monitor.url.is_empty() {
         defaults.monitor_url
@@ -135,6 +136,7 @@ pub async fn run(cfg: &Config, id: &Identity, out: &Path) -> Result<Value, Strin
             "service_pubkey": id.service_pubkey,
             "network": cfg.network,
             "binding_sig": binding_sig,
+            "stake": stake,
         }))
         .send()
         .await
@@ -150,9 +152,23 @@ pub async fn run(cfg: &Config, id: &Identity, out: &Path) -> Result<Value, Strin
                     .into(),
             );
         }
-        return Err(format!("monitor replied {} {err}", status.as_u16())
+        let mut msg = format!("monitor replied {} {err}", status.as_u16())
             .trim_end()
-            .to_string());
+            .to_string();
+        if let Some(reason) = body.get("reason").and_then(Value::as_str) {
+            msg = format!("{msg}: {reason}");
+        }
+        match err {
+            "stake_invalid" => msg.push_str(
+                " (the stake must be a live Nervos DAO deposit of at least 10,000 CKB owned by \
+                 the registration's owner lock)",
+            ),
+            "stake_in_use" => {
+                msg.push_str(" (this deposit already backs another registration; use another one)")
+            }
+            _ => {}
+        }
+        return Err(msg);
     }
 
     check(

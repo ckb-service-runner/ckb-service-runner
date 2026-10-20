@@ -79,6 +79,52 @@ pub fn parse_lock_args(s: &str) -> Result<Vec<u8>, String> {
     Ok(b)
 }
 
+/// Minimum registration stake (`spec/registry.md`, stake rule 3): 10,000 CKB.
+pub const MIN_STAKE: u64 = 1_000_000_000_000;
+
+/// Type script code hash of the Nervos DAO (hash type `type`, empty args; the same on every chain).
+const DAO_TYPE_CODE_HASH: H256 =
+    h256!("0x82d76d1b75fe2fd9a27dfbaa65a039221a380d76c926f378d3f81cf3e7e13f2e");
+
+/// A stake out point `0x<64 hex>:<index decimal>` (hex in any case) → the lower-case form.
+pub fn parse_stake(s: &str) -> Result<String, String> {
+    let bad = || format!("bad stake out point '{s}': expected 0x<64 hex tx hash>:<index>");
+    let (h, i) = s.trim().split_once(':').ok_or_else(bad)?;
+    let h = h.strip_prefix("0x").ok_or_else(bad)?;
+    if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(bad());
+    }
+    if i.is_empty() || !i.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
+    let i: u32 = i.parse().map_err(|_| bad())?;
+    Ok(format!("0x{}:{i}", h.to_ascii_lowercase()))
+}
+
+/// Why a cell is not a valid stake for `owner_lock_hash` (stake rules 2–4), or `None` if it is.
+fn stake_problem(out: &CellOutput, data: &[u8], owner_lock_hash: &[u8]) -> Option<String> {
+    let dao = out.type_().to_opt().is_some_and(|t| {
+        t.code_hash().as_slice() == DAO_TYPE_CODE_HASH.as_bytes()
+            && t.hash_type().as_slice() == [ScriptHashType::Type as u8]
+            && t.args().raw_data().is_empty()
+    });
+    if !dao || data != [0u8; 8] {
+        return Some("the stake is not a Nervos DAO deposit".into());
+    }
+    let cap: u64 = out.capacity().unpack();
+    if cap < MIN_STAKE {
+        return Some(format!(
+            "the stake holds {} CKB, below the minimum of {} CKB",
+            cap as f64 / CKB as f64,
+            MIN_STAKE / CKB
+        ));
+    }
+    if out.lock().calc_script_hash().as_slice() != owner_lock_hash {
+        return Some("the stake is not owned by the owner lock (--owner-lock-args)".into());
+    }
+    None
+}
+
 fn out_point_str(op: &OutPoint) -> String {
     let i: u32 = op.index().unpack();
     format!("{}:{i}", hx(op.tx_hash().as_slice()))
@@ -344,8 +390,8 @@ impl Attestation {
         ])
     }
 
-    /// Molecule `Registry` data (`contracts/schemas/csr.mol`), prekeys empty.
-    fn registry_data(&self, payout_lock_hash: &H256) -> Vec<u8> {
+    /// Molecule `Registry` v2 data (`contracts/schemas/csr.mol`), prekeys empty.
+    fn registry_data(&self, payout_lock_hash: &H256, stake: &OutPoint) -> Vec<u8> {
         mol_table(&[
             mol_bytes(&self.peer_id),
             self.pubkey.clone(),
@@ -353,13 +399,23 @@ impl Attestation {
             vec![self.network],
             self.molecule(),
             mol_bytes(&[]),
+            stake.as_slice().to_vec(),
         ])
     }
 }
 
-/// `(peer_id, service_pubkey, payout_lock_hash, expiry_ms)` of a molecule `Registry` (6 fields,
-/// or 7 with the `stake` out point of registry v2).
-fn parse_registry_data(d: &[u8]) -> Option<(String, Vec<u8>, Vec<u8>, u64)> {
+/// Decoded fields of a molecule `Registry`.
+struct RegistryData {
+    peer_id: String,
+    service_pubkey: Vec<u8>,
+    payout_lock_hash: Vec<u8>,
+    expiry_ms: u64,
+    /// `stake` of registry v2; `None` for a 6-field (v1) cell.
+    stake: Option<OutPoint>,
+}
+
+/// Parses a molecule `Registry` (6 fields, or 7 with the `stake` out point of registry v2).
+fn parse_registry_data(d: &[u8]) -> Option<RegistryData> {
     let u32_at = |o: usize| -> Option<usize> {
         Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?) as usize)
     };
@@ -385,12 +441,18 @@ fn parse_registry_data(d: &[u8]) -> Option<(String, Vec<u8>, Vec<u8>, u64)> {
         Some(u32::from_le_bytes(att.get(4 + 4 * i..8 + 4 * i)?.try_into().ok()?) as usize)
     };
     let expiry = att.get(a_off(3)?..a_off(3)? + 8)?;
-    Some((
-        peer,
-        field(1)?.to_vec(),
-        field(2)?.to_vec(),
-        u64::from_le_bytes(expiry.try_into().ok()?),
-    ))
+    let stake = if last == 6 {
+        Some(OutPoint::from_slice(field(6)?).ok()?)
+    } else {
+        None
+    };
+    Some(RegistryData {
+        peer_id: peer,
+        service_pubkey: field(1)?.to_vec(),
+        payout_lock_hash: field(2)?.to_vec(),
+        expiry_ms: u64::from_le_bytes(expiry.try_into().ok()?),
+        stake,
+    })
 }
 
 /// Signs the sighash group made of input 0 only (the runner key cell) with the service key.
@@ -665,9 +727,14 @@ impl Chain {
         pre: Vec<Cell>,
         fixed: Vec<Out>,
         mut deps: Vec<CellDep>,
+        stake_dep: Option<CellDep>,
         sign_runner_input: bool,
     ) -> Result<Prepared, String> {
         deps.insert(0, self.secp_dep().await?);
+        if let Some(stake) = stake_dep {
+            // First, so only code deps precede it (`spec/registry.md`, stake rule 1).
+            deps.insert(0, stake);
+        }
         let change_min = occupied(owner, None, 0);
         let in_pre: u64 = pre.iter().map(|c| c.capacity).sum();
         let out_fixed: u64 = fixed.iter().map(|o| o.cap).sum();
@@ -768,8 +835,15 @@ impl Chain {
                 out_point_str(&c.out_point)
             ));
         }
-        self.assemble(&owner, vec![], vec![Out::plain(lock, cap)], vec![], false)
-            .await
+        self.assemble(
+            &owner,
+            vec![],
+            vec![Out::plain(lock, cap)],
+            vec![],
+            None,
+            false,
+        )
+        .await
     }
 
     /// Unsigned transaction moving `ckb` CKB (or everything with `all`) from the payout cell to the
@@ -970,7 +1044,7 @@ impl Chain {
     }
 
     /// Registry cells of this service key; the one with the latest attestation wins (audit F8).
-    async fn registry_cell(&self) -> Result<Option<(Cell, String, Vec<u8>, u64)>, String> {
+    async fn registry_cell(&self) -> Result<Option<(Cell, RegistryData)>, String> {
         let cells = self
             .get_cells(json!({
                 "script": json::Script::from(self.registry_type()),
@@ -981,37 +1055,73 @@ impl Chain {
         Ok(cells
             .into_iter()
             .filter_map(|c| {
-                let (peer, pk, payout, exp) = parse_registry_data(&c.data)?;
-                (pk == *mine).then_some((c, peer, payout, exp))
+                let r = parse_registry_data(&c.data)?;
+                (r.service_pubkey == *mine).then_some((c, r))
             })
-            .max_by_key(|r| r.3))
+            .max_by_key(|(_, r)| r.expiry_ms))
+    }
+
+    /// The registration's stake now: `deposited` (stake rules 2–4 hold), `withdrawn` (the cell is
+    /// dead) or `invalid` (live but failing a rule).
+    async fn stake_status(
+        &self,
+        stake: &OutPoint,
+        owner_lock_hash: &[u8],
+    ) -> Result<Value, String> {
+        let op = out_point_str(stake);
+        Ok(match self.live_cell(&op).await? {
+            None => json!({"outpoint": op, "status": "withdrawn", "capacity_shannons": null}),
+            Some((out, data)) => {
+                let cap: u64 = out.capacity().unpack();
+                let status = if stake_problem(&out, &data, owner_lock_hash).is_none() {
+                    "deposited"
+                } else {
+                    "invalid"
+                };
+                json!({"outpoint": op, "status": status, "capacity_shannons": cap})
+            }
+        })
     }
 
     pub async fn register_status(&self) -> Result<Value, String> {
         Ok(match self.registry_cell().await? {
-            Some((c, peer, payout, exp)) => json!({
-                "registered": true,
-                "outpoint": out_point_str(&c.out_point),
-                "peer_id": peer,
-                "attestation_expiry_ms": exp,
-                "payout_lock_hash": hx(payout),
-            }),
+            Some((c, r)) => {
+                let owner_lock_hash = c.lock.args().raw_data();
+                let stake = match &r.stake {
+                    Some(op) => {
+                        self.stake_status(op, owner_lock_hash.get(..32).unwrap_or(&[]))
+                            .await?
+                    }
+                    None => Value::Null,
+                };
+                json!({
+                    "registered": true,
+                    "outpoint": out_point_str(&c.out_point),
+                    "peer_id": r.peer_id,
+                    "attestation_expiry_ms": r.expiry_ms,
+                    "payout_lock_hash": hx(&r.payout_lock_hash),
+                    "stake": stake,
+                })
+            }
             None => json!({
                 "registered": false,
                 "outpoint": null,
                 "peer_id": null,
                 "attestation_expiry_ms": null,
                 "payout_lock_hash": null,
+                "stake": null,
             }),
         })
     }
 
     /// Unsigned registry creation: the owner pays; the runner key cell is spent and re-created and
-    /// its input is signed here with the service key (`spec/registry.md`, rule 6).
+    /// its input is signed here with the service key (`spec/registry.md`, rule 6). The stake (a
+    /// Nervos DAO deposit of the owner, `0x<tx>:<index>`) becomes `cell_deps[0]`.
     pub async fn prepare_register(
         &self,
         attestation: &Value,
         owner_lock_args: &str,
+        stake: &str,
     ) -> Result<Prepared, String> {
         let polled = crate::node::poll(&self.rpc, &self.network).await;
         if polled.report.state != crate::node::r2::R2State::Synced {
@@ -1034,8 +1144,11 @@ impl Chain {
         if att.expiry_ms <= clock {
             return Err("the attestation has expired".into());
         }
-        // Tips go to the payout lock; the cell itself may be created later (anyone can).
-        let payout_lock = self.payout_lock()?;
+        // Tips go to the payout cell; it must exist before registering.
+        let payout = self.payout().await?.ok_or(
+            "no payout cell found: create it first (csr payout prepare-create); tips are paid to it",
+        )?;
+        let payout_lock_hash = script_hash(&payout.lock);
         let runner_cell = self
             .runner_cells()
             .await?
@@ -1043,7 +1156,18 @@ impl Chain {
             .next()
             .ok_or("no runner key cell found; fund the runner lock first")?;
         let owner = sighash_lock(&parse_lock_args(owner_lock_args)?);
-        let mut args = script_hash(&owner).as_bytes().to_vec();
+        let owner_lock_hash = script_hash(&owner);
+        let stake = parse_stake(stake)?;
+        let (stake_out, stake_data) = self
+            .live_cell(&stake)
+            .await?
+            .ok_or_else(|| format!("the stake {stake} is not a live cell"))?;
+        if let Some(p) = stake_problem(&stake_out, &stake_data, owner_lock_hash.as_bytes()) {
+            return Err(format!("{p} ({stake})"));
+        }
+        let (h, i) = parse_out_point(&stake)?;
+        let stake_point = out_point_from(&h, i)?;
+        let mut args = owner_lock_hash.as_bytes().to_vec();
         args.extend_from_slice(self.runner_lock_hash().as_bytes());
         let lock = Script::new_builder()
             .code_hash(self.dual.code_hash.pack())
@@ -1051,7 +1175,7 @@ impl Chain {
             .args(Bytes::from(args).pack())
             .build();
         let type_ = self.registry_type();
-        let data = Bytes::from(att.registry_data(&script_hash(&payout_lock)));
+        let data = Bytes::from(att.registry_data(&payout_lock_hash, &stake_point));
         let cap = occupied(&lock, Some(&type_), data.len());
         let registry = Out {
             lock,
@@ -1070,11 +1194,16 @@ impl Chain {
                 .dep_type(packed::Byte::new(DepType::Code as u8))
                 .build(),
         ];
+        let stake_dep = CellDep::new_builder()
+            .out_point(stake_point)
+            .dep_type(packed::Byte::new(DepType::Code as u8))
+            .build();
         self.assemble(
             &owner,
             vec![runner_cell],
             vec![registry, key_cell],
             deps,
+            Some(stake_dep),
             true,
         )
         .await
@@ -1153,11 +1282,11 @@ impl Chain {
             .into_iter()
             .next()
             .ok_or("no runner key cell found")?;
-        let (registry, _, payout_hash, _) = self
+        let (registry, reg) = self
             .registry_cell()
             .await?
             .ok_or("this node is not registered")?;
-        if payout_hash != script_hash(&payout.lock).as_bytes() {
+        if reg.payout_lock_hash != script_hash(&payout.lock).as_bytes() {
             return Err(
                 "the registry cell points to another payout lock (payout.lock_args changed?)"
                     .into(),
@@ -1613,22 +1742,85 @@ mod tests {
             "network": "devnet", "expiry_ms": 12345, "signature": format!("0x{}", "22".repeat(65)),
         }))
         .unwrap();
-        let data = att.registry_data(&H256::from_slice(&[7u8; 32]).unwrap());
-        let (peer, pk, payout, exp) = parse_registry_data(&data).unwrap();
-        assert_eq!(peer, "QmPeer");
-        assert_eq!(pk.len(), 33);
-        assert_eq!(payout, vec![7u8; 32]);
-        assert_eq!(exp, 12345);
+        let stake = out_point_from(&format!("0x{}", "5a".repeat(32)), 3).unwrap();
+        let data = att.registry_data(&H256::from_slice(&[7u8; 32]).unwrap(), &stake);
+        let r = parse_registry_data(&data).unwrap();
+        assert_eq!(r.peer_id, "QmPeer");
+        assert_eq!(r.service_pubkey.len(), 33);
+        assert_eq!(r.payout_lock_hash, vec![7u8; 32]);
+        assert_eq!(r.expiry_ms, 12345);
+        assert_eq!(r.stake.unwrap(), stake);
     }
 
     #[test]
-    fn registry_v2_vector_parses() {
+    fn registry_v2_vector() {
         let v = "7501000020000000540000007500000095000000960000004d0100005101000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27777777777777777777777777777777777777777777777777777777777777777701b7000000180000004c0000006d0000006e0000007600000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f270100505c18a301000004d5db9878eceb46d700d0c55677777b3b1d2a401773b24dae15789c071ef7d36794160555e176e0b1ca6b997892e7c9ce7320b2a2016e3102c46a495421ed5f01000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a03000000";
-        let (peer, pk, payout, exp) = parse_registry_data(&hex::decode(v).unwrap()).unwrap();
-        assert_eq!(peer, "QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB");
-        assert_eq!(pk[0], 2);
-        assert_eq!(payout, vec![0x77u8; 32]);
-        assert_eq!(exp, 1_800_000_000_000);
+        let r = parse_registry_data(&hex::decode(v).unwrap()).unwrap();
+        assert_eq!(
+            r.peer_id,
+            "QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB"
+        );
+        assert_eq!(r.service_pubkey[0], 2);
+        assert_eq!(r.payout_lock_hash, vec![0x77u8; 32]);
+        assert_eq!(r.expiry_ms, 1_800_000_000_000);
+        let stake = r.stake.unwrap();
+        assert_eq!(out_point_str(&stake), format!("0x{}:3", "5a".repeat(32)));
+        // The runner writes the same bytes.
+        let att = Attestation::parse(&json!({
+            "peer_id": "QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB",
+            "service_pubkey": "0x02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+            "network": "testnet", "expiry_ms": 1_800_000_000_000u64,
+            "signature": "0x04d5db9878eceb46d700d0c55677777b3b1d2a401773b24dae15789c071ef7d36794160555e176e0b1ca6b997892e7c9ce7320b2a2016e3102c46a495421ed5f01",
+        }))
+        .unwrap();
+        let data = att.registry_data(&H256::from_slice(&[0x77u8; 32]).unwrap(), &stake);
+        assert_eq!(hex::encode(data), v);
+    }
+
+    #[test]
+    fn stake_out_points() {
+        let h = "ab".repeat(32);
+        assert_eq!(
+            parse_stake(&format!("0x{}:2", h.to_uppercase())).unwrap(),
+            format!("0x{h}:2")
+        );
+        for bad in [
+            "0x12:0".to_string(),
+            format!("0x{h}"),
+            format!("0x{h}:x"),
+            format!("0x{h}:"),
+            format!("0x{h}:-1"),
+            format!("{h}:0"),
+            format!("0x{h}:4294967296"),
+        ] {
+            assert!(parse_stake(&bad).unwrap_err().contains("stake"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn stake_rules() {
+        let owner = sighash_lock(&[1u8; 20]);
+        let owner_hash = script_hash(&owner);
+        let dao = Script::new_builder()
+            .code_hash(DAO_TYPE_CODE_HASH.pack())
+            .hash_type(packed::Byte::new(ScriptHashType::Type as u8))
+            .build();
+        let cell = |cap: u64, lock: &Script, ty: Option<Script>| {
+            CellOutput::new_builder()
+                .capacity(Pack::<packed::Uint64>::pack(&cap))
+                .lock(lock.clone())
+                .type_(ty.pack())
+                .build()
+        };
+        let ok = cell(MIN_STAKE, &owner, Some(dao.clone()));
+        assert_eq!(stake_problem(&ok, &[0; 8], owner_hash.as_bytes()), None);
+        let p = |o: &CellOutput, d: &[u8]| stake_problem(o, d, owner_hash.as_bytes()).unwrap();
+        assert!(p(&ok, &[1, 0, 0, 0, 0, 0, 0, 0]).contains("DAO"));
+        assert!(p(&ok, &[]).contains("DAO"));
+        assert!(p(&cell(MIN_STAKE, &owner, None), &[0; 8]).contains("DAO"));
+        assert!(p(&cell(MIN_STAKE - 1, &owner, Some(dao.clone())), &[0; 8]).contains("minimum"));
+        let other = sighash_lock(&[2u8; 20]);
+        assert!(p(&cell(MIN_STAKE, &other, Some(dao)), &[0; 8]).contains("owner"));
     }
 
     #[test]

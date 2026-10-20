@@ -466,19 +466,21 @@
       btns.appendChild(btn);
     });
     var att = el('input'); att.type = 'file'; att.accept = '.json,application/json';
+    var stake = el('input'); stake.placeholder = 'stake: DAO deposit 0x<tx hash>:<index>'; stake.size = 44;
     var reg = el('button', 'btn', 'Register'); reg.type = 'button';
     reg.addEventListener('click', function () {
       var f = att.files && att.files[0];
       if (!f) return say('Choose the monitor attestation file first.', true);
       if (!owner.value.trim()) return say('Enter the owner lock args.', true);
+      if (!stake.value.trim()) return say('Enter the stake (out point of your Nervos DAO deposit).', true);
       f.text().then(function (t) {
-        return api('/api/registry/prepare-create', { method: 'POST', body: { attestation: JSON.parse(t), owner_lock_args: owner.value.trim() } });
+        return api('/api/registry/prepare-create', { method: 'POST', body: { attestation: JSON.parse(t), owner_lock_args: owner.value.trim(), stake: stake.value.trim() } });
       }).then(function (j) {
         download('register-unsigned.json', j.file);
         say('Unsigned registration downloaded (fee ' + j.fee_shannons + ' shannons). Sign it in your wallet, then submit the signed file below.');
       }).catch(function (x) { say(x.message, true); });
     });
-    var regrow = el('div', 'row'); regrow.appendChild(att); regrow.appendChild(reg);
+    var regrow = el('div', 'row'); regrow.appendChild(att); regrow.appendChild(stake); regrow.appendChild(reg);
     submit.addEventListener('click', function () {
       var f = signed.files && signed.files[0];
       if (!f) return say('Choose the signed transaction file first.', true);
@@ -503,6 +505,7 @@
           ['Runner lock hash', r[1].runner_lock_hash],
           ['Registered', r[2].registered ? r[2].outpoint : 'no'],
           ['Attestation expiry (ms)', r[2].attestation_expiry_ms],
+          ['Stake', r[2].stake ? r[2].stake.outpoint + ' (' + r[2].stake.status + ')' : '–'],
         ]);
       }).catch(function (x) { info.textContent = x.message; });
     }

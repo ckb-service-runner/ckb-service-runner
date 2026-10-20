@@ -95,6 +95,26 @@ Every 10 minutes (and once right after the first R2 check):
 The monitor URL is `https` (plain `http` only for loopback hosts); the monitor public key is configured via `monitor.pubkey`
 (default: per-network value embedded in CSR).
 
+## 5a. Attestation request (`POST /v1/attest`)
+
+`csr register attest --stake 0x<tx>:<index> --out FILE` asks the monitor for the registration attestation
+(`spec/registry.md` §3). Request body, exactly these fields:
+
+```json
+{"peer_id":"Qm…","service_pubkey":"0x02…","binding_sig":"0x…","network":"testnet",
+ "stake":"0x<64 hex>:<index>"}
+```
+
+- `peer_id`, `service_pubkey`, `binding_sig`, `network` as in the check-in (§3); `binding_sig` is the Binding message.
+- `stake` is the out point of the Nervos DAO deposit the registration will reference (registry field `stake`),
+  `0x` + 64 lower-case hex digits of the tx hash, `:`, the output index in decimal. CSR refuses a malformed value
+  before sending anything.
+
+Replies: `200` with the attestation JSON (`{peer_id, service_pubkey, network, network_id, expiry_ms, signature}`);
+errors are JSON `{"error": "<code>"}`, optionally with `"reason"`. Errors and replies are listed in
+`spec/monitor-public-api.md` (`POST /v1/attest`). CSR prints `error` and, if present, `reason`
+(e.g. `monitor replied 403 stake_invalid: too_small`) and exits non-zero.
+
 ## 6. Versioning
 
 The `-v1` suffix in every message prefix is the protocol version. A change of message layout requires a new prefix; signatures

@@ -1,6 +1,7 @@
-# CSR Network Monitor – public API (read-only)
+# CSR Network Monitor – public API
 
-Consumed by the CSR dashboard (CSR monitor page) through `GET /api/network`. Base URL = the effective monitor URL
+The `GET` endpoints are read-only and consumed by the CSR dashboard (CSR monitor page) through `GET /api/network`.
+`POST /v1/attest` (end of this file) is used by `csr register attest`. Base URL = the effective monitor URL
 (`monitor.url` or the network default). `https` only, `http` only for loopback hosts. Timeout 10 s. No authentication.
 Availability values are fractions 0..1. Clients ignore unknown extra fields.
 
@@ -38,3 +39,33 @@ Availability values are fractions 0..1. Clients ignore unknown extra fields.
 network data an error or stale. Coordinates are display-only and are never logged or stored.
 
 CSR caches these replies for 5 minutes and serves stale data (flagged) if a refresh fails.
+
+## `POST /v1/attest`
+
+Requests the registration attestation (`spec/registry.md` §3); the request is described in
+`spec/ping-protocol.md` §5a:
+
+```json
+{"peer_id":"Qm…","service_pubkey":"0x02…","binding_sig":"0x…","network":"testnet",
+ "stake":"0x5a5a…5a5a:3"}
+```
+
+`stake` is the out point (`0x<64 hex>:<index>`, lower case) of the Nervos DAO deposit the registry cell will name in
+its `stake` field. The monitor checks it with the same rules as `csr-registry` (`spec/registry.md`, stake rules 2–4)
+plus the rules a contract cannot check: the deposit is live, and no other registration already uses it.
+
+200: the attestation `{"peer_id","service_pubkey","network","network_id","expiry_ms","signature"}`.
+
+Errors (`{"error": "<code>"}`, some with `"reason"`):
+
+| Status | `error` | `reason` | Meaning |
+|---|---|---|---|
+| 400 | `bad_request` | – | malformed body or field (also a malformed `stake`) |
+| 403 | `not_eligible` | – | the node has no successful checks in the last 24 hours |
+| 403 | `stake_invalid` | `not_found` | the stake cell is unknown or already spent |
+| 403 | `stake_invalid` | `not_dao_deposit` | not a Nervos DAO deposit (type script or data; a withdrawing cell is refused) |
+| 403 | `stake_invalid` | `too_small` | capacity below `MIN_STAKE` (10,000 CKB) |
+| 403 | `stake_invalid` | `wrong_owner` | the deposit's lock is not the registration's owner lock (checked when the monitor knows the owner, e.g. on renewal) |
+| 409 | `stake_in_use` | – | another registration already references this deposit (the oldest registration wins) |
+
+Clients show `error` and `reason` as given and ignore unknown `reason` values.

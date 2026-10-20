@@ -110,7 +110,8 @@ pub async fn registry_status(State(s): St) -> Response {
     }
 }
 
-/// Body: `attestation` (the monitor's attestation JSON) and `owner_lock_args`.
+/// Body: `attestation` (the monitor's attestation JSON), `owner_lock_args` and `stake`
+/// (`0x<tx hash>:<index>` of the owner's Nervos DAO deposit).
 pub async fn prepare_register(State(s): St, Json(b): Json<Value>) -> Response {
     let Some(owner) = b["owner_lock_args"].as_str() else {
         return fail(
@@ -121,9 +122,15 @@ pub async fn prepare_register(State(s): St, Json(b): Json<Value>) -> Response {
     if !b["attestation"].is_object() {
         return fail(StatusCode::BAD_REQUEST, "attestation is required".into());
     }
+    let Some(stake) = b["stake"].as_str() else {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "stake is required (0x<tx hash>:<index> of a Nervos DAO deposit)".into(),
+        );
+    };
     match chain(&s).await {
         Ok(c) => reply(
-            c.prepare_register(&b["attestation"], owner)
+            c.prepare_register(&b["attestation"], owner, stake)
                 .await
                 .map(prepared),
         ),

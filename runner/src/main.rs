@@ -189,6 +189,9 @@ enum RegisterAction {
         attestation: PathBuf,
         #[arg(long)]
         owner_lock_args: String,
+        /// The Nervos DAO deposit staked for this registration: 0x<tx hash>:<index>
+        #[arg(long)]
+        stake: String,
         #[arg(long)]
         out: PathBuf,
         #[arg(long)]
@@ -196,6 +199,9 @@ enum RegisterAction {
     },
     /// Request the monitor's attestation for this node and write it to a file
     Attest {
+        /// The Nervos DAO deposit staked for this registration: 0x<tx hash>:<index>
+        #[arg(long)]
+        stake: String,
         #[arg(long)]
         out: PathBuf,
         #[arg(long)]
@@ -539,25 +545,27 @@ fn main() -> ExitCode {
             RegisterAction::Status { json } => {
                 chain_cmd(&cli, *json, |c| async move { c.register_status().await })
             }
-            RegisterAction::Attest { out, json } => {
+            RegisterAction::Attest { stake, out, json } => {
                 let r = (|| {
+                    let stake = chain::parse_stake(stake)?;
                     let cfg = load_config(&cli)?;
                     let net_dir = data_root(&cli).join(&cfg.network);
                     std::fs::create_dir_all(&net_dir)
                         .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
                     let id = identity::Identity::load_or_create(&net_dir)?;
-                    runtime().block_on(attest::run(&cfg, &id, out))
+                    runtime().block_on(attest::run(&cfg, &id, &stake, out))
                 })();
                 print_result(r, *json)
             }
             RegisterAction::Prepare {
                 attestation,
                 owner_lock_args,
+                stake,
                 out,
                 json,
             } => chain_cmd(&cli, *json, |c| async move {
                 let att = chain::read_json(attestation)?;
-                let p = c.prepare_register(&att, owner_lock_args).await?;
+                let p = c.prepare_register(&att, owner_lock_args, stake).await?;
                 chain::write_prepared(&p, out)
             }),
         },

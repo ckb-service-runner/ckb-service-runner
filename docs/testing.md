@@ -47,14 +47,15 @@ csr payout prepare-create --ckb 100 --owner-lock-args <args> --out payout.json
 csr-dev sign-tx --in payout.json --out payout.signed.json --key genesis
 csr tx submit payout.signed.json --json
 csr payout status --json
+csr-dev dao-deposit --ckb 10000                      # the stake: {tx_hash, index} of a DAO deposit of the genesis key
 csr-dev attest --peer-id <peer id> --service-pubkey <pubkey> --network devnet --out att.json
-csr register prepare --attestation att.json --owner-lock-args <args> --out reg.json
+csr register prepare --attestation att.json --owner-lock-args <args> --stake 0x<tx>:<index> --out reg.json
 csr-dev sign-tx --in reg.json --out reg.signed.json --key genesis   # owner input only
 csr tx submit reg.signed.json --json
 csr register status --json
 ```
 
-`register prepare` refuses without a Synced R2, without `payout.lock_args`, without a runner key cell, and for an attestation whose public key or network differs from this node's (or that is already expired by the on-chain clock). It signs the runner key cell input itself with the service key. Mine blocks (`scripts/devnet.sh mine N`) if a transaction stays pending. Test: `node --test --test-concurrency=1 acceptance/a3b/p4.test.mjs`.
+`register prepare` refuses (in this order) without a Synced R2, for an attestation whose public key or network differs from this node's (or that is already expired by the on-chain clock), without a payout cell, without a runner key cell, and for a bad stake: malformed out point, not a live cell, not a Nervos DAO deposit (DAO type script, 8 zero bytes of data), below 10,000 CKB, or not owned by the secp256k1 lock of `--owner-lock-args`. The stake is `cell_deps[0]` (`dep_type code`), followed by the secp256k1 dep group, the registry code and the monitor config cell. CSR signs the runner key cell input itself with the service key. `register status` shows `stake: {outpoint, status: deposited|withdrawn|invalid, capacity_shannons}`. Mine blocks (`scripts/devnet.sh mine N`) if a transaction stays pending. Test: `node --test --test-concurrency=1 acceptance/a7/p3.test.mjs`.
 
 ### Keeper jobs and the race test (A3c)
 
@@ -71,6 +72,7 @@ Prerequisites: a synced testnet CKB node (full node with the Indexer module), a 
    - ckb-cli: `ckb-cli tx sign-inputs --tx-file payout.json --privkey-path <key> --add-signatures` (or `ckb-cli wallet`-based signing), then `ckb-cli tx send --tx-file payout.json`; or
    - Neuron: offline signing import of the same file (see `docs/open-questions.md`: acceptance is unverified).
    Alternatively submit with `csr tx submit payout.signed.json`.
-5. **Attestation.** `csr register attest --out att.json` asks the real testnet monitor (`POST /v1/attest`) and checks the answer. It needs `[ranking] join = true` and successful checks in the last 24 hours, otherwise the monitor replies `not_eligible`.
-6. **Register.** `csr register prepare --attestation att.json --owner-lock-args <args> --out reg.json`; the owner signs only the owner input (the runner key cell input is already signed by CSR); submit; `csr register status --json` shows `registered: true`.
-7. **Withdraw.** `csr payout prepare-withdraw (--ckb N | --all) --out w.json` and the same sign/submit steps (the payout cell is an anyone-can-pay cell: anyone can add CKB to it without a signature, only your key withdraws).
+5. **Stake.** Deposit at least 10,000 CKB into the Nervos DAO with the wallet whose lock args you use as `--owner-lock-args` (Neuron or `ckb-cli dao deposit`); note the deposit's out point `0x<tx hash>:<index>`. CSR never moves it; keep it deposited while registered.
+6. **Attestation.** `csr register attest --stake 0x<tx>:<index> --out att.json` asks the real testnet monitor (`POST /v1/attest`, with the stake) and checks the answer. It needs `[ranking] join = true` and successful checks in the last 24 hours, otherwise the monitor replies `not_eligible`; a deposit the monitor does not accept gives `stake_invalid: <reason>` or `stake_in_use`.
+7. **Register.** `csr register prepare --attestation att.json --owner-lock-args <args> --stake 0x<tx>:<index> --out reg.json`; the owner signs only the owner input (the runner key cell input is already signed by CSR); submit; `csr register status --json` shows `registered: true`.
+8. **Withdraw.** `csr payout prepare-withdraw (--ckb N | --all) --out w.json` and the same sign/submit steps (the payout cell is an anyone-can-pay cell: anyone can add CKB to it without a signature, only your key withdraws).
