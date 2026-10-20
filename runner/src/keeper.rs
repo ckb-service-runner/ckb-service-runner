@@ -171,7 +171,7 @@ impl Keeper {
             plan.selected.len(),
             plan.excluded.len()
         );
-        // One batch at a time: its transactions chain on each other's float output.
+        // One batch at a time: its transactions chain on each other's payout cell output.
         if !st.db.runs_in(&[RUNNING, COMPLETED, SUBMITTING])?.is_empty() {
             return Ok(summary);
         }
@@ -187,7 +187,7 @@ impl Keeper {
             }
             return Ok(format!("{summary}; held: {why}"));
         }
-        // Without float, runner key cell or registration nothing can be settled: do not run.
+        // Without payout cell, runner key cell or registration nothing can be settled: do not run.
         let ctx = self.chain.run_context().await?;
         let executed = self.execute(st, cfg, batch, &tip).await?;
         self.submit(st, ctx, executed, &data, tip.number).await?;
@@ -610,14 +610,14 @@ pub fn run_detail(st: &AppState, id: i64) -> Result<Option<Value>, String> {
     Ok(Some(v))
 }
 
-/// `GET /api/earnings` without the float (added by the caller from the chain).
+/// `GET /api/earnings` without the payout balance (added by the caller from the chain).
 pub fn earnings_json(st: &AppState) -> Result<Value, String> {
     let s = st.db.settlements()?;
     Ok(json!({
         "tips_shannons": s.iter().map(|x| x.tip_shannons).sum::<u64>(),
-        // Job transactions pay their fee from the job cell; the float never pays one.
+        // Job transactions pay their fee from the job cell; the payout cell never pays one.
         "fees_shannons": 0,
-        "float": {"capacity_shannons": null},
+        "payout": {"capacity_shannons": null},
         "settlements": s.iter().map(|x| json!({
             "job_outpoint": x.job_outpoint,
             "tx_hash": x.tx_hash,

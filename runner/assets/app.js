@@ -196,7 +196,7 @@
     function floatCard() {
       api('/api/earnings').then(function (e) {
         while (cf.children.length > 1) cf.removeChild(cf.lastChild);
-        dl(cf, [['Balance', ckb(e.float.capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
+        dl(cf, [['Balance', ckb((e.payout || {}).capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
         var a = el('a', '', 'Earnings & float'); a.href = '#/earnings'; cf.appendChild(a);
       }).catch(function () {});
     }
@@ -596,7 +596,7 @@
     function load() {
       api('/api/earnings').then(function (e) {
         info.textContent = '';
-        dl(info, [['Float balance', ckb(e.float.capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid from float', ckb(e.fees_shannons)]]);
+        dl(info, [['Float balance', ckb((e.payout || {}).capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid from float', ckb(e.fees_shannons)]]);
         var days = {};
         e.settlements.forEach(function (x) {
           var d = new Date((x.t || 0) * 1000).toISOString().slice(0, 10);

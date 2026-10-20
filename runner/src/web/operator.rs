@@ -1,7 +1,7 @@
-//! Operator signing flow: prepare unsigned float transactions, submit signed ones.
+//! Operator signing flow: prepare unsigned payout transactions, submit signed ones.
 
 use crate::app::AppState;
-use crate::chain::{Chain, DEFAULT_MAX_FEE};
+use crate::chain::Chain;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -49,42 +49,29 @@ pub async fn runner_cell(State(s): St) -> Response {
     }
 }
 
-pub async fn float_status(State(s): St) -> Response {
+pub async fn payout_status(State(s): St) -> Response {
     match chain(&s).await {
-        Ok(c) => reply(c.float_status().await),
+        Ok(c) => reply(c.payout_status().await),
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
 }
 
-pub async fn prepare_create(State(s): St, Json(b): Json<Value>) -> Response {
+/// Body: `ckb` and `owner_lock_args` (the wallet that pays for the cell).
+pub async fn payout_prepare_create(State(s): St, Json(b): Json<Value>) -> Response {
     let (Some(ckb), Some(owner)) = (amount(&b), b["owner_lock_args"].as_str()) else {
         return fail(
             StatusCode::BAD_REQUEST,
             "ckb and owner_lock_args are required".into(),
         );
     };
-    let max_fee = b["max_fee_shannons"].as_u64().unwrap_or(DEFAULT_MAX_FEE);
     match chain(&s).await {
-        Ok(c) => reply(c.prepare_create(&ckb, owner, max_fee).await.map(prepared)),
+        Ok(c) => reply(c.prepare_payout_create(&ckb, owner).await.map(prepared)),
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
 }
 
-pub async fn prepare_topup(State(s): St, Json(b): Json<Value>) -> Response {
-    let Some(ckb) = amount(&b) else {
-        return fail(StatusCode::BAD_REQUEST, "ckb is required".into());
-    };
-    match chain(&s).await {
-        Ok(c) => reply(
-            c.prepare_topup(&ckb, b["owner_lock_args"].as_str())
-                .await
-                .map(prepared),
-        ),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
-    }
-}
-
-pub async fn prepare_withdraw(State(s): St, Json(b): Json<Value>) -> Response {
+/// Body: `ckb` or `all: true`.
+pub async fn payout_prepare_withdraw(State(s): St, Json(b): Json<Value>) -> Response {
     let all = b["all"].as_bool().unwrap_or(false);
     let ckb = amount(&b);
     if all == ckb.is_some() {
@@ -95,7 +82,7 @@ pub async fn prepare_withdraw(State(s): St, Json(b): Json<Value>) -> Response {
     }
     match chain(&s).await {
         Ok(c) => reply(
-            c.prepare_withdraw(ckb.as_deref(), all, b["owner_lock_args"].as_str())
+            c.prepare_payout_withdraw(ckb.as_deref(), all)
                 .await
                 .map(prepared),
         ),

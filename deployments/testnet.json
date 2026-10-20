@@ -10,17 +10,18 @@
   "registry_type_hash": "0xf14abcad3683d19297e88572aeaf01cbedda1235a37f8aa8694277b7cf3a2229",
   "rpc": "http://127.0.0.1:8112",
   "scripts": {
+    "anyone_can_pay": {
+      "code_hash": "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356",
+      "hash_type": "type",
+      "tx_hash": "0xec26b0f85ed839ece5f11c4c4e837ec359f5adc4420410f6453b1f6b60fb96a6",
+      "index": 0,
+      "dep_type": "dep_group"
+    },
     "dual_lock": {
       "code_hash": "0xe81c8076b9fd9e18e2394a5933f841b6ce924d398d52bdcd26f876378a7feb76",
       "hash_type": "data2",
       "index": 0,
       "tx_hash": "0xa5611ddffff513aa390a89a8efdaa5a767f5e9137a234c428c4484961ac7f83d"
-    },
-    "float_lock": {
-      "code_hash": "0x12e08905bf148b00a0a492b709deb88a46c08e5fb9c80be6395034867543dd37",
-      "hash_type": "data2",
-      "index": 0,
-      "tx_hash": "0x40fcf4b330f97fd6cccb486990251e9da51410742050d9ce47b145732d9a52b2"
     },
     "job_lock": {
       "code_hash": "0x7dc04432bf57078a8865e119aae43644adee88f3098467375939eb4c9364a66b",

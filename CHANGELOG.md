@@ -4,6 +4,7 @@
 - First Phase 1 release: release profile, `scripts/package.sh` (tarball + SHA256SUMS), `config/csr.service`, `docs/install.md`, greyed-out runtime toggle on mainnet; `docs/milestones/A4.md`.
 
 ## Unreleased
+- A7 phase 2: payout cell replaces the float: `[payout] lock_args`, `csr payout status|prepare-create|prepare-withdraw`, `GET /api/payout`, `POST /api/payout/prepare-create|prepare-withdraw`; `csr float` and `/api/float…` removed. Deployments: `scripts.anyone_can_pay` (with `dep_type`) replaces `float_lock`; vendored `devtools/vendor/anyone_can_pay` (ckb-sdk 3.7.0, pinned in `SHA256SUMS`). `csr-dev`: `deploy-contracts` without the float, with ACP and `--keep-config`; new `dao-deposit`; `sign-tx` signs every secp256k1/ACP lock group of the key.
 - A7 phase 1 (D-A7-1): Registry v2 (`payout_lock_hash`, `stake` = Nervos DAO deposit out point); `csr-registry` checks the stake deposit (errors 18–21, `MIN_STAKE` 10,000 CKB); `csr-job-lock` pays tips to the registered payout cell; `csr-float-lock` and its tests removed; `spec/registry.md` rewritten for v2.
 - A6: dashboard "Network" tab becomes "CSR monitor" with a world map of the CSR network (`GET /v1/locations`, shared `worldmap.js`, 2° dots); Overview card "Ranking" and setting "Join ranking" renamed; `docs/milestones/A6.md`.
 - A5: testnet registration: chain commands work on testnet with the embedded `deployments/testnet.json`, real testnet monitor defaults, and `csr register attest --out FILE` fetches and verifies the monitor attestation; `docs/milestones/A5.md`.

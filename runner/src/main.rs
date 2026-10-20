@@ -103,10 +103,10 @@ enum Command {
         #[command(subcommand)]
         action: RunnerCellAction,
     },
-    /// The float cell (prepare unsigned owner transactions, show status)
-    Float {
+    /// The payout cell that receives the tips (prepare unsigned owner transactions, show status)
+    Payout {
         #[command(subcommand)]
-        action: FloatAction,
+        action: PayoutAction,
     },
     /// The registry cell
     Register {
@@ -149,47 +149,32 @@ enum RunnerCellAction {
 }
 
 #[derive(Subcommand)]
-enum FloatAction {
-    /// Unsigned transaction creating the float cell
+enum PayoutAction {
+    /// Unsigned transaction creating the payout (anyone-can-pay) cell
     PrepareCreate {
         #[arg(long)]
         ckb: String,
+        /// secp256k1 lock args of the wallet that pays for the cell
         #[arg(long)]
         owner_lock_args: String,
-        #[arg(long, default_value_t = chain::DEFAULT_MAX_FEE)]
-        max_fee_shannons: u64,
         #[arg(long)]
         out: PathBuf,
         #[arg(long)]
         json: bool,
     },
-    /// Unsigned transaction adding CKB to the float cell
-    PrepareTopup {
-        #[arg(long)]
-        ckb: String,
-        /// Needed only if the owner's lock cannot be found on chain
-        #[arg(long)]
-        owner_lock_args: Option<String>,
-        #[arg(long)]
-        out: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Unsigned transaction moving CKB from the float cell to the owner
+    /// Unsigned transaction moving CKB from the payout cell to the secp256k1 lock of payout.lock_args
     PrepareWithdraw {
-        #[arg(long, conflicts_with = "all")]
+        #[arg(long, conflicts_with = "all", required_unless_present = "all")]
         ckb: Option<String>,
-        /// Close the float cell and return everything
+        /// Close the payout cell and withdraw everything
         #[arg(long)]
         all: bool,
         #[arg(long)]
-        owner_lock_args: Option<String>,
-        #[arg(long)]
         out: PathBuf,
         #[arg(long)]
         json: bool,
     },
-    /// Show the float cell
+    /// Show the payout cell
     Status {
         #[arg(long)]
         json: bool,
@@ -333,6 +318,22 @@ where
         })
     })();
     print_result(r, json)
+}
+
+/// Every `csr payout` command needs `payout.lock_args`; reports why not on stderr.
+fn payout_configured(cli: &Cli) -> bool {
+    let r = load_config(cli).and_then(|c| match c.payout.args()? {
+        Some(_) => Ok(()),
+        None => Err(
+            "payout.lock_args is not set: put the 20-byte args of your payout \
+                     (anyone-can-pay) cell into [payout] lock_args of the config"
+                .to_string(),
+        ),
+    });
+    if let Err(e) = &r {
+        eprintln!("{e}");
+    }
+    r.is_ok()
 }
 
 /// Prints a command result (one JSON line, or `key: value` lines); errors go to stderr.
@@ -510,41 +511,27 @@ fn main() -> ExitCode {
         Command::RunnerCell {
             action: RunnerCellAction::Status { json },
         } => chain_cmd(&cli, *json, |c| async move { c.runner_cell_status().await }),
-        Command::Float { action } => match action {
-            FloatAction::Status { json } => {
-                chain_cmd(&cli, *json, |c| async move { c.float_status().await })
+        Command::Payout { .. } if !payout_configured(&cli) => ExitCode::from(1),
+        Command::Payout { action } => match action {
+            PayoutAction::Status { json } => {
+                chain_cmd(&cli, *json, |c| async move { c.payout_status().await })
             }
-            FloatAction::PrepareCreate {
-                ckb,
-                owner_lock_args,
-                max_fee_shannons,
-                out,
-                json,
-            } => chain_cmd(&cli, *json, |c| async move {
-                let p = c
-                    .prepare_create(ckb, owner_lock_args, *max_fee_shannons)
-                    .await?;
-                chain::write_prepared(&p, out)
-            }),
-            FloatAction::PrepareTopup {
+            PayoutAction::PrepareCreate {
                 ckb,
                 owner_lock_args,
                 out,
                 json,
             } => chain_cmd(&cli, *json, |c| async move {
-                let p = c.prepare_topup(ckb, owner_lock_args.as_deref()).await?;
+                let p = c.prepare_payout_create(ckb, owner_lock_args).await?;
                 chain::write_prepared(&p, out)
             }),
-            FloatAction::PrepareWithdraw {
+            PayoutAction::PrepareWithdraw {
                 ckb,
                 all,
-                owner_lock_args,
                 out,
                 json,
             } => chain_cmd(&cli, *json, |c| async move {
-                let p = c
-                    .prepare_withdraw(ckb.as_deref(), *all, owner_lock_args.as_deref())
-                    .await?;
+                let p = c.prepare_payout_withdraw(ckb.as_deref(), *all).await?;
                 chain::write_prepared(&p, out)
             }),
         },

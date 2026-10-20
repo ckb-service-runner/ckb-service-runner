@@ -21,17 +21,25 @@ use clap::{Parser, Subcommand};
 use keys::{devnet_key, h, sighash_lock, Key};
 use secp256k1::{Message, Secp256k1};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const CONTRACTS: [(&str, &str); 5] = [
-    ("float_lock", "csr-float-lock"),
+const CONTRACTS: [(&str, &str); 4] = [
     ("dual_lock", "csr-dual-lock"),
     ("registry", "csr-registry"),
     ("job_type", "csr-job-type"),
     ("job_lock", "csr-job-lock"),
 ];
 const WEEK_MS: u64 = 7 * 24 * 3600 * 1000;
+/// SHA-256 of the vendored anyone-can-pay binary (`devtools/vendor/SHA256SUMS`).
+const ACP_SHA256: &str = "5eca558b873dcf54e589fa2135a7a0a13defcfd87469cac7dfc6a38cbf57720a";
+/// The public anyone-can-pay deployment of the testnet (a dep group with the secp256k1 data).
+const ACP_TESTNET_CODE_HASH: &str =
+    "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356";
+const ACP_TESTNET_DEP: &str = "0xec26b0f85ed839ece5f11c4c4e837ec359f5adc4420410f6453b1f6b60fb96a6";
+/// Type hash of the Nervos DAO script (the same on every chain).
+const DAO_TYPE_HASH: &str = "0x82d76d1b75fe2fd9a27dfbaa65a039221a380d76c926f378d3f81cf3e7e13f2e";
 /// The config cell is a monitor-owned cell; its capacity pays the fees of the clock updates.
 const CONFIG_CELL_CKB: u64 = 10_000;
 
@@ -50,13 +58,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Deploy the five CSR scripts and the monitor config cell
+    /// Deploy the four CSR scripts, the monitor config cell and (devnet) the anyone-can-pay lock
     DeployContracts {
         #[arg(long, default_value = "deployments/devnet.json")]
         out: PathBuf,
         /// Directory with the built contracts
         #[arg(long, default_value = "contracts/build/release")]
         contracts_dir: PathBuf,
+        /// Vendored anyone-can-pay binary (devnet only; its SHA-256 is checked)
+        #[arg(long, default_value = "devtools/vendor/anyone_can_pay")]
+        acp: PathBuf,
+        /// Keep the config cell (and monitor key) of this deployments file instead of creating one
+        #[arg(long)]
+        keep_config: Option<PathBuf>,
+    },
+    /// Make a Nervos DAO deposit (output 0) owned by the key's secp256k1 lock
+    DaoDeposit {
+        #[arg(long)]
+        ckb: String,
+        /// `genesis` (the funding account) or 0x<private key>
+        #[arg(long, default_value = "genesis")]
+        key: String,
     },
     /// Set clock_ms of the config cell to the tip timestamp
     ClockUpdate {
@@ -85,7 +107,8 @@ enum Command {
         #[arg(long)]
         ckb: String,
     },
-    /// Sign every input of an unsigned transaction file that the key can sign
+    /// Sign every lock group of an unsigned transaction file that the key can sign
+    /// (secp256k1_blake160 and anyone-can-pay with the key's args)
     SignTx {
         #[arg(long = "in")]
         input: PathBuf,
@@ -94,6 +117,9 @@ enum Command {
         /// `genesis` (the funding account) or 0x<private key>
         #[arg(long, default_value = "genesis")]
         key: String,
+        /// Deployments file naming the anyone-can-pay code hash (optional)
+        #[arg(long, default_value = "deployments/devnet.json")]
+        deployments: PathBuf,
     },
     /// Lock args and lock hash of the funding account (the operator wallet in tests)
     OwnerLockArgs,
@@ -196,10 +222,64 @@ fn config_type_script(dep: &Value) -> Result<Script, String> {
     )?))
 }
 
-fn deploy(ctx: &Ctx, out: &Path, dir: &Path) -> Result<Value, String> {
+/// Deploys a binary as a code cell of the funder; returns `(data hash, tx hash)`.
+fn deploy_code(ctx: &Ctx, bin: Vec<u8>) -> Result<(String, String), String> {
+    let lock = ctx.funder.lock();
+    let cap = occupied(&lock, &None, bin.len()) * CKB;
+    let code_hash = h(data_hash(&bin));
+    let tx = ctx.chain.build_funded(
+        &ctx.funder,
+        vec![Out {
+            capacity: cap,
+            lock,
+            type_: None,
+            data: bin,
+            type_id: false,
+        }],
+        vec![],
+    )?;
+    Ok((code_hash, ctx.chain.send_and_wait(&tx)?))
+}
+
+/// `scripts.anyone_can_pay`: the vendored binary as a code cell on the devnet, the public
+/// deployment on the testnet.
+fn deploy_acp(ctx: &Ctx, acp: &Path) -> Result<Value, String> {
+    if !ctx.chain.devnet {
+        return Ok(json!({
+            "code_hash": ACP_TESTNET_CODE_HASH, "hash_type": "type",
+            "tx_hash": ACP_TESTNET_DEP, "index": 0, "dep_type": "dep_group",
+        }));
+    }
+    let bin = std::fs::read(acp).map_err(|e| format!("cannot read {}: {e}", acp.display()))?;
+    let sha = hex::encode(Sha256::digest(&bin));
+    if sha != ACP_SHA256 {
+        return Err(format!(
+            "{}: SHA-256 {sha} does not match the pinned {ACP_SHA256}",
+            acp.display()
+        ));
+    }
+    let (code_hash, tx_hash) = deploy_code(ctx, bin)?;
+    Ok(json!({
+        "code_hash": code_hash, "hash_type": "data1", "tx_hash": tx_hash, "index": 0, "dep_type": "code",
+    }))
+}
+
+fn deploy(
+    ctx: &Ctx,
+    out: &Path,
+    dir: &Path,
+    acp: &Path,
+    keep_config: Option<&Path>,
+) -> Result<Value, String> {
     let chain = &ctx.chain;
-    let mut scripts = serde_json::Map::new();
-    let mut hashes = std::collections::HashMap::new();
+    // Read everything first so that nothing is deployed when an input is missing.
+    let kept = keep_config.map(read_json).transpose()?;
+    if let Some(k) = &kept {
+        if !k["config_cell"].is_object() || k["monitor_pubkey"].as_str().is_none() {
+            return Err("--keep-config: the file has no config_cell / monitor_pubkey".into());
+        }
+    }
+    let mut bins = Vec::new();
     for (name, file) in CONTRACTS {
         let path = dir.join(file);
         let bin = std::fs::read(&path).map_err(|e| {
@@ -208,70 +288,126 @@ fn deploy(ctx: &Ctx, out: &Path, dir: &Path) -> Result<Value, String> {
                 path.display()
             )
         })?;
-        let lock = ctx.funder.lock();
-        let cap = occupied(&lock, &None, bin.len()) * CKB;
-        let tx = chain.build_funded(
-            &ctx.funder,
-            vec![Out {
-                capacity: cap,
-                lock,
-                type_: None,
-                data: bin.clone(),
-                type_id: false,
-            }],
-            vec![],
-        )?;
-        let tx_hash = chain.send_and_wait(&tx)?;
-        let code_hash = h(data_hash(&bin));
+        bins.push((name, bin));
+    }
+    let mut scripts = serde_json::Map::new();
+    let mut hashes = std::collections::HashMap::new();
+    for (name, bin) in bins {
+        let (code_hash, tx_hash) = deploy_code(ctx, bin)?;
         hashes.insert(name, code_hash.clone());
         scripts.insert(
             name.into(),
             json!({"code_hash": code_hash, "hash_type": "data2", "tx_hash": tx_hash, "index": 0}),
         );
     }
-    // Monitor config cell: Type ID, data = pubkey || clock_ms || reserved, lock = monitor key.
-    let clock = chain.tip_timestamp()?;
-    let data = config_data(&ctx.monitor.pubkey, clock);
-    let tx = chain.build_funded(
-        &ctx.funder,
-        vec![Out {
-            capacity: CONFIG_CELL_CKB * CKB,
-            lock: ctx.monitor.lock(),
-            type_: None,
-            data,
-            type_id: true,
-        }],
-        vec![],
-    )?;
-    let type_script = tx
-        .output(0)
-        .and_then(|o| o.type_().to_opt())
-        .ok_or("config cell has no type")?;
-    let config_type_hash = type_script.calc_script_hash();
-    let tx_hash = chain.send_and_wait(&tx)?;
+    scripts.insert("anyone_can_pay".into(), deploy_acp(ctx, acp)?);
+    let (config_cell, config_type_hash, monitor_pubkey) = match kept {
+        Some(k) => {
+            let th = hex_arg(
+                k["config_cell"]["type_hash"].as_str().unwrap_or(""),
+                32,
+                "config_cell.type_hash",
+            )?;
+            (
+                k["config_cell"].clone(),
+                th,
+                k["monitor_pubkey"].as_str().unwrap_or("").to_string(),
+            )
+        }
+        None => {
+            // Monitor config cell: Type ID, data = pubkey || clock_ms || reserved, lock = monitor key.
+            let clock = chain.tip_timestamp()?;
+            let data = config_data(&ctx.monitor.pubkey, clock);
+            let tx = chain.build_funded(
+                &ctx.funder,
+                vec![Out {
+                    capacity: CONFIG_CELL_CKB * CKB,
+                    lock: ctx.monitor.lock(),
+                    type_: None,
+                    data,
+                    type_id: true,
+                }],
+                vec![],
+            )?;
+            let type_script = tx
+                .output(0)
+                .and_then(|o| o.type_().to_opt())
+                .ok_or("config cell has no type")?;
+            let config_type_hash = type_script.calc_script_hash();
+            let tx_hash = chain.send_and_wait(&tx)?;
+            (
+                json!({
+                    "type_hash": h(config_type_hash.as_slice()),
+                    "type_args": h(type_script.args().raw_data()),
+                    "tx_hash": tx_hash,
+                    "index": 0,
+                }),
+                config_type_hash.as_slice().to_vec(),
+                h(ctx.monitor.pubkey),
+            )
+        }
+    };
     let registry_type = Script::new_builder()
         .code_hash(
             packed::Byte32::from_slice(&hex_arg(&hashes["registry"], 32, "hash")?)
                 .map_err(|e| e.to_string())?,
         )
         .hash_type(packed::Byte::new(ScriptHashType::Data2 as u8))
-        .args(Bytes::copy_from_slice(config_type_hash.as_slice()).pack())
+        .args(Bytes::copy_from_slice(&config_type_hash).pack())
         .build();
     let d = json!({
         "network": chain.network_name(),
         "rpc": chain.rpc.url,
         "scripts": scripts,
-        "config_cell": {
-            "type_hash": h(config_type_hash.as_slice()),
-            "type_args": h(type_script.args().raw_data()),
-            "tx_hash": tx_hash,
-            "index": 0,
-        },
+        "config_cell": config_cell,
         "registry_type_hash": h(registry_type.calc_script_hash().as_slice()),
-        "monitor_pubkey": h(ctx.monitor.pubkey),
+        "monitor_pubkey": monitor_pubkey,
     });
     write_json(out, &d)?;
     Ok(json!({"file": out, "deployments": d}))
+}
+
+/// The key given as `genesis` (the funding account) or `0x<private key>`.
+fn key_arg(ctx: &Ctx, key: &str) -> Result<Key, String> {
+    if key == "genesis" {
+        Key::from_hex(&hex::encode(ctx.funder.sk.secret_bytes()))
+    } else {
+        Key::from_hex(key)
+    }
+}
+
+fn dao_deposit(ctx: &Ctx, ckb: &str, key: &str) -> Result<Value, String> {
+    let key = key_arg(ctx, key)?;
+    let capacity = ckb_to_shannons(ckb)?;
+    let dao_hash = hex_arg(DAO_TYPE_HASH, 32, "DAO type hash")?;
+    let dao = Script::new_builder()
+        .code_hash(packed::Byte32::from_slice(&dao_hash).map_err(|e| e.to_string())?)
+        .hash_type(packed::Byte::new(ScriptHashType::Type as u8))
+        .build();
+    let lock = key.lock();
+    let type_ = Some(dao);
+    if capacity < occupied(&lock, &type_, 8) * CKB {
+        return Err(format!(
+            "a DAO deposit needs at least {} CKB",
+            occupied(&lock, &type_, 8)
+        ));
+    }
+    let dep = ctx.chain.genesis_code_dep(&dao_hash)?;
+    let tx = ctx.chain.build_funded(
+        &key,
+        vec![Out {
+            capacity,
+            lock,
+            type_,
+            data: vec![0u8; 8],
+            type_id: false,
+        }],
+        vec![dep],
+    )?;
+    let tx_hash = ctx.chain.send_and_wait(&tx)?;
+    Ok(json!({
+        "tx_hash": tx_hash, "index": 0, "capacity_shannons": capacity, "lock_args": h(key.args),
+    }))
 }
 
 fn clock_update(ctx: &Ctx, path: &Path) -> Result<Value, String> {
@@ -406,47 +542,78 @@ fn fund(ctx: &Ctx, lock_args: &str, ckb: &str) -> Result<Value, String> {
     Ok(json!({"tx_hash": ctx.chain.send_and_wait(&tx)?}))
 }
 
+/// Anyone-can-pay code hashes the key may sign for: the public testnet one and the one of the
+/// deployments file (if it exists).
+fn acp_code_hashes(deployments: &Path) -> Vec<Vec<u8>> {
+    let mut out = vec![hex_arg(ACP_TESTNET_CODE_HASH, 32, "").expect("constant")];
+    if let Ok(d) = read_json(deployments) {
+        let s = &d["scripts"]["anyone_can_pay"];
+        if let Ok(c) = hex_arg(s["code_hash"].as_str().unwrap_or(""), 32, "") {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Transaction file format of `ckb-cli` (`transaction`, `multisig_configs`, `signatures`).
-fn sign_tx(ctx: &Ctx, input: &Path, out: &Path, key: &str) -> Result<Value, String> {
-    let key = if key == "genesis" {
-        Key::from_hex(&hex::encode(ctx.funder.sk.secret_bytes()))?
-    } else {
-        Key::from_hex(key)?
-    };
+/// Every lock group the key can sign gets one signature in its first input.
+fn sign_tx(
+    ctx: &Ctx,
+    input: &Path,
+    out: &Path,
+    key: &str,
+    deployments: &Path,
+) -> Result<Value, String> {
+    let key = key_arg(ctx, key)?;
+    let acp = acp_code_hashes(deployments);
     let file = read_json(input)?;
     let raw = file.get("transaction").cloned().unwrap_or(file.clone());
     let jtx: json::Transaction =
         serde_json::from_value(raw).map_err(|e| format!("not a transaction: {e}"))?;
-    let tx = packed::Transaction::from(jtx).into_view();
-    let mut group = Vec::new();
+    let mut tx = packed::Transaction::from(jtx).into_view();
+    // Lock groups in order of their first input.
+    let mut groups: Vec<(Script, Vec<usize>)> = Vec::new();
     for (i, input) in tx.inputs().into_iter().enumerate() {
         let cell = ctx
             .chain
             .live_cell(&input.previous_output(), false)?
             .and_then(|c| c.cell)
             .ok_or_else(|| format!("input {i} is not a live cell"))?;
-        if lock_matches(&Script::from(cell.output.lock), &key) {
-            group.push(i);
+        let lock = Script::from(cell.output.lock);
+        let is_acp = acp
+            .iter()
+            .any(|c| lock.code_hash().as_slice() == c.as_slice())
+            && lock.args().raw_data() == key.args.as_slice();
+        if !lock_matches(&lock, &key) && !is_acp {
+            continue;
+        }
+        match groups.iter_mut().find(|(l, _)| *l == lock) {
+            Some((_, g)) => g.push(i),
+            None => groups.push((lock, vec![i])),
         }
     }
-    if group.is_empty() {
+    if groups.is_empty() {
         return Err("the key cannot sign any input of this transaction".into());
     }
-    let signed = sign_sighash(&tx, &group, &key)?;
-    let sig = signed
-        .witnesses()
-        .get(group[0])
-        .and_then(|w| packed::WitnessArgs::from_slice(&w.raw_data()).ok())
-        .and_then(|w| w.lock().to_opt())
-        .map(|l| h(l.raw_data()))
-        .unwrap_or_default();
+    let mut sigs = Vec::new();
+    for (_, group) in &groups {
+        tx = sign_sighash(&tx, group, &key)?;
+        let sig = tx
+            .witnesses()
+            .get(group[0])
+            .and_then(|w| packed::WitnessArgs::from_slice(&w.raw_data()).ok())
+            .and_then(|w| w.lock().to_opt())
+            .map(|l| h(l.raw_data()))
+            .unwrap_or_default();
+        sigs.push(sig);
+    }
     let mut result = if file.get("transaction").is_some() {
         file
     } else {
         json!({"multisig_configs": {}, "signatures": {}})
     };
-    result["transaction"] = serde_json::to_value(json::TransactionView::from(signed).inner)
-        .map_err(|e| e.to_string())?;
+    result["transaction"] =
+        serde_json::to_value(json::TransactionView::from(tx).inner).map_err(|e| e.to_string())?;
     if result.get("multisig_configs").is_none() {
         result["multisig_configs"] = json!({});
     }
@@ -456,9 +623,9 @@ fn sign_tx(ctx: &Ctx, input: &Path, out: &Path, key: &str) -> Result<Value, Stri
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
     result["signatures"] = signatures;
-    result["signatures"][h(key.args)] = json!([sig]);
+    result["signatures"][h(key.args)] = json!(sigs);
     write_json(out, &result)?;
-    Ok(json!({"file": out}))
+    Ok(json!({"file": out, "groups": groups.len()}))
 }
 
 fn owner_lock_args(ctx: &Ctx) -> Result<Value, String> {
@@ -611,7 +778,13 @@ fn job(
 fn run(cli: &Cli) -> Result<Value, String> {
     let ctx = context(&cli.rpc)?;
     match &cli.command {
-        Command::DeployContracts { out, contracts_dir } => deploy(&ctx, out, contracts_dir),
+        Command::DeployContracts {
+            out,
+            contracts_dir,
+            acp,
+            keep_config,
+        } => deploy(&ctx, out, contracts_dir, acp, keep_config.as_deref()),
+        Command::DaoDeposit { ckb, key } => dao_deposit(&ctx, ckb, key),
         Command::ClockUpdate { deployments } => clock_update(&ctx, deployments),
         Command::Attest {
             peer_id,
@@ -630,7 +803,12 @@ fn run(cli: &Cli) -> Result<Value, String> {
             deployments,
         ),
         Command::Fund { lock_args, ckb } => fund(&ctx, lock_args, ckb),
-        Command::SignTx { input, out, key } => sign_tx(&ctx, input, out, key),
+        Command::SignTx {
+            input,
+            out,
+            key,
+            deployments,
+        } => sign_tx(&ctx, input, out, key, deployments),
         Command::OwnerLockArgs => owner_lock_args(&ctx),
         Command::DeployService { elf } => deploy_service(&ctx, elf),
         Command::Job {

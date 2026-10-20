@@ -33,3 +33,6 @@ nice = 19                       # lowest OS priority: the node always wins
 path = "service_data"           # outside the node's data dir
 total_quota_mb = 256
 encrypt_at_rest = true
+
+[payout]
+lock_args = ""                  # anyone-can-pay args of your payout cell (0x + 40 hex), see csr.example.toml

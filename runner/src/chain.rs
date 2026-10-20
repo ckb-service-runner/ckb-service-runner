@@ -1,4 +1,4 @@
-//! On-chain operator flows: runner key cell, float cell and transaction submission.
+//! On-chain operator flows: runner key cell, payout cell and transaction submission.
 //!
 //! CSR never holds the owner's key. The `prepare_*` functions build unsigned transactions (ckb-cli
 //! "tx" file format); the owner signs them in their wallet and `submit` broadcasts the result.
@@ -20,8 +20,6 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 pub const CKB: u64 = 100_000_000;
-/// Default `max_fee_shannons` in the float args (0.01 CKB). The float lock ignores it (reserved).
-pub const DEFAULT_MAX_FEE: u64 = 1_000_000;
 /// Fee reserve when picking the owner's cells; the exact fee comes out of the change.
 const FEE_RESERVE: u64 = 1_000_000;
 
@@ -34,12 +32,6 @@ pub fn sighash_lock(args: &[u8]) -> Script {
         .hash_type(packed::Byte::new(ScriptHashType::Type as u8))
         .args(Bytes::copy_from_slice(args).pack())
         .build()
-}
-
-fn is_sighash(s: &Script) -> bool {
-    s.code_hash() == SIGHASH_CODE_HASH.pack()
-        && s.hash_type() == packed::Byte::new(ScriptHashType::Type as u8)
-        && s.args().raw_data().len() == 20
 }
 
 fn script_hash(s: &Script) -> H256 {
@@ -128,15 +120,34 @@ fn parse_cell(c: &Value) -> Result<Cell, String> {
     })
 }
 
-/// A deployed script: how to reference it and where its code cell is.
+/// A deployed script: how to reference it and where its code cell (or dep group) is.
 struct Deployed {
     code_hash: H256,
     hash_type: ScriptHashType,
     code_cell: OutPoint,
+    dep_type: DepType,
+}
+
+impl Deployed {
+    fn cell_dep(&self) -> CellDep {
+        CellDep::new_builder()
+            .out_point(self.code_cell.clone())
+            .dep_type(packed::Byte::new(self.dep_type as u8))
+            .build()
+    }
+
+    fn script(&self, args: &[u8]) -> Script {
+        Script::new_builder()
+            .code_hash(self.code_hash.pack())
+            .hash_type(packed::Byte::new(self.hash_type as u8))
+            .args(Bytes::copy_from_slice(args).pack())
+            .build()
+    }
 }
 
 struct Deployments {
-    float: Deployed,
+    /// The anyone-can-pay lock of the payout cell.
+    acp: Deployed,
     dual: Deployed,
     registry: Deployed,
     job_type: Deployed,
@@ -167,10 +178,17 @@ fn load_deployed(v: &Value, name: &str, file: &str) -> Result<Deployed, String> 
         s["tx_hash"].as_str().unwrap_or(""),
         s["index"].as_u64().unwrap_or(0) as u32,
     )?;
+    // `dep_type` is optional and means `code` when absent.
+    let dep_type = match s["dep_type"].as_str() {
+        None | Some("code") => DepType::Code,
+        Some("dep_group") => DepType::DepGroup,
+        Some(_) => return Err(format!("{file}: bad {name}.dep_type")),
+    };
     Ok(Deployed {
         code_hash,
         hash_type,
         code_cell,
+        dep_type,
     })
 }
 
@@ -201,7 +219,7 @@ fn parse_deployments(text: &str, source: &str) -> Result<Deployments, String> {
             .map_err(|_| format!("{f}: bad {what}"))
     };
     Ok(Deployments {
-        float: load_deployed(&v, "float_lock", f)?,
+        acp: load_deployed(&v, "anyone_can_pay", f)?,
         dual: load_deployed(&v, "dual_lock", f)?,
         registry: load_deployed(&v, "registry", f)?,
         job_type: load_deployed(&v, "job_type", f)?,
@@ -327,11 +345,11 @@ impl Attestation {
     }
 
     /// Molecule `Registry` data (`contracts/schemas/csr.mol`), prekeys empty.
-    fn registry_data(&self, float_lock_hash: &H256) -> Vec<u8> {
+    fn registry_data(&self, payout_lock_hash: &H256) -> Vec<u8> {
         mol_table(&[
             mol_bytes(&self.peer_id),
             self.pubkey.clone(),
-            float_lock_hash.as_bytes().to_vec(),
+            payout_lock_hash.as_bytes().to_vec(),
             vec![self.network],
             self.molecule(),
             mol_bytes(&[]),
@@ -339,17 +357,24 @@ impl Attestation {
     }
 }
 
-/// `(peer_id, service_pubkey, float_lock_hash, expiry_ms)` of a molecule `Registry`.
+/// `(peer_id, service_pubkey, payout_lock_hash, expiry_ms)` of a molecule `Registry` (6 fields,
+/// or 7 with the `stake` out point of registry v2).
 fn parse_registry_data(d: &[u8]) -> Option<(String, Vec<u8>, Vec<u8>, u64)> {
     let u32_at = |o: usize| -> Option<usize> {
         Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?) as usize)
     };
-    if u32_at(0)? != d.len() || u32_at(4)? != 28 {
+    let header = u32_at(4)?;
+    if u32_at(0)? != d.len() || (header != 28 && header != 32) {
         return None;
     }
+    let last = header / 4 - 2;
     let field = |i: usize| -> Option<&[u8]> {
         let start = u32_at(4 + 4 * i)?;
-        let end = if i == 5 { d.len() } else { u32_at(8 + 4 * i)? };
+        let end = if i == last {
+            d.len()
+        } else {
+            u32_at(8 + 4 * i)?
+        };
         d.get(start..end)
     };
     let peer = field(0)?;
@@ -406,7 +431,9 @@ fn sign_first_input(
 pub struct Chain {
     rpc: RpcClient,
     network: String,
-    float: Deployed,
+    acp: Deployed,
+    /// `payout.lock_args` (anyone-can-pay args of the payout cell), if configured.
+    payout_args: Option<Vec<u8>>,
     dual: Deployed,
     registry: Deployed,
     job_type: Deployed,
@@ -436,13 +463,6 @@ pub struct RawJob {
     pub data: Vec<u8>,
 }
 
-pub struct Float {
-    pub cell: Cell,
-    owner_lock_hash: H256,
-    runner_lock_hash: H256,
-    max_fee: u64,
-}
-
 /// An unsigned transaction in `ckb-cli` tx file format.
 pub struct Prepared {
     pub file: Value,
@@ -470,7 +490,8 @@ impl Chain {
         Ok(Chain {
             rpc,
             network: cfg.network.clone(),
-            float: dep.float,
+            acp: dep.acp,
+            payout_args: cfg.payout.args()?,
             dual: dep.dual,
             registry: dep.registry,
             job_type: dep.job_type,
@@ -494,15 +515,18 @@ impl Chain {
         script_hash(&self.runner_lock)
     }
 
-    fn float_lock(&self, owner_hash: &H256, max_fee: u64) -> Script {
-        let mut args = owner_hash.as_bytes().to_vec();
-        args.extend_from_slice(self.runner_lock_hash().as_bytes());
-        args.extend_from_slice(&max_fee.to_le_bytes());
-        Script::new_builder()
-            .code_hash(self.float.code_hash.pack())
-            .hash_type(packed::Byte::new(self.float.hash_type as u8))
-            .args(Bytes::from(args).pack())
-            .build()
+    /// `payout.lock_args`; every payout command needs it.
+    fn payout_args(&self) -> Result<&[u8], String> {
+        self.payout_args.as_deref().ok_or_else(|| {
+            "payout.lock_args is not set: put the 20-byte args of your payout (anyone-can-pay) cell \
+             into [payout] lock_args of the config"
+                .to_string()
+        })
+    }
+
+    /// The anyone-can-pay lock of the payout cell.
+    pub fn payout_lock(&self) -> Result<Script, String> {
+        Ok(self.acp.script(self.payout_args()?))
     }
 
     async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
@@ -571,54 +595,30 @@ impl Chain {
         }))
     }
 
-    /// The float cell of this runner (found by the runner lock hash inside the lock args).
-    pub async fn float(&self) -> Result<Option<Float>, String> {
-        let runner_hash = self.runner_lock_hash();
-        let key = json!({
-            "script": {
-                "code_hash": hx(self.float.code_hash.as_bytes()),
-                "hash_type": json::ScriptHashType::from(self.float.hash_type),
-                "args": "0x",
-            },
-            "script_type": "lock",
-            "script_search_mode": "prefix",
-            "filter": {"output_data_len_range": ["0x0", "0x1"]},
-        });
-        // The runner lock hash sits at offset 32 of the args, so it cannot be a prefix: scan all
-        // cells of the float lock and filter here (the default indexer has no partial search).
-        for cell in self.get_cells(key).await? {
-            let args = cell.lock.args().raw_data();
-            if args.len() == 72 && args[32..64] == *runner_hash.as_bytes() {
-                return Ok(Some(Float {
-                    owner_lock_hash: H256::from_slice(&args[..32]).map_err(|e| e.to_string())?,
-                    runner_lock_hash: runner_hash,
-                    max_fee: u64::from_le_bytes(args[64..72].try_into().unwrap()),
-                    cell,
-                }));
-            }
-        }
-        Ok(None)
+    /// The payout cell: the oldest live cell under the exact payout lock, without type and data.
+    pub async fn payout(&self) -> Result<Option<Cell>, String> {
+        let lock = self.payout_lock()?;
+        let cells = self
+            .get_cells(json!({
+                "script": json::Script::from(lock),
+                "script_type": "lock",
+                "script_search_mode": "exact",
+                "filter": {"script_len_range": ["0x0", "0x1"], "output_data_len_range": ["0x0", "0x1"]},
+            }))
+            .await?;
+        Ok(cells.into_iter().next())
     }
 
-    pub async fn float_status(&self) -> Result<Value, String> {
-        Ok(match self.float().await? {
-            Some(f) => json!({
-                "found": true,
-                "outpoint": out_point_str(&f.cell.out_point),
-                "capacity_shannons": f.cell.capacity,
-                "max_fee_shannons": f.max_fee,
-                "owner_lock_hash": hx(f.owner_lock_hash.as_bytes()),
-                "runner_lock_hash": hx(f.runner_lock_hash.as_bytes()),
-            }),
-            None => json!({
-                "found": false,
-                "outpoint": null,
-                "capacity_shannons": null,
-                "max_fee_shannons": null,
-                "owner_lock_hash": null,
-                "runner_lock_hash": hx(self.runner_lock_hash().as_bytes()),
-            }),
-        })
+    pub async fn payout_status(&self) -> Result<Value, String> {
+        let lock = self.payout_lock()?;
+        let cell = self.payout().await?;
+        Ok(json!({
+            "found": cell.is_some(),
+            "outpoint": cell.as_ref().map(|c| out_point_str(&c.out_point)),
+            "capacity_shannons": cell.as_ref().map(|c| c.capacity),
+            "lock_args": hx(lock.args().raw_data()),
+            "lock_hash": hx(script_hash(&lock).as_bytes()),
+        }))
     }
 
     /// Cell dep of the secp256k1_blake160 dep group (found in the genesis block).
@@ -655,68 +655,6 @@ impl Chain {
             }
         }
         Err("secp256k1_blake160 dep group not found in the genesis block".into())
-    }
-
-    fn float_dep(&self) -> CellDep {
-        CellDep::new_builder()
-            .out_point(self.float.code_cell.clone())
-            .dep_type(packed::Byte::new(DepType::Code as u8))
-            .build()
-    }
-
-    /// Finds the owner's lock script from the lock hash in the float args: from `--owner-lock-args`
-    /// or from the inputs of the transaction that created the float cell.
-    async fn owner_lock(&self, f: &Float, args: Option<&str>) -> Result<Script, String> {
-        let want = &f.owner_lock_hash;
-        let found = match args {
-            Some(a) => {
-                let l = sighash_lock(&parse_lock_args(a)?);
-                if script_hash(&l) != *want {
-                    return Err("owner lock args do not match the float's owner lock hash".into());
-                }
-                Some(l)
-            }
-            None => self.discover_owner_lock(f).await?,
-        };
-        let lock = found.ok_or(
-            "cannot determine the owner's lock from the chain; pass --owner-lock-args".to_string(),
-        )?;
-        if !is_sighash(&lock) {
-            return Err("only owners with a secp256k1_blake160 lock are supported".into());
-        }
-        Ok(lock)
-    }
-
-    async fn discover_owner_lock(&self, f: &Float) -> Result<Option<Script>, String> {
-        let tx_of = |r: &Value| -> Value {
-            let t = &r["transaction"];
-            t.get("inner").unwrap_or(t).clone()
-        };
-        let r = self
-            .call(
-                "get_transaction",
-                json!([hx(f.cell.out_point.tx_hash().as_slice())]),
-            )
-            .await?;
-        let tx = tx_of(&r);
-        for input in tx["inputs"].as_array().into_iter().flatten() {
-            let prev = &input["previous_output"];
-            let Some(h) = prev["tx_hash"].as_str() else {
-                continue;
-            };
-            let idx = hex_u64(&prev["index"]).unwrap_or(0) as usize;
-            let ptx = tx_of(&self.call("get_transaction", json!([h])).await?);
-            let Ok(lock) =
-                serde_json::from_value::<json::Script>(ptx["outputs"][idx]["lock"].clone())
-            else {
-                continue;
-            };
-            let lock = Script::from(lock);
-            if script_hash(&lock) == f.owner_lock_hash {
-                return Ok(Some(lock));
-            }
-        }
-        Ok(None)
     }
 
     /// Builds the unsigned transaction: `pre` cells are spent first, then as many of the owner's
@@ -810,83 +748,132 @@ impl Chain {
         })
     }
 
-    pub async fn prepare_create(
+    /// Unsigned transaction creating the payout cell with `ckb` CKB, paid by the secp256k1 lock
+    /// of `owner_lock_args`.
+    pub async fn prepare_payout_create(
         &self,
         ckb: &str,
         owner_lock_args: &str,
-        max_fee: u64,
     ) -> Result<Prepared, String> {
+        let lock = self.payout_lock()?;
         let owner = sighash_lock(&parse_lock_args(owner_lock_args)?);
         let cap = ckb_to_shannons(ckb)?;
-        let lock = self.float_lock(&script_hash(&owner), max_fee);
-        if cap < occupied(&lock, None, 0) {
-            return Err(format!(
-                "a float cell needs at least {} CKB",
-                occupied(&lock, None, 0) / CKB
-            ));
+        let min = occupied(&lock, None, 0);
+        if cap < min {
+            return Err(format!("a payout cell needs at least {} CKB", min / CKB));
         }
-        if self.float().await?.is_some() {
-            return Err("a float cell already exists; use prepare-topup".into());
+        if let Some(c) = self.payout().await? {
+            return Err(format!(
+                "a payout cell already exists ({}); anyone can add CKB to it",
+                out_point_str(&c.out_point)
+            ));
         }
         self.assemble(&owner, vec![], vec![Out::plain(lock, cap)], vec![], false)
             .await
     }
 
-    async fn existing_float(&self) -> Result<Float, String> {
-        self.float()
-            .await?
-            .ok_or_else(|| "no float cell found; use prepare-create".to_string())
-    }
-
-    pub async fn prepare_topup(
-        &self,
-        ckb: &str,
-        owner_lock_args: Option<&str>,
-    ) -> Result<Prepared, String> {
-        let add = ckb_to_shannons(ckb)?;
-        let f = self.existing_float().await?;
-        let owner = self.owner_lock(&f, owner_lock_args).await?;
-        let cap = f
-            .cell
-            .capacity
-            .checked_add(add)
-            .ok_or("capacity overflow")?;
-        let lock = f.cell.lock.clone();
-        self.assemble(
-            &owner,
-            vec![f.cell],
-            vec![Out::plain(lock, cap)],
-            vec![self.float_dep()],
-            false,
-        )
-        .await
-    }
-
-    /// Withdraws `ckb` to the owner; `all` closes the float cell instead.
-    pub async fn prepare_withdraw(
+    /// Unsigned transaction moving `ckb` CKB (or everything with `all`) from the payout cell to the
+    /// secp256k1 lock of `payout.lock_args`. The payout cell is spent on the anyone-can-pay
+    /// signature path; the fee comes out of the withdrawn amount. If what arrives is below a
+    /// cell's minimum capacity, it is added to one of the receiver's plain cells instead.
+    pub async fn prepare_payout_withdraw(
         &self,
         ckb: Option<&str>,
         all: bool,
-        owner_lock_args: Option<&str>,
     ) -> Result<Prepared, String> {
-        let f = self.existing_float().await?;
-        let owner = self.owner_lock(&f, owner_lock_args).await?;
-        let fixed = if all {
-            vec![]
+        let receiver = sighash_lock(self.payout_args()?);
+        let payout = self
+            .payout()
+            .await?
+            .ok_or("no payout cell found; use prepare-create")?;
+        let keep = occupied(&payout.lock, None, 0);
+        let (amount, left) = if all {
+            (payout.capacity, None)
         } else {
             let amount = ckb_to_shannons(ckb.ok_or("give --ckb N or --all")?)?;
-            let keep = occupied(&f.cell.lock, None, 0);
-            let left = f.cell.capacity.checked_sub(amount).filter(|l| *l >= keep);
-            let left = left.ok_or_else(|| {
-                format!(
-                    "the float keeps at least {} CKB (its occupied capacity); use --all to close it",
-                    keep / CKB
-                )
-            })?;
-            vec![Out::plain(f.cell.lock.clone(), left)]
+            let left = payout
+                .capacity
+                .checked_sub(amount)
+                .filter(|l| *l >= keep)
+                .ok_or_else(|| {
+                    format!(
+                        "the payout cell keeps at least {} CKB (its occupied capacity); use --all to close it",
+                        keep / CKB
+                    )
+                })?;
+            (amount, Some(left))
         };
-        self.assemble(&owner, vec![f.cell], fixed, vec![self.float_dep()], false)
-            .await
+        if amount == 0 {
+            return Err("nothing to withdraw".into());
+        }
+        let change_min = occupied(&receiver, None, 0);
+        let mut inputs = vec![payout.clone()];
+        let mut into = 0u64;
+        // Upper bound of the fee: the transaction is far below 10 KB.
+        if amount < change_min + 20_000 {
+            let cell = self
+                .plain_cells(&receiver)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    format!(
+                        "{} CKB minus the fee is below the {} CKB a cell needs, and the receiving \
+                         lock has no cell to add it to; withdraw more",
+                        amount as f64 / CKB as f64,
+                        change_min / CKB
+                    )
+                })?;
+            into = cell.capacity;
+            inputs.push(cell);
+        }
+        let deps = vec![self.secp_dep().await?, self.acp.cell_dep()];
+        let placeholder = WitnessArgs::new_builder()
+            .lock(Some(Bytes::from(vec![0u8; 65])).pack())
+            .build()
+            .as_bytes();
+        let build = |fee: u64| -> TransactionView {
+            let mut b = TransactionBuilder::default()
+                .cell_deps(deps.clone())
+                .inputs(
+                    inputs
+                        .iter()
+                        .map(|c| CellInput::new(c.out_point.clone(), 0)),
+                )
+                .witnesses(vec![placeholder.pack(); inputs.len()]);
+            let mut outs = Vec::new();
+            if let Some(left) = left {
+                outs.push(Out::plain(payout.lock.clone(), left));
+            }
+            outs.push(Out::plain(receiver.clone(), into + amount - fee));
+            for o in outs {
+                b = b
+                    .output(
+                        CellOutput::new_builder()
+                            .capacity(Pack::<packed::Uint64>::pack(&o.cap))
+                            .lock(o.lock)
+                            .build(),
+                    )
+                    .output_data(o.data.pack());
+            }
+            b.build()
+        };
+        // 2 shannons per byte (the node's minimum is 1) plus a constant.
+        let fee = build(0).data().as_slice().len() as u64 * 2 + 1000;
+        if into + amount < fee + change_min {
+            return Err("the withdrawn amount cannot cover the fee".into());
+        }
+        let tx = build(fee);
+        Ok(Prepared {
+            file: json!({
+                "transaction": serde_json::to_value(json::TransactionView::from(tx.clone()).inner)
+                    .map_err(|e| e.to_string())?,
+                "multisig_configs": {},
+                "signatures": {},
+            }),
+            fee_shannons: fee,
+            tx_hash: hx(tx.hash().as_slice()),
+        })
     }
 
     /// Tip block number, packed epoch and median time (ms) for trigger checks.
@@ -994,27 +981,27 @@ impl Chain {
         Ok(cells
             .into_iter()
             .filter_map(|c| {
-                let (peer, pk, float, exp) = parse_registry_data(&c.data)?;
-                (pk == *mine).then_some((c, peer, float, exp))
+                let (peer, pk, payout, exp) = parse_registry_data(&c.data)?;
+                (pk == *mine).then_some((c, peer, payout, exp))
             })
             .max_by_key(|r| r.3))
     }
 
     pub async fn register_status(&self) -> Result<Value, String> {
         Ok(match self.registry_cell().await? {
-            Some((c, peer, float, exp)) => json!({
+            Some((c, peer, payout, exp)) => json!({
                 "registered": true,
                 "outpoint": out_point_str(&c.out_point),
                 "peer_id": peer,
                 "attestation_expiry_ms": exp,
-                "float_lock_hash": hx(float),
+                "payout_lock_hash": hx(payout),
             }),
             None => json!({
                 "registered": false,
                 "outpoint": null,
                 "peer_id": null,
                 "attestation_expiry_ms": null,
-                "float_lock_hash": null,
+                "payout_lock_hash": null,
             }),
         })
     }
@@ -1047,10 +1034,8 @@ impl Chain {
         if att.expiry_ms <= clock {
             return Err("the attestation has expired".into());
         }
-        let float = self
-            .float()
-            .await?
-            .ok_or("no float cell found; create the float before registering")?;
+        // Tips go to the payout lock; the cell itself may be created later (anyone can).
+        let payout_lock = self.payout_lock()?;
         let runner_cell = self
             .runner_cells()
             .await?
@@ -1066,7 +1051,7 @@ impl Chain {
             .args(Bytes::from(args).pack())
             .build();
         let type_ = self.registry_type();
-        let data = Bytes::from(att.registry_data(&script_hash(&float.cell.lock)));
+        let data = Bytes::from(att.registry_data(&script_hash(&payout_lock)));
         let cap = occupied(&lock, Some(&type_), data.len());
         let registry = Out {
             lock,
@@ -1156,24 +1141,27 @@ impl Chain {
         Ok(self.live_cell(outpoint).await?.is_some())
     }
 
-    /// Everything a run transaction needs besides the job: float, runner key cell and deps.
+    /// Everything a run transaction needs besides the job: payout cell, runner key cell and deps.
     pub async fn run_context(&self) -> Result<RunContext, String> {
-        let float = self
-            .float()
+        let payout = self
+            .payout()
             .await?
-            .ok_or("no float cell found; create the float first")?;
+            .ok_or("no payout cell found; create the payout cell first")?;
         let runner = self
             .runner_cells()
             .await?
             .into_iter()
             .next()
             .ok_or("no runner key cell found")?;
-        let (registry, _, float_hash, _) = self
+        let (registry, _, payout_hash, _) = self
             .registry_cell()
             .await?
             .ok_or("this node is not registered")?;
-        if float_hash != script_hash(&float.cell.lock).as_bytes() {
-            return Err("the registry cell points to another float cell".into());
+        if payout_hash != script_hash(&payout.lock).as_bytes() {
+            return Err(
+                "the registry cell points to another payout lock (payout.lock_args changed?)"
+                    .into(),
+            );
         }
         let (config, _) = self.config_cell().await?;
         let code = |d: &Deployed| {
@@ -1189,13 +1177,13 @@ impl Chain {
                 .build()
         };
         Ok(RunContext {
-            float: float.cell,
+            payout,
             runner,
             deps: vec![
                 self.secp_dep().await?,
                 code(&self.job_lock),
                 code(&self.job_type),
-                code(&self.float),
+                self.acp.cell_dep(),
                 cell_dep(registry.out_point),
                 cell_dep(config.out_point),
             ],
@@ -1250,8 +1238,9 @@ impl Chain {
     }
 
     /// Builds and signs the run transaction of `job` on top of `ctx` (see `job-cell-standard.md`
-    /// §5): inputs `[runner key cell, job, float, skeleton inputs…]`, outputs `[runner key cell,
-    /// float + tip, recreated job | refund, skeleton outputs…]`. The fee comes from the job.
+    /// §5): inputs `[runner key cell, job, payout cell, skeleton inputs…]`, outputs `[runner key
+    /// cell, payout cell + tip, recreated job | refund, skeleton outputs…]`. The fee comes from the
+    /// job. The payout cell is spent on the anyone-can-pay path (empty witness, capacity grows).
     pub fn build_run(&self, ctx: &RunContext, job: &RunJob) -> Result<BuiltRun, String> {
         let key = self
             .service_key
@@ -1274,8 +1263,8 @@ impl Chain {
         if sk_out > sk_in {
             return Err("the transaction skeleton creates capacity it does not bring".into());
         }
-        let float_cap = ctx
-            .float
+        let payout_cap = ctx
+            .payout
             .capacity
             .checked_add(job.tip_shannons)
             .ok_or("capacity overflow")?;
@@ -1297,7 +1286,7 @@ impl Chain {
         let mut inputs = vec![
             CellInput::new(ctx.runner.out_point.clone(), 0),
             CellInput::new(job_op, job.since),
-            CellInput::new(ctx.float.out_point.clone(), 0),
+            CellInput::new(ctx.payout.out_point.clone(), 0),
         ];
         let mut deps = ctx.deps.clone();
         let mut header_deps = Vec::new();
@@ -1355,8 +1344,8 @@ impl Chain {
                 .output_data(Bytes::new().pack())
                 .output(
                     CellOutput::new_builder()
-                        .capacity(Pack::<packed::Uint64>::pack(&float_cap))
-                        .lock(ctx.float.lock.clone())
+                        .capacity(Pack::<packed::Uint64>::pack(&payout_cap))
+                        .lock(ctx.payout.lock.clone())
                         .build(),
                 )
                 .output_data(Bytes::new().pack())
@@ -1392,10 +1381,10 @@ impl Chain {
                 out_point: op(0),
                 ..ctx.runner.clone()
             },
-            float: Cell {
+            payout: Cell {
                 out_point: op(1),
-                capacity: float_cap,
-                ..ctx.float.clone()
+                capacity: payout_cap,
+                ..ctx.payout.clone()
             },
             deps: ctx.deps.clone(),
         };
@@ -1519,11 +1508,11 @@ impl Chain {
     }
 }
 
-/// Float, runner key cell and cell deps of run transactions; advanced after each submitted run
-/// so that runs of one batch chain on each other's outputs.
+/// Payout cell, runner key cell and cell deps of run transactions; advanced after each submitted
+/// run so that runs of one batch chain on each other's outputs.
 #[derive(Clone)]
 pub struct RunContext {
-    pub float: Cell,
+    pub payout: Cell,
     pub runner: Cell,
     deps: Vec<CellDep>,
 }
@@ -1584,6 +1573,20 @@ mod tests {
             format!("{:x}", d.registry.code_hash),
             "47fee83ea91eabdfc8827045f63fe051b8fee5c05b9280a35f42f2e3597d3f36"
         );
+        assert_eq!(
+            format!("{:x}", d.acp.code_hash),
+            "3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356"
+        );
+        assert_eq!(d.acp.hash_type, ScriptHashType::Type);
+        assert_eq!(d.acp.dep_type, DepType::DepGroup);
+        assert_eq!(d.registry.dep_type, DepType::Code);
+    }
+
+    #[test]
+    fn deployments_reject_unknown_dep_type() {
+        let mut v: Value = serde_json::from_str(TESTNET_DEPLOYMENTS).unwrap();
+        v["scripts"]["anyone_can_pay"]["dep_type"] = json!("group");
+        assert!(parse_deployments(&v.to_string(), "x").is_err());
     }
 
     use super::*;
@@ -1611,11 +1614,21 @@ mod tests {
         }))
         .unwrap();
         let data = att.registry_data(&H256::from_slice(&[7u8; 32]).unwrap());
-        let (peer, pk, float, exp) = parse_registry_data(&data).unwrap();
+        let (peer, pk, payout, exp) = parse_registry_data(&data).unwrap();
         assert_eq!(peer, "QmPeer");
         assert_eq!(pk.len(), 33);
-        assert_eq!(float, vec![7u8; 32]);
+        assert_eq!(payout, vec![7u8; 32]);
         assert_eq!(exp, 12345);
+    }
+
+    #[test]
+    fn registry_v2_vector_parses() {
+        let v = "7501000020000000540000007500000095000000960000004d0100005101000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27777777777777777777777777777777777777777777777777777777777777777701b7000000180000004c0000006d0000006e0000007600000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f270100505c18a301000004d5db9878eceb46d700d0c55677777b3b1d2a401773b24dae15789c071ef7d36794160555e176e0b1ca6b997892e7c9ce7320b2a2016e3102c46a495421ed5f01000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a03000000";
+        let (peer, pk, payout, exp) = parse_registry_data(&hex::decode(v).unwrap()).unwrap();
+        assert_eq!(peer, "QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB");
+        assert_eq!(pk[0], 2);
+        assert_eq!(payout, vec![0x77u8; 32]);
+        assert_eq!(exp, 1_800_000_000_000);
     }
 
     #[test]
@@ -1626,8 +1639,8 @@ mod tests {
     }
 
     #[test]
-    fn float_cell_occupies_113_ckb() {
-        let l = sighash_lock(&[0; 72]);
-        assert_eq!(occupied(&l, None, 0), 113 * CKB);
+    fn payout_cell_occupies_61_ckb() {
+        let l = sighash_lock(&[0; 20]);
+        assert_eq!(occupied(&l, None, 0), 61 * CKB);
     }
 }

@@ -31,18 +31,14 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/services", get(services))
         .route("/api/services/{hash}/{verb}", post(service_action))
         .route("/api/runner-cell", get(super::operator::runner_cell))
-        .route("/api/float", get(super::operator::float_status))
+        .route("/api/payout", get(super::operator::payout_status))
         .route(
-            "/api/float/prepare-create",
-            post(super::operator::prepare_create),
+            "/api/payout/prepare-create",
+            post(super::operator::payout_prepare_create),
         )
         .route(
-            "/api/float/prepare-topup",
-            post(super::operator::prepare_topup),
-        )
-        .route(
-            "/api/float/prepare-withdraw",
-            post(super::operator::prepare_withdraw),
+            "/api/payout/prepare-withdraw",
+            post(super::operator::payout_prepare_withdraw),
         )
         .route("/api/registry", get(super::operator::registry_status))
         .route(
@@ -190,7 +186,7 @@ async fn job(State(s): St, Path(id): Path<String>) -> Response {
     }
 }
 
-/// Settlements verified on chain; the float balance is read from the node.
+/// Settlements verified on chain; the payout cell balance is read from the node.
 async fn earnings(State(s): St) -> Response {
     let mut v = match crate::keeper::earnings_json(&s) {
         Ok(v) => v,
@@ -198,8 +194,8 @@ async fn earnings(State(s): St) -> Response {
     };
     let cfg = s.config.read().unwrap().clone();
     if let Ok(c) = crate::chain::Chain::connect(&cfg, &s.service_pubkey).await {
-        if let Ok(f) = c.float_status().await {
-            v["float"]["capacity_shannons"] = f["capacity_shannons"].clone();
+        if let Ok(p) = c.payout_status().await {
+            v["payout"]["capacity_shannons"] = p["capacity_shannons"].clone();
         }
     }
     Json(v).into_response()

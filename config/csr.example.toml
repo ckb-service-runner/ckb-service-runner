@@ -39,3 +39,8 @@ per_service_quota_mb = 64           # <= total_quota_mb
 
 [logging]
 level = "info"                      # error | warn | info | debug | trace
+
+[payout]
+# Tips go to your payout cell: an anyone-can-pay cell with these 20-byte args (usually the blake160 of
+# your wallet key, i.e. its secp256k1 lock args). Empty = not set up yet (`csr payout …` refuses to run).
+lock_args = ""                      # "" or 0x + 40 hex digits

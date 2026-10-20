@@ -212,6 +212,28 @@ impl Chain {
         Err("secp256k1_blake160 dep group not found in the genesis block".into())
     }
 
+    /// Code cell dep of the genesis output whose type script hash is `type_hash` (e.g. the DAO).
+    pub fn genesis_code_dep(&self, type_hash: &[u8]) -> Result<CellDep, String> {
+        let block = self.rpc.call("get_block_by_number", json!(["0x0"]))?;
+        let block: json::BlockView = serde_json::from_value(block).map_err(|e| e.to_string())?;
+        for tx in &block.transactions {
+            for (i, o) in tx.inner.outputs.iter().enumerate() {
+                let Some(t) = o.type_.clone() else { continue };
+                if packed::Script::from(t).calc_script_hash().as_slice() == type_hash {
+                    let op = OutPoint::new_builder()
+                        .tx_hash(tx.hash.pack())
+                        .index(Pack::<packed::Uint32>::pack(&(i as u32)))
+                        .build();
+                    return Ok(CellDep::new_builder()
+                        .out_point(op)
+                        .dep_type(packed::Byte::new(DepType::Code as u8))
+                        .build());
+                }
+            }
+        }
+        Err(format!("no genesis cell with type hash {}", h(type_hash)))
+    }
+
     /// Spends the key's plain cells to pay `outs` plus the fee; change goes back to the key.
     pub fn build_funded(
         &self,

@@ -16,6 +16,7 @@ pub struct Config {
     pub limits: LimitsCfg,
     pub storage: StorageCfg,
     pub logging: LoggingCfg,
+    pub payout: PayoutCfg,
     /// Only valid with `network = "devnet"` (debug builds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub devnet: Option<DevnetCfg>,
@@ -85,6 +86,14 @@ pub struct StorageCfg {
     pub per_service_quota_mb: u64,
 }
 
+/// The operator's payout cell: an anyone-can-pay cell that receives the job tips.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct PayoutCfg {
+    /// `0x` + 20 bytes of anyone-can-pay args (usually the operator's blake160), or empty.
+    pub lock_args: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct LoggingCfg {
@@ -103,6 +112,7 @@ impl Default for Config {
             limits: LimitsCfg::default(),
             storage: StorageCfg::default(),
             logging: LoggingCfg::default(),
+            payout: PayoutCfg::default(),
             devnet: None,
         }
     }
@@ -371,7 +381,26 @@ impl Config {
         if self.storage.per_service_quota_mb > self.storage.total_quota_mb {
             return Err("storage.per_service_quota_mb must be <= storage.total_quota_mb".into());
         }
+        self.payout.args()?;
         Ok(())
+    }
+}
+
+impl PayoutCfg {
+    /// The 20 anyone-can-pay args bytes; `None` if not configured.
+    pub fn args(&self) -> Result<Option<Vec<u8>>, String> {
+        let s = self.lock_args.as_str();
+        if s.is_empty() {
+            return Ok(None);
+        }
+        let bad = || {
+            format!("payout.lock_args must be empty or 0x + 40 hex digits (20 bytes), got \"{s}\"")
+        };
+        let h = s.strip_prefix("0x").ok_or_else(bad)?;
+        if h.len() != 40 {
+            return Err(bad());
+        }
+        hex::decode(h).map(Some).map_err(|_| bad())
     }
 }
 
@@ -448,6 +477,22 @@ mod tests {
         assert_eq!(Config::parse(dev).is_ok(), cfg!(debug_assertions));
         assert!(Config::parse("[devnet]\ndeployments = \"d.json\"").is_err());
         assert!(Config::parse("network = \"mainnet\"\n[devnet]\ndeployments = \"x\"").is_err());
+    }
+
+    #[test]
+    fn payout_lock_args_rule() {
+        Config::parse("[payout]\nlock_args = \"\"").unwrap();
+        let a = format!("0x{}", "ab".repeat(20));
+        let c = Config::parse(&format!("[payout]\nlock_args = \"{a}\"")).unwrap();
+        assert_eq!(c.payout.args().unwrap(), Some(vec![0xab; 20]));
+        for bad in [
+            "0x1234",
+            "ab".repeat(20).as_str(),
+            &format!("0x{}", "zz".repeat(20)),
+        ] {
+            let e = err(&format!("[payout]\nlock_args = \"{bad}\""));
+            assert!(e.contains("payout.lock_args"), "{e}");
+        }
     }
 
     #[test]
