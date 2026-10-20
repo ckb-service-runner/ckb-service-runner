@@ -14,6 +14,10 @@ use ckb_testtool::ckb_types::prelude::*;
 use ckb_testtool::context::Context;
 use std::path::PathBuf;
 
+/// The contract's own consent text, digest and signature parsing (`csr-registry`), so the vectors test its code.
+#[path = "../../csr-registry/src/consent.rs"]
+pub mod consent;
+
 pub const MAX_CYCLES: u64 = 70_000_000;
 pub const CKB: u64 = 100_000_000;
 
@@ -226,6 +230,46 @@ impl Env {
         }
     }
 
+    /// A runner wallet cell: a plain cell of the runner's own system lock (`runner.lock`).
+    pub fn runner_wallet_cell(&mut self, runner: &Key, capacity: u64) -> OutPoint {
+        self.cell(capacity, runner.lock.clone(), None, Bytes::new())
+    }
+
+    /// Registration owned by the runner (`spec/registry.md` "Runner wallet"): inputs `[runner wallet cell]`,
+    /// outputs `[registry cell (minimal capacity, dual lock runner ‖ runner), wallet change]`, cell deps
+    /// `[stake of the data, config cell]`, and `consent` (if any) in `WitnessArgs.output_type` of witness 0.
+    /// The stake deposit must exist. Sign with the runner key only.
+    pub fn registry_create_runner_owned_tx(
+        &mut self,
+        runner: &Key,
+        reg_type: Script,
+        data: Bytes,
+        config: &OutPoint,
+        consent: Option<&[u8]>,
+    ) -> TransactionView {
+        const WALLET: u64 = 1000 * CKB;
+        const FEE: u64 = 100_000;
+        let stake = registry_stake(&data);
+        let reg_lock = self.dual_lock_script(&runner.lock_hash(), &runner.lock_hash());
+        let w = self.runner_wallet_cell(runner, WALLET);
+        let reg_cap = min_capacity(&reg_lock, Some(&reg_type), data.len());
+        let tx = tx_with(
+            vec![self.input(&w, 0)],
+            vec![
+                (output(reg_cap, reg_lock, Some(reg_type)), data),
+                (output(WALLET - reg_cap - FEE, runner.lock.clone(), None), Bytes::new()),
+            ],
+        )
+        .as_advanced_builder()
+        .cell_dep(cell_dep(&stake))
+        .cell_dep(cell_dep(config))
+        .build();
+        match consent {
+            Some(sig) => with_consent(tx, sig),
+            None => tx,
+        }
+    }
+
     /// Builds an input for a live cell with the given `since` (0 = none).
     pub fn input(&self, op: &OutPoint, since: u64) -> CellInput {
         CellInput::new_builder().previous_output(op.clone()).since(ckb_testtool::ckb_types::packed::Uint64::from(since)).build()
@@ -323,7 +367,10 @@ pub fn sign_tx(ctx: &Context, tx: TransactionView, keys: &[&Key]) -> Transaction
         let want = key.lock.calc_script_hash();
         let group: Vec<usize> = (0..n_in).filter(|&i| lock_hash_of(i) == want).collect();
         let Some(&first) = group.first() else { continue };
-        let zero_lock = packed::WitnessArgs::new_builder().lock(Some(Bytes::from(vec![0u8; 65])).pack()).build();
+        // An existing `WitnessArgs` (e.g. with the consent in `output_type`) keeps its other fields: sighash_all
+        // covers them, the lock is zeroed while hashing.
+        let existing = packed::WitnessArgs::from_slice(&witnesses[first]).unwrap_or_default();
+        let zero_lock = existing.clone().as_builder().lock(Some(Bytes::from(vec![0u8; 65])).pack()).build();
         let mut hasher = new_blake2b();
         hasher.update(tx.hash().as_slice());
         let w0 = zero_lock.as_bytes();
@@ -344,12 +391,56 @@ pub fn sign_tx(ctx: &Context, tx: TransactionView, keys: &[&Key]) -> Transaction
             .sign_recoverable(&msg.into())
             .expect("sign")
             .serialize();
-        witnesses[first] = packed::WitnessArgs::new_builder()
-            .lock(Some(Bytes::from(sig)).pack())
-            .build()
-            .as_bytes();
+        witnesses[first] = existing.as_builder().lock(Some(Bytes::from(sig)).pack()).build().as_bytes();
     }
     tx.as_advanced_builder().set_witnesses(witnesses.into_iter().map(|w| w.pack()).collect()).build()
+}
+
+/// `tx` with witness `i` set to a `WitnessArgs` whose `output_type` (or `input_type` with `in_input_type`) is
+/// `bytes`; other fields of an existing `WitnessArgs` are kept, missing witnesses are created empty.
+pub fn with_witness_type(tx: TransactionView, i: usize, bytes: &[u8], in_input_type: bool) -> TransactionView {
+    let mut witnesses: Vec<Bytes> = tx.witnesses().into_iter().map(|w| w.unpack()).collect();
+    while witnesses.len() <= i {
+        witnesses.push(Bytes::new());
+    }
+    let w = packed::WitnessArgs::from_slice(&witnesses[i]).unwrap_or_default().as_builder();
+    let field = Some(Bytes::copy_from_slice(bytes)).pack();
+    let w = if in_input_type { w.input_type(field) } else { w.output_type(field) };
+    witnesses[i] = w.build().as_bytes();
+    tx.as_advanced_builder().set_witnesses(witnesses.into_iter().map(|w| w.pack()).collect()).build()
+}
+
+/// `tx` with the consent signature in `WitnessArgs.output_type` of witness 0 (the registry output is output 0).
+pub fn with_consent(tx: TransactionView, sig: &[u8]) -> TransactionView {
+    with_witness_type(tx, 0, sig, false)
+}
+
+/// 65-byte recoverable signature `r ‖ s ‖ v` (v 0/1, low-S) of `key` over `digest`.
+pub fn sign_digest(key: &Key, digest: &[u8; 32]) -> [u8; 65] {
+    key.privkey.sign_recoverable(&(*digest).into()).expect("sign").serialize().try_into().unwrap()
+}
+
+/// The same signature with `s → n − s` and the recovery id's low bit flipped (high-S form).
+pub fn to_high_s(sig: &[u8; 65]) -> [u8; 65] {
+    const N: [u8; 32] = [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0xba, 0xae, 0xdc,
+        0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
+    ];
+    let mut out = *sig;
+    let mut borrow = 0i16;
+    for i in (0..32).rev() {
+        let d = N[i] as i16 - sig[32 + i] as i16 - borrow;
+        borrow = (d < 0) as i16;
+        out[32 + i] = (d + 256 * borrow) as u8;
+    }
+    out[64] ^= 1;
+    out
+}
+
+/// Compressed public key recovered from a 65-byte `r ‖ s ‖ v` signature (v 0/1) over `digest`.
+pub fn recover_pubkey(digest: &[u8; 32], sig: &[u8]) -> [u8; 33] {
+    let sig = ckb_testtool::ckb_crypto::secp::Signature::from_slice(sig).expect("signature");
+    sig.recover(&(*digest).into()).expect("recover").serialize().try_into().unwrap()
 }
 
 /// Minimal transaction skeleton with the given inputs/outputs (no cell deps; `Env::verify` adds them).
@@ -461,6 +552,26 @@ impl RegistryFields {
     /// Data with a valid attestation signed by `monitor`.
     pub fn signed_data(&self, monitor: &Key, expiry_ms: u64) -> Bytes {
         self.data(&self.attestation_fields(expiry_ms).sign(monitor))
+    }
+
+    /// The consent text of this entry (`spec/registry.md` §4.2), built by the contract's `consent.rs`.
+    pub fn consent_text(&self) -> Vec<u8> {
+        let stake: [u8; 36] = self.stake.as_slice().try_into().unwrap();
+        let mut text = Vec::new();
+        consent::consent_text(self.network, &stake, &self.service_pubkey, &self.peer_id, &mut |p| text.extend_from_slice(p))
+            .expect("known network");
+        text
+    }
+
+    /// The digest the stake owner signs: blake2b-256("Nervos Message:" ‖ text).
+    pub fn consent_digest(&self) -> [u8; 32] {
+        let stake: [u8; 36] = self.stake.as_slice().try_into().unwrap();
+        consent::consent_digest(self.network, &stake, &self.service_pubkey, &self.peer_id).expect("known network")
+    }
+
+    /// The stake owner's consent signature (as Neuron's "Sign message" makes it).
+    pub fn consent_signature(&self, stake_owner: &Key) -> [u8; 65] {
+        sign_digest(stake_owner, &self.consent_digest())
     }
 }
 

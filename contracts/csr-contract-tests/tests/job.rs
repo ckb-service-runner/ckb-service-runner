@@ -742,3 +742,59 @@ fn job_registry_type_hash_is_lock_args() {
     let want: [u8; 32] = s.reg_type.calc_script_hash().unpack();
     assert_eq!(s.job_lock.args().raw_data().as_ref(), &want);
 }
+
+// --- tips into the runner wallet (A8) -----------------------------------------------------------
+
+impl S {
+    /// A registry cell dep like `self.registry`, but owned by the runner (dual lock `runner ‖ runner`) with
+    /// `payout_lock_hash` = the runner lock (the runner wallet).
+    fn runner_wallet_registry(&mut self) -> OutPoint {
+        let (cell, data) = self.env.ctx.get_cell(&self.registry).unwrap();
+        let runner = self.service.lock_hash();
+        let data = csr_schemas::Registry::new_unchecked(data)
+            .as_builder()
+            .payout_lock_hash(csr_schemas::Byte32::new_unchecked(Bytes::copy_from_slice(&runner)))
+            .build()
+            .as_bytes();
+        let dual = self.env.dual_lock_script(&runner, &runner);
+        self.env.ctx.create_cell(cell.as_builder().lock(dual).build(), data)
+    }
+
+    /// Settlement into the runner wallet: inputs `[job, runner wallet cell]`, outputs
+    /// `[runner wallet cell + wallet_gain, refund of `refund`]`.
+    fn run_into_wallet(&mut self, wallet_gain: u64, refund: u64) -> Result<u64, CkbError> {
+        let registry = self.runner_wallet_registry();
+        let j = self.job(Trigger::OnDemand, 1);
+        let (op, _) = self.live_job(&j);
+        let w = self.env.runner_wallet_cell(&self.service, WALLET);
+        let tx = tx_with(
+            vec![self.env.input(&op, 0), self.env.input(&w, 0)],
+            vec![(output(WALLET + wallet_gain, self.service.lock.clone(), None), Bytes::new()), self.refund_output(refund)],
+        )
+        .as_advanced_builder()
+        .cell_dep(cell_dep(&registry))
+        .cell_dep(cell_dep(&self.config))
+        .build();
+        let service = &self.service;
+        self.env.verify_signed(tx, &[service])
+    }
+}
+
+#[test]
+fn job_tip_to_runner_wallet_ok() {
+    // The fee comes from the job (refund = capacity − tip − max_fee); the wallet grows by exactly the tip.
+    let mut s = setup();
+    let j = s.job(Trigger::OnDemand, 1);
+    let cap = s.required(&j);
+    let cycles = s.run_into_wallet(TIP, cap - TIP - MAX_FEE).expect("tip into the runner wallet");
+    println!("settlement into the runner wallet: {cycles} cycles");
+}
+
+#[test]
+fn job_tip_to_runner_wallet_paying_fee_rejected() {
+    // The job refunds everything but the tip and the wallet cell pays the fee: net inflow = tip − fee < tip.
+    let mut s = setup();
+    let j = s.job(Trigger::OnDemand, 1);
+    let cap = s.required(&j);
+    assert_lock_error(s.run_into_wallet(TIP - FEE, cap - TIP), 11);
+}

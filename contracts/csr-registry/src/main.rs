@@ -2,7 +2,7 @@
 #![no_std]
 #![no_main]
 
-
+mod consent;
 mod mol;
 
 use alloc::vec::Vec;
@@ -32,7 +32,12 @@ const ERR_NO_RUNNER_KEY: i8 = 17;
 const ERR_STAKE_DEP: i8 = 18;
 const ERR_STAKE_NOT_DEPOSIT: i8 = 19;
 const ERR_STAKE_CAPACITY: i8 = 20;
-const ERR_STAKE_OWNER: i8 = 21;
+/// Stake rule 4: the stake owner is no input and the registry output's witness has no `output_type`.
+const ERR_STAKE_NO_CONSENT: i8 = 21;
+/// Stake rule 4: the consent signature is malformed (length, recovery byte, r/s).
+const ERR_CONSENT_SIGNATURE: i8 = 22;
+/// Stake rule 4: the consent signature was not made by the stake owner over this registration's text.
+const ERR_CONSENT_MISMATCH: i8 = 23;
 
 /// Minimum capacity of the stake deposit: 10,000 CKB.
 const MIN_STAKE: u64 = 1_000_000_000_000;
@@ -227,8 +232,13 @@ fn attestation_message(r: &Registry) -> [u8; 32] {
 
 /// Recovers the compressed public key from a 65-byte `r ‖ s ‖ recovery_id` signature (low-S required).
 fn recover(msg: &[u8; 32], sig: &[u8; 65]) -> Option<[u8; 33]> {
-    let recid = RecoveryId::from_byte(sig[64])?;
-    let signature = Signature::from_slice(&sig[..64]).ok()?;
+    recover_parts(msg, &sig[..64], sig[64])
+}
+
+/// Recovers the compressed public key from `r ‖ s` (64 bytes, low-S) and a recovery id 0–3.
+fn recover_parts(msg: &[u8; 32], rs: &[u8], recid: u8) -> Option<[u8; 33]> {
+    let recid = RecoveryId::from_byte(recid)?;
+    let signature = Signature::from_slice(rs).ok()?;
     let vk = VerifyingKey::recover_from_prehash(msg, &signature, recid).ok()?;
     vk.to_encoded_point(true).as_bytes().try_into().ok()
 }
@@ -248,6 +258,17 @@ fn secp_lock_hash(code_hash: &[u8; 32], hash_type: u8, blake160: &[u8]) -> [u8; 
     blake2b_256(&[&s])
 }
 
+/// Whether `lock_hash` is one of the four accepted `secp256k1_blake160_sighash_all` locks with `args = blake160`.
+fn is_sighash_lock_of(lock_hash: &[u8], blake160: &[u8]) -> bool {
+    let candidates = [
+        (&SECP_TYPE_HASH, HASH_TYPE_TYPE),
+        (&SECP_DATA_HASH, HASH_TYPE_DATA),
+        (&SECP_DATA_HASH, HASH_TYPE_DATA1),
+        (&SECP_DATA_HASH, HASH_TYPE_DATA2),
+    ];
+    candidates.iter().any(|(c, t)| secp_lock_hash(c, *t, blake160)[..] == *lock_hash)
+}
+
 /// Rule 5: the lock is `csr-dual-lock` and its runner hash is the system lock of `service_pubkey`.
 fn check_lock(lock: &[u8], service_pubkey: &[u8]) -> Result<(), i8> {
     let (code_hash, hash_type, args) = mol::script(lock).ok_or(ERR_LOCK)?;
@@ -257,15 +278,8 @@ fn check_lock(lock: &[u8], service_pubkey: &[u8]) -> Result<(), i8> {
     if args.len() != 64 {
         return Err(ERR_LOCK);
     }
-    let runner = &args[32..64];
     let b160 = &blake2b_256(&[service_pubkey])[..20];
-    let candidates = [
-        (&SECP_TYPE_HASH, HASH_TYPE_TYPE),
-        (&SECP_DATA_HASH, HASH_TYPE_DATA),
-        (&SECP_DATA_HASH, HASH_TYPE_DATA1),
-        (&SECP_DATA_HASH, HASH_TYPE_DATA2),
-    ];
-    if candidates.iter().any(|(c, t)| secp_lock_hash(c, *t, b160)[..] == *runner) {
+    if is_sighash_lock_of(&args[32..64], b160) {
         Ok(())
     } else {
         Err(ERR_LOCK)
@@ -370,9 +384,10 @@ fn raw_cell_deps() -> Result<Vec<u8>, i8> {
 }
 
 /// Stake rules 1–4 (`spec/registry.md` §4.1): the registry's `stake` is a code cell dep at a position where its
-/// raw index equals its `Source::CellDep` index, it is a Nervos DAO deposit of at least `MIN_STAKE`, and it is
-/// owned by the registry owner (`owner_lock_hash`, the dual lock's `args[0..32]`).
-fn check_stake(stake: &[u8; 36], owner_lock_hash: &[u8]) -> Result<(), i8> {
+/// raw index equals its `Source::CellDep` index, it is a Nervos DAO deposit of at least `MIN_STAKE`, and its
+/// owner (the deposit's lock hash, not necessarily the registry owner) consents.
+fn check_stake(r: &Registry) -> Result<(), i8> {
+    let stake = r.stake;
     // 1. position j: the stake entry is code and so is every entry before it
     let deps = raw_cell_deps()?;
     let mut found = None;
@@ -403,13 +418,42 @@ fn check_stake(stake: &[u8; 36], owner_lock_hash: &[u8]) -> Result<(), i8> {
         return Err(ERR_STAKE_CAPACITY);
     }
 
-    // 4. owned by the registry owner
-    let mut lock_hash = [0u8; 32];
-    syscalls::load_cell_by_field(&mut lock_hash, 0, j, Source::CellDep, CellField::LockHash).map_err(sys)?;
-    if lock_hash[..] != *owner_lock_hash {
-        return Err(ERR_STAKE_OWNER);
+    // 4. the stake owner consents
+    let mut stake_owner = [0u8; 32];
+    syscalls::load_cell_by_field(&mut stake_owner, 0, j, Source::CellDep, CellField::LockHash).map_err(sys)?;
+    check_consent(r, &stake_owner)
+}
+
+/// `Some(content)` of a molecule `BytesOpt` (empty = `None`).
+fn bytes_opt(b: &[u8]) -> Option<Option<&[u8]>> {
+    if b.is_empty() {
+        Some(None)
+    } else {
+        mol::bytes(b).map(Some)
     }
-    Ok(())
+}
+
+/// Stake rule 4: an input with the stake owner's lock hash, or a signature of the stake owner over the consent
+/// text in `WitnessArgs.output_type` of the registry output's witness.
+fn check_consent(r: &Registry, stake_owner: &[u8; 32]) -> Result<(), i8> {
+    if input_with_lock_hash(stake_owner)? {
+        return Ok(());
+    }
+    let witness = load_all(|b, o| syscalls::load_witness(b, o, 0, Source::GroupOutput)).map_err(|_| ERR_STAKE_NO_CONSENT)?;
+    let [_, _, output_type] = mol::table::<3>(&witness).ok_or(ERR_STAKE_NO_CONSENT)?;
+    let sig = bytes_opt(output_type).ok_or(ERR_STAKE_NO_CONSENT)?.ok_or(ERR_STAKE_NO_CONSENT)?;
+    let (rs, recid) = consent::parse_signature(sig).ok_or(ERR_CONSENT_SIGNATURE)?;
+    Signature::from_slice(&rs).map_err(|_| ERR_CONSENT_SIGNATURE)?;
+
+    let peer_id = mol::bytes(r.peer_id).ok_or(ERR_DATA)?;
+    let service_pubkey: &[u8; 33] = r.service_pubkey.try_into().map_err(|_| ERR_DATA)?;
+    let digest = consent::consent_digest(r.network[0], r.stake, service_pubkey, peer_id).ok_or(ERR_DATA)?;
+    let pubkey = recover_parts(&digest, &rs, recid).ok_or(ERR_CONSENT_MISMATCH)?;
+    if is_sighash_lock_of(stake_owner, &blake2b_256(&[&pubkey])[..20]) {
+        Ok(())
+    } else {
+        Err(ERR_CONSENT_MISMATCH)
+    }
 }
 
 /// Owner hash (`args[0..32]`) of a registry cell's dual lock.
@@ -484,7 +528,7 @@ fn run() -> Result<(), i8> {
         check_runner_key(&out_lock)?;
     }
     if need_stake {
-        check_stake(out.stake, owner_hash(&out_lock)?)?;
+        check_stake(&out)?;
     }
     Ok(())
 }

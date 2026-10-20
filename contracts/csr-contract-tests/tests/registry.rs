@@ -114,6 +114,19 @@ impl S {
         extra: Option<&Key>,
         deps: Vec<OutPoint>,
     ) -> Result<u64, CkbError> {
+        self.spend_full(key_is_owner, registry, extra, deps, None)
+    }
+
+    /// Like `spend_with_deps`, plus `witness0`: bytes put into `WitnessArgs.output_type` (or `input_type` with
+    /// `true`) of witness 0, the registry output's witness (e.g. the stake owner's consent).
+    fn spend_full(
+        &mut self,
+        key_is_owner: bool,
+        registry: Option<(u64, Script, Bytes)>,
+        extra: Option<&Key>,
+        deps: Vec<OutPoint>,
+        witness0: Option<(&[u8], bool)>,
+    ) -> Result<u64, CkbError> {
         let (reg, reg_cap) = self.live_registry();
         let key = if key_is_owner { &self.owner } else { &self.service };
         let key_lock = key.lock.clone();
@@ -132,7 +145,10 @@ impl S {
             outputs.push((output(KEY_CELL, x.lock.clone(), None), Bytes::new()));
         }
         let tx = tx_with(inputs, outputs).as_advanced_builder().cell_dep(cell_dep(&self.config)).build();
-        let tx = with_deps_first(tx, deps.iter().map(cell_dep).collect());
+        let mut tx = with_deps_first(tx, deps.iter().map(cell_dep).collect());
+        if let Some((bytes, in_input_type)) = witness0 {
+            tx = with_witness_type(tx, 0, bytes, in_input_type);
+        }
         let key = if key_is_owner { &self.owner } else { &self.service };
         let mut keys = vec![key];
         keys.extend(extra);
@@ -159,8 +175,8 @@ fn registry_create_with_valid_attestation_ok() {
 
 #[test]
 fn registry_create_cycles_of_type_script() {
-    // Cycles of the registry type script alone: creation tx with an always-success wallet and the runner key
-    // cell (rule 6), minus a baseline tx that only spends the same key cell.
+    // Cycles of the registry type script alone: creation tx with an always-success wallet, the runner key
+    // cell (rule 6) and a consent signature, minus a baseline tx that only spends the same key cell.
     let mut s = setup();
     let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
     let anyone = s.env.always_success_script(b"wallet");
@@ -179,6 +195,8 @@ fn registry_create_cycles_of_type_script() {
     .cell_dep(cell_dep(&s.stake))
     .cell_dep(cell_dep(&s.config))
     .build();
+    // The stake owner is no input: its consent signature is checked (the more expensive path of stake rule 4).
+    let tx = with_consent(tx, &s.fields.consent_signature(&s.owner));
     let total = s.env.verify_signed(tx, &[&s.service]).expect("create");
     let k = s.env.cell(KEY_CELL, s.service.lock.clone(), None, Bytes::new());
     let base = tx_with(vec![s.env.input(&k, 0)], vec![(output(KEY_CELL - FEE, s.service.lock.clone(), None), Bytes::new())]);
@@ -746,7 +764,8 @@ fn registry_create_stake_below_min_rejected() {
 }
 
 #[test]
-fn registry_create_stake_of_other_owner_rejected() {
+fn registry_create_stake_of_other_owner_without_consent_rejected() {
+    // A deposit of somebody else who is no input and gave no consent signature.
     let mut s = setup();
     let other = s.env.new_key();
     let stake = s.env.stake(other.lock.clone());
@@ -800,18 +819,6 @@ fn registry_owner_changes_stake_without_dep_rejected() {
 }
 
 #[test]
-fn registry_owner_changes_owner_with_old_deposit_rejected() {
-    // The owner hands the registration to a new owner, keeping the old owner's deposit as stake.
-    let mut s = setup();
-    let new_owner = s.env.new_key();
-    let lock = s.env.dual_lock_script(&new_owner.lock_hash(), &s.service.lock_hash());
-    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
-    let cap = s.reg_cap();
-    let stake = s.stake.clone();
-    assert_script_error(s.spend_with_deps(true, Some((cap, lock, data)), None, vec![stake]), "Inputs[0].Type", 21);
-}
-
-#[test]
 fn registry_owner_changes_owner_with_new_deposit_ok() {
     let mut s = setup();
     let new_owner = s.env.new_key();
@@ -821,7 +828,10 @@ fn registry_owner_changes_owner_with_new_deposit_ok() {
     f.stake = new_stake.clone();
     let data = f.signed_data(&s.monitor, EXPIRY_MS);
     let cap = s.reg_cap();
-    s.spend_with_deps(true, Some((cap, lock, data)), None, vec![new_stake]).expect("owner transfer with new deposit");
+    // the new owner (the new stake owner) is no input: it consents by signature
+    let consent = f.consent_signature(&new_owner);
+    s.spend_full(true, Some((cap, lock, data)), None, vec![new_stake], Some((&consent, false)))
+        .expect("owner transfer with new deposit");
 }
 
 #[test]
@@ -832,6 +842,405 @@ fn registry_owner_changes_owner_without_stake_dep_rejected() {
     let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
     let cap = s.reg_cap();
     assert_script_error(s.spend(true, Some((cap, lock, data))), "Inputs[0].Type", 18);
+}
+
+// --- consent: the stake owner signs a message (A8, D-A8-1) ---------------------------------------
+
+impl S {
+    /// A staker: a key that owns a fresh `MIN_STAKE` deposit and is neither the registry owner nor an input.
+    /// Returns (key, deposit).
+    fn staker(&mut self) -> (Key, OutPoint) {
+        let k = self.env.new_key();
+        let stake = self.env.stake(k.lock.clone());
+        (k, stake)
+    }
+
+    /// Owner-owned creation (`create_tx`) with `f` as the registry fields and `consent` (if any) in
+    /// `WitnessArgs.output_type` of witness 0 (or `input_type` with `in_input_type`).
+    fn create_with_consent(&mut self, f: &RegistryFields, consent: Option<&[u8]>, in_input_type: bool) -> Result<u64, CkbError> {
+        let data = f.signed_data(&self.monitor, EXPIRY_MS);
+        let dual = self.dual.clone();
+        let mut tx = self.create_tx(data, dual, true);
+        if let Some(sig) = consent {
+            tx = with_witness_type(tx, 0, sig, in_input_type);
+        }
+        self.verify_create(tx)
+    }
+
+    /// Fields with the stake of `stake`.
+    fn fields_with_stake(&self, stake: &OutPoint) -> RegistryFields {
+        RegistryFields { stake: stake.clone(), ..self.fields.clone() }
+    }
+}
+
+#[test]
+fn registry_create_with_consent_signature_ok() {
+    // The stake owner is no input; it signed the consent text (Neuron "Sign message").
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let sig = f.consent_signature(&staker);
+    let cycles = s.create_with_consent(&f, Some(&sig), false).expect("consent by signature");
+    println!("registry creation with consent signature: {cycles} cycles (whole transaction incl. system locks)");
+}
+
+#[test]
+fn registry_create_with_stake_owner_input_ok() {
+    // The A7 way: the stake owner's cell is an input (here a staker that is not the registry owner).
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let dual = s.dual.clone();
+    let tx = s.create_tx(data, dual, true);
+    let sc = s.env.cell(KEY_CELL, staker.lock.clone(), None, Bytes::new());
+    let tx = tx
+        .as_advanced_builder()
+        .input(s.env.input(&sc, 0))
+        .output(output(KEY_CELL, staker.lock.clone(), None))
+        .output_data(Bytes::new().pack())
+        .build();
+    s.env.verify_signed(tx, &[&s.owner, &s.service, &staker]).expect("consent by input");
+}
+
+#[test]
+fn registry_create_without_stake_owner_consent_rejected() {
+    let mut s = setup();
+    let (_, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    assert_script_error(s.create_with_consent(&f, None, false), "Outputs[0].Type", 21);
+}
+
+#[test]
+fn registry_create_consent_wrong_length_rejected() {
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let sig = f.consent_signature(&staker);
+    assert_script_error(s.create_with_consent(&f, Some(&sig[..64]), false), "Outputs[0].Type", 22);
+}
+
+#[test]
+fn registry_create_consent_bad_recovery_id_rejected() {
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let mut sig = f.consent_signature(&staker);
+    sig[64] = 4;
+    assert_script_error(s.create_with_consent(&f, Some(&sig), false), "Outputs[0].Type", 22);
+    sig[64] = 31;
+    assert_script_error(s.create_with_consent(&f, Some(&sig), false), "Outputs[0].Type", 22);
+}
+
+#[test]
+fn registry_create_consent_high_s_ok() {
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let sig = to_high_s(&f.consent_signature(&staker));
+    s.create_with_consent(&f, Some(&sig), false).expect("high-S is normalised");
+}
+
+#[test]
+fn registry_create_consent_v27_ok() {
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let mut sig = f.consent_signature(&staker);
+    sig[64] += 27;
+    s.create_with_consent(&f, Some(&sig), false).expect("v 27/28");
+}
+
+#[test]
+fn registry_create_consent_by_other_key_rejected() {
+    let mut s = setup();
+    let (_, stake) = s.staker();
+    let other = s.env.new_key();
+    let f = s.fields_with_stake(&stake);
+    let sig = f.consent_signature(&other);
+    assert_script_error(s.create_with_consent(&f, Some(&sig), false), "Outputs[0].Type", 23);
+}
+
+#[test]
+fn registry_create_consent_for_other_stake_rejected() {
+    // The staker signed for another of its deposits.
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let other_stake = s.env.stake(staker.lock.clone());
+    let f = s.fields_with_stake(&stake);
+    let sig = s.fields_with_stake(&other_stake).consent_signature(&staker);
+    assert_script_error(s.create_with_consent(&f, Some(&sig), false), "Outputs[0].Type", 23);
+}
+
+#[test]
+fn registry_create_consent_for_other_service_key_rejected() {
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let other = s.env.new_key();
+    let f = s.fields_with_stake(&stake);
+    let signed = RegistryFields { service_pubkey: other.pubkey, ..f.clone() };
+    let sig = signed.consent_signature(&staker);
+    assert_script_error(s.create_with_consent(&f, Some(&sig), false), "Outputs[0].Type", 23);
+}
+
+#[test]
+fn registry_create_consent_for_other_peer_id_rejected() {
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let signed = RegistryFields { peer_id: b"12D3KooWSomebodyElse".to_vec(), ..f.clone() };
+    let sig = signed.consent_signature(&staker);
+    assert_script_error(s.create_with_consent(&f, Some(&sig), false), "Outputs[0].Type", 23);
+}
+
+#[test]
+fn registry_create_consent_for_other_network_rejected() {
+    // Signed for testnet, registered on devnet (the registry's `network` is 2).
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let signed = RegistryFields { network: 1, ..f.clone() };
+    let sig = signed.consent_signature(&staker);
+    assert_script_error(s.create_with_consent(&f, Some(&sig), false), "Outputs[0].Type", 23);
+}
+
+#[test]
+fn registry_create_consent_without_magic_prefix_rejected() {
+    // The staker signed blake2b-256(text) without "Nervos Message:".
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let digest = ckb_testtool::ckb_hash::blake2b_256(f.consent_text());
+    let sig = sign_digest(&staker, &digest);
+    assert_script_error(s.create_with_consent(&f, Some(&sig), false), "Outputs[0].Type", 23);
+}
+
+#[test]
+fn registry_create_consent_in_input_type_rejected() {
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.fields_with_stake(&stake);
+    let sig = f.consent_signature(&staker);
+    assert_script_error(s.create_with_consent(&f, Some(&sig), true), "Outputs[0].Type", 21);
+}
+
+#[test]
+fn registry_owner_changes_stake_with_consent_ok() {
+    let mut s = setup();
+    let (staker, new_stake) = s.staker();
+    let f = s.fields_with_stake(&new_stake);
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let sig = f.consent_signature(&staker);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    s.spend_full(true, Some((cap, dual, data)), None, vec![new_stake], Some((&sig, false))).expect("new stake with consent");
+}
+
+#[test]
+fn registry_owner_changes_stake_without_consent_rejected() {
+    let mut s = setup();
+    let (_, new_stake) = s.staker();
+    let f = s.fields_with_stake(&new_stake);
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    assert_script_error(s.spend_with_deps(true, Some((cap, dual, data)), None, vec![new_stake]), "Inputs[0].Type", 21);
+}
+
+#[test]
+fn registry_owner_changes_owner_without_stake_consent_rejected() {
+    // The live registration's stake belongs to a staker; the owner hands the registration to a new owner,
+    // keeping the stake, without the staker's consent.
+    let mut s = setup();
+    let (_, stake) = s.staker();
+    s.fields.stake = stake.clone();
+    let new_owner = s.env.new_key();
+    let lock = s.env.dual_lock_script(&new_owner.lock_hash(), &s.service.lock_hash());
+    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
+    let cap = s.reg_cap();
+    assert_script_error(s.spend_with_deps(true, Some((cap, lock, data)), None, vec![stake]), "Inputs[0].Type", 21);
+}
+
+#[test]
+fn registry_owner_changes_owner_with_stake_owner_input_ok() {
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    s.fields.stake = stake.clone();
+    let new_owner = s.env.new_key();
+    let lock = s.env.dual_lock_script(&new_owner.lock_hash(), &s.service.lock_hash());
+    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
+    let cap = s.reg_cap();
+    s.spend_with_deps(true, Some((cap, lock, data)), Some(&staker), vec![stake]).expect("staker is an input");
+}
+
+#[test]
+fn registry_runner_refresh_needs_no_consent_ok() {
+    // A registration whose stake owner consented by signature once: the runner's refresh needs neither the
+    // stake dep nor a new consent.
+    let mut s = setup();
+    let (_, stake) = s.staker();
+    s.fields.stake = stake;
+    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS + 3_600_000);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    s.spend(false, Some((cap, dual, data))).expect("refresh");
+}
+
+/// The concept's example registration (`spec/registry.md` §4.2).
+fn example_fields() -> RegistryFields {
+    RegistryFields {
+        peer_id: b"QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB".to_vec(),
+        service_pubkey: unhex("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").try_into().unwrap(),
+        payout_lock_hash: [0; 32],
+        network: 1,
+        prekeys: Vec::new(),
+        stake: OutPoint::new_builder().tx_hash(Byte32::from([0x5a; 32])).index(3u32).build(),
+    }
+}
+
+#[test]
+fn registry_consent_text_vector() {
+    let f = example_fields();
+    assert_eq!(
+        String::from_utf8(f.consent_text()).unwrap(),
+        "CSR-STAKE-CONSENT-v1|testnet|0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a:3|\
+         0x02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27|QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB"
+    );
+    assert_eq!(hex(&f.consent_digest()), "e3425937793f1e3c6de997e908df0c8ac00efdfd8db48948adca4d4e9a4b51c2");
+    assert_eq!(f.consent_digest(), consent::message_digest(&f.consent_text()));
+    // index in decimal, other networks by name
+    let g = RegistryFields { network: 0, stake: OutPoint::new_builder().tx_hash(Byte32::from([0; 32])).index(1234u32).build(), ..f };
+    let t = String::from_utf8(g.consent_text()).unwrap();
+    assert!(t.starts_with("CSR-STAKE-CONSENT-v1|mainnet|0x0000"), "{t}");
+    assert!(t.contains(":1234|0x02466d"), "{t}");
+    assert!(consent::network_name(3).is_none());
+}
+
+#[test]
+fn registry_consent_neuron_vector() {
+    // A real Neuron "Sign message" signature of lock args 0x89c04afd2ded4725e915020cb757a20d353f1094
+    // (ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqvfcp906t0dguj7j9gzpjm40gsdx5l3p9qutm6yg).
+    let digest = consent::message_digest(b"Message from CSR");
+    assert_eq!(hex(&digest), "2bb15d28fd5e98471846af625ba4e735e60491793d2159cd595331cb81a1a8a0");
+    let sig = unhex(
+        "c0fee686c87c2f398a83ef0ab8ddcc462b0acd552411674b3d1cf8e9ce6a86563204ffd3e2b82a6dfa9be40c58e1d670faf8ea8656db45e1d05d4265912877f401",
+    );
+    let (rs, recid) = consent::parse_signature(&sig).expect("parseable");
+    let mut norm = rs.to_vec();
+    norm.push(recid);
+    let pubkey = recover_pubkey(&digest, &norm);
+    assert_eq!(hex(&blake160(&pubkey)), "89c04afd2ded4725e915020cb757a20d353f1094");
+    // the high-S and v+27 forms parse to the same signature
+    let sig: [u8; 65] = sig.try_into().unwrap();
+    assert_eq!(consent::parse_signature(&to_high_s(&sig)), Some((rs, recid)));
+    let mut v27 = sig;
+    v27[64] += 27;
+    assert_eq!(consent::parse_signature(&v27), Some((rs, recid)));
+    assert_eq!(consent::parse_signature(&sig[..64]), None);
+}
+
+// --- runner-owned registration (A8 runner wallet) ------------------------------------------------
+
+impl S {
+    /// Fields of a registration owned by the runner: `payout_lock_hash` = the runner lock, stake of `stake`.
+    fn runner_owned_fields(&self, stake: &OutPoint) -> RegistryFields {
+        RegistryFields { payout_lock_hash: self.service.lock_hash(), stake: stake.clone(), ..self.fields.clone() }
+    }
+
+    /// The dual lock `runner ‖ runner`.
+    fn runner_owned_lock(&mut self) -> Script {
+        let r = self.service.lock_hash();
+        self.env.dual_lock_script(&r, &r)
+    }
+
+    /// A live runner-owned registry cell of `f` (10 CKB above its occupied capacity). Returns (out point, capacity).
+    fn live_runner_owned(&mut self, f: &RegistryFields) -> (OutPoint, u64) {
+        let lock = self.runner_owned_lock();
+        let data = f.signed_data(&self.monitor, EXPIRY_MS);
+        let cap = min_capacity(&lock, Some(&self.reg_type), data.len()) + 10 * CKB;
+        let op = self.env.cell(cap, lock, Some(self.reg_type.clone()), data);
+        (op, cap)
+    }
+
+    /// Runner-owned update/removal: inputs `[runner wallet cell, registry cell of f_in]`, outputs
+    /// `[registry cell with `data_out` (if any), wallet change]`, cell deps `deps ++ [config]`, `consent` in
+    /// `WitnessArgs.output_type` of witness 0 (covered by the runner's signature). Signed by the runner only.
+    fn runner_owned_spend(&mut self, f_in: &RegistryFields, data_out: Option<Bytes>, deps: Vec<OutPoint>, consent: Option<&[u8]>) -> Result<u64, CkbError> {
+        let (reg, reg_cap) = self.live_runner_owned(f_in);
+        let runner = self.service.lock.clone();
+        let w = self.env.runner_wallet_cell(&self.service, WALLET);
+        let lock = self.runner_owned_lock();
+        let mut outputs = Vec::new();
+        let mut change = WALLET - FEE;
+        match data_out {
+            Some(d) => outputs.push((output(reg_cap, lock, Some(self.reg_type.clone())), d)),
+            None => change += reg_cap,
+        }
+        outputs.push((output(change, runner, None), Bytes::new()));
+        let tx = tx_with(vec![self.env.input(&w, 0), self.env.input(&reg, 0)], outputs)
+            .as_advanced_builder()
+            .cell_dep(cell_dep(&self.config))
+            .build();
+        let mut tx = with_deps_first(tx, deps.iter().map(cell_dep).collect());
+        if let Some(sig) = consent {
+            tx = with_consent(tx, sig);
+        }
+        let service = &self.service;
+        self.env.verify_signed(tx, &[service])
+    }
+}
+
+#[test]
+fn registry_create_owned_by_runner_ok() {
+    // Inputs are only runner wallet cells; the stake owner consents by signature; owner = runner.
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = s.runner_owned_fields(&stake);
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let sig = f.consent_signature(&staker);
+    let (reg_type, config) = (s.reg_type.clone(), s.config.clone());
+    let tx = s.env.registry_create_runner_owned_tx(&s.service, reg_type, data, &config, Some(&sig));
+    let cycles = s.env.verify_signed(tx, &[&s.service]).expect("runner-owned registration");
+    println!("runner-owned registration with consent: {cycles} cycles (whole transaction incl. system lock)");
+}
+
+#[test]
+fn registry_runner_owned_refresh_ok() {
+    // Owner = runner: the refresh takes the owner path; the stake and the owner stay, so no dep, no consent.
+    let mut s = setup();
+    let (_, stake) = s.staker();
+    let f = s.runner_owned_fields(&stake);
+    let data = f.signed_data(&s.monitor, EXPIRY_MS + 3_600_000);
+    s.runner_owned_spend(&f, Some(data), Vec::new(), None).expect("refresh");
+}
+
+#[test]
+fn registry_runner_owned_changes_stake_with_consent_ok() {
+    let mut s = setup();
+    let (_, stake) = s.staker();
+    let (staker2, new_stake) = s.staker();
+    let f = s.runner_owned_fields(&stake);
+    let g = s.runner_owned_fields(&new_stake);
+    let data = g.signed_data(&s.monitor, EXPIRY_MS + 3_600_000);
+    let sig = g.consent_signature(&staker2);
+    s.runner_owned_spend(&f, Some(data), vec![new_stake], Some(&sig)).expect("new stake with consent");
+}
+
+#[test]
+fn registry_runner_owned_changes_stake_without_consent_rejected() {
+    let mut s = setup();
+    let (_, stake) = s.staker();
+    let (_, new_stake) = s.staker();
+    let f = s.runner_owned_fields(&stake);
+    let g = s.runner_owned_fields(&new_stake);
+    let data = g.signed_data(&s.monitor, EXPIRY_MS);
+    assert_script_error(s.runner_owned_spend(&f, Some(data), vec![new_stake], None), "Inputs[1].Type", 21);
+}
+
+#[test]
+fn registry_runner_owned_destroy_ok() {
+    // Removal: the registry cell's capacity returns to the runner wallet.
+    let mut s = setup();
+    let (_, stake) = s.staker();
+    let f = s.runner_owned_fields(&stake);
+    s.runner_owned_spend(&f, None, Vec::new(), None).expect("remove");
 }
 
 // --- dual lock ----------------------------------------------------------------------------------
