@@ -69,6 +69,9 @@ or on the dashboard page `#/services`. Host interface: `spec/host-interface.md`.
 ## Jobs and earnings (A3c)
 With `runtime.enabled = true`, `csr run` discovers keeper job cells on the chain, runs approved on-chain services (`csr service add-onchain`), submits the job transactions and tracks settlement. `csr jobs plan --json` shows the selection. Dashboard pages `#/jobs` and `#/earnings`. Demo: `docs/milestones/A3c.md`.
 
+## Stake and payout (A7)
+A registration references a **stake**: a Nervos DAO deposit of at least 10,000 CKB that the operator makes in their own wallet (it keeps earning DAO compensation; CSR never moves it). Tips go to the operator's **payout cell**, a standard anyone-can-pay cell (`[payout] lock_args`). Commands: `csr payout status|prepare-create|prepare-withdraw`, `csr register attest|prepare --stake 0x<tx>:<index>`; dashboard page `#/payout` ("Stake & payout"). Details: `docs/milestones/A7.md`, `spec/registry.md`.
+
 ## Roadmap
 
 | Milestone | Content |

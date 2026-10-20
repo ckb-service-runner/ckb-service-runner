@@ -23,7 +23,7 @@ regularly (the weekly stat cell may do this later). On devnet `csr-dev` plays th
 ## 2. Registry cell
 
 * Type script: `csr-registry`, args = `config_type_hash (32)`.
-* Lock script: `csr-dual-lock`, args = `owner_lock_hash ‖ runner_lock_hash` (`float-lock.md` §3).
+* Lock script: `csr-dual-lock`, args = `owner_lock_hash ‖ runner_lock_hash` (`dual-lock.md`).
 * Data: molecule `Registry` (`contracts/schemas/csr.mol`):
 
 ```

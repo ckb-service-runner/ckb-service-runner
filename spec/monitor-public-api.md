@@ -17,11 +17,17 @@ Availability values are fractions 0..1. Clients ignore unknown extra fields.
 
 ```json
 {"peer_id":"Qm…","rank":3,"of":42,"availability":{"d7":0.99,"d30":0.98,"d365":0.95},
- "check_type":"p2p_verified","attestation":{"status":"valid","expiry":1795000000},"last_check_at":1792000000}
+ "check_type":"p2p_verified","attestation":{"status":"valid","expiry":1795000000},"last_check_at":1792000000,
+ "stake":{"status":"deposited","capacity_ckb":10000,"outpoint":"0x5a5a…5a5a:3"}}
 ```
 
 - `check_type`: `p2p_verified` or `challenge_only`.
 - `attestation.status`: `none`, `valid` or `expired`; `expiry` is a unix timestamp or `null`.
+- `stake` (optional; older monitors omit it, CSR then shows nothing): the registration's referenced Nervos DAO
+  deposit (`spec/registry.md`, stake). `status` is `deposited` (live DAO deposit, enough CKB), `withdrawn`
+  (spent or in the withdrawing phase), `invalid` (not a deposit, too small or not owned by the registry owner),
+  `duplicate` (an older registration references the same deposit) or `none` (no stake in the registry cell).
+  `capacity_ckb` is a number or `null`; `outpoint` is `0x<64 hex>:<index>` or `null`.
 - 404 when the node is not ranked.
 
 ## `GET /v1/locations`

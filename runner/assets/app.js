@@ -161,7 +161,7 @@
   pages.overview = function (root) {
     var g = el('div', 'grid');
     var cs = card('Network'), cn = card('Node'), cr = card('Runtime'), cres = card('Resources');
-    var cf = card('Float'), ck = card('CSR monitor');
+    var cf = card('Payout'), ck = card('CSR monitor');
     [cs, cn, cr, cres, cf, ck].forEach(function (c) { g.appendChild(c); });
     root.appendChild(g);
     function paint() {
@@ -193,11 +193,11 @@
         ck.appendChild(el('p', '', 'Join the CSR monitor to see stats'));
       }
     }
-    function floatCard() {
+    function payoutCard() {
       api('/api/earnings').then(function (e) {
         while (cf.children.length > 1) cf.removeChild(cf.lastChild);
         dl(cf, [['Balance', ckb((e.payout || {}).capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
-        var a = el('a', '', 'Earnings & float'); a.href = '#/earnings'; cf.appendChild(a);
+        var a = el('a', '', 'Stake & payout'); a.href = '#/payout'; cf.appendChild(a);
       }).catch(function () {});
     }
     function res() {
@@ -209,8 +209,8 @@
           ['Disk free', r.disk.free_gb + ' / ' + r.disk.total_gb + ' GB']]);
       }).catch(function () {});
     }
-    onStatus = paint; paint(); res(); floatCard();
-    timers.push(setInterval(floatCard, 10000));
+    onStatus = paint; paint(); res(); payoutCard();
+    timers.push(setInterval(payoutCard, 10000));
     timers.push(setInterval(res, 5000));
   };
 
@@ -257,6 +257,7 @@
           dl(cr, [['Rank', n.rank + ' / ' + n.of], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
             ['Availability 365 d', pct(n.availability.d365)], ['Check type', checkType(n.check_type)],
             ['Attestation', a.status + (a.expiry ? ' (expires ' + fmtTime(a.expiry) + ')' : '')],
+            ['Stake', n.stake ? n.stake.status + (n.stake.capacity_ckb != null ? ' (' + n.stake.capacity_ckb + ' CKB)' : '') : null],
             ['Last check', fmtTime(n.last_check_at)], ['Ping mode', ping.mode], ['Last successful check', fmtTime(ping.last_check_ok_at)]]);
         } else {
           cr.appendChild(el('p', '', nw ? 'Not ranked yet.' : 'No data available.'));
@@ -321,6 +322,7 @@
     ['ranking.ping_bind', 'Ping bind', 'text', true],
     ['monitor.url', 'Monitor URL', 'text'],
     ['monitor.pubkey', 'Monitor pubkey', 'text'],
+    ['payout.lock_args', 'Payout lock args', 'text'],
     ['runtime.enabled', 'Runtime enabled', 'bool'],
     ['runtime.min_ckb_per_mcycle', 'Min CKB per Mcycle', 'number'],
     ['limits.max_concurrent_jobs', 'Max concurrent jobs', 'int'],
@@ -432,14 +434,14 @@
     load();
   };
 
-  pages.float = function (root) {
-    var c = card('Float and runner key cell');
+  pages.payout = function (root) {
+    var c = card('Payout cell');
     var info = el('div');
     var msg = el('p', 'msg');
     var form = el('div', 'row');
-    var ckb = el('input'); ckb.placeholder = 'CKB'; ckb.size = 10;
-    var owner = el('input'); owner.placeholder = 'owner lock args (0x…, create only)'; owner.size = 44;
-    form.appendChild(ckb); form.appendChild(owner);
+    var amt = el('input'); amt.placeholder = 'CKB'; amt.size = 10;
+    var owner = el('input'); owner.placeholder = 'owner lock args (0x…)'; owner.size = 44;
+    form.appendChild(amt); form.appendChild(owner);
     var btns = el('div', 'row');
     var signed = el('input'); signed.type = 'file'; signed.accept = '.json,application/json';
     var submit = el('button', 'btn', 'Submit signed file'); submit.type = 'button';
@@ -450,21 +452,28 @@
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(function () { URL.revokeObjectURL(u); }, 1000);
     }
-    function prepare(verb, body, name) {
-      api('/api/float/prepare-' + verb, { method: 'POST', body: body }).then(function (j) {
+    function prepare(path, body, name) {
+      api(path, { method: 'POST', body: body }).then(function (j) {
         download(name, j.file);
         say('Unsigned transaction downloaded (fee ' + j.fee_shannons + ' shannons). Sign it in your wallet, then submit the signed file below.');
       }).catch(function (x) { say(x.message, true); });
     }
-    [['Create float', 'create'], ['Top up', 'topup'], ['Withdraw', 'withdraw']].forEach(function (b) {
-      var btn = el('button', 'btn', b[0]); btn.type = 'button';
-      btn.addEventListener('click', function () {
-        var body = { ckb: ckb.value.trim() };
-        if (owner.value.trim()) body.owner_lock_args = owner.value.trim();
-        prepare(b[1], body, 'float-' + b[1] + '-unsigned.json');
-      });
-      btns.appendChild(btn);
+    var bc = el('button', 'btn', 'Create payout cell'); bc.type = 'button';
+    bc.addEventListener('click', function () {
+      if (!amt.value.trim()) return say('Enter the amount in CKB.', true);
+      if (!owner.value.trim()) return say('Enter the owner lock args.', true);
+      prepare('/api/payout/prepare-create', { ckb: amt.value.trim(), owner_lock_args: owner.value.trim() }, 'payout-create-unsigned.json');
     });
+    var bw = el('button', 'btn', 'Withdraw'); bw.type = 'button';
+    bw.addEventListener('click', function () {
+      var body = amt.value.trim() ? { ckb: amt.value.trim() } : { all: true };
+      prepare('/api/payout/prepare-withdraw', body, 'payout-withdraw-unsigned.json');
+    });
+    btns.appendChild(bc); btns.appendChild(bw);
+    var hint = el('p', '', 'Leave the amount empty to withdraw everything.');
+    var cr = card('Stake and registration');
+    cr.appendChild(el('p', '', 'The stake is a Nervos DAO deposit of at least 10,000 CKB made in your own wallet (Neuron or ckb-cli). It stays yours and keeps earning DAO compensation; CSR only references it.'));
+    var rinfo = el('div');
     var att = el('input'); att.type = 'file'; att.accept = '.json,application/json';
     var stake = el('input'); stake.placeholder = 'stake: DAO deposit 0x<tx hash>:<index>'; stake.size = 44;
     var reg = el('button', 'btn', 'Register'); reg.type = 'button';
@@ -490,22 +499,31 @@
         .catch(function (x) { say(x.message, true); });
     });
     var sub = el('div', 'row'); sub.appendChild(signed); sub.appendChild(submit);
-    [info, form, btns, regrow, sub, msg].forEach(function (n) { c.appendChild(n); });
-    root.appendChild(c);
+    [info, form, btns, hint].forEach(function (n) { c.appendChild(n); });
+    [rinfo, regrow].forEach(function (n) { cr.appendChild(n); });
+    root.appendChild(c); root.appendChild(cr);
+    var cs = card('Submit signed transaction');
+    [sub, msg].forEach(function (n) { cs.appendChild(n); });
+    root.appendChild(cs);
     function load() {
-      Promise.all([api('/api/runner-cell'), api('/api/float'), api('/api/registry')]).then(function (r) {
+      Promise.all([api('/api/runner-cell'), api('/api/payout'), api('/api/registry')]).then(function (r) {
         info.textContent = '';
         dl(info, [
+          ['Payout cell', r[1].found ? r[1].outpoint : 'none'],
+          ['Payout balance', ckb(r[1].capacity_shannons)],
+          ['Payout lock args', r[1].lock_args],
+          ['Payout lock hash', r[1].lock_hash],
           ['Runner key cell', r[0].found ? r[0].outpoint : 'none'],
           ['Runner key cell capacity (shannons)', r[0].capacity_shannons],
-          ['Float cell', r[1].found ? r[1].outpoint : 'none'],
-          ['Float capacity (shannons)', r[1].capacity_shannons],
-          ['Max fee (shannons)', r[1].max_fee_shannons],
-          ['Owner lock hash', r[1].owner_lock_hash],
-          ['Runner lock hash', r[1].runner_lock_hash],
+        ]);
+        rinfo.textContent = '';
+        var st = r[2].stake;
+        dl(rinfo, [
           ['Registered', r[2].registered ? r[2].outpoint : 'no'],
           ['Attestation expiry (ms)', r[2].attestation_expiry_ms],
-          ['Stake', r[2].stake ? r[2].stake.outpoint + ' (' + r[2].stake.status + ')' : '–'],
+          ['Stake', st ? st.outpoint : '–'],
+          ['Stake status', st ? st.status : '–'],
+          ['Stake', st ? ckb(st.capacity_shannons) : '–'],
         ]);
       }).catch(function (x) { info.textContent = x.message; });
     }
@@ -587,19 +605,17 @@
   };
 
   pages.earnings = function (root) {
-    var c = card('Earnings & float');
+    var c = card('Earnings & payout');
     var info = el('div'), chartBox = el('div'), table = el('div');
     var btns = el('div', 'row');
-    [['Top up', 'topup'], ['Withdraw', 'withdraw']].forEach(function (b) {
-      var a = el('a', 'btn', b[0]); a.href = '#/float'; a.title = b[1] + ' on the Float page';
-      btns.appendChild(a);
-    });
+    var pa = el('a', 'btn', 'Stake & payout'); pa.href = '#/payout';
+    btns.appendChild(pa);
     [info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
     root.appendChild(c);
     function load() {
       api('/api/earnings').then(function (e) {
         info.textContent = '';
-        dl(info, [['Float balance', ckb((e.payout || {}).capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid from float', ckb(e.fees_shannons)]]);
+        dl(info, [['Payout balance', ckb((e.payout || {}).capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid', ckb(e.fees_shannons)]]);
         var days = {};
         e.settlements.forEach(function (x) {
           var d = new Date((x.t || 0) * 1000).toISOString().slice(0, 10);

@@ -86,6 +86,9 @@ pub struct NodeStats {
     pub check_type: String,
     pub attestation: Attestation,
     pub last_check_at: i64,
+    /// The monitor's view of the registration stake (any JSON); `null` if it sends none.
+    #[serde(default)]
+    pub stake: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]

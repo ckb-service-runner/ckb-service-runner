@@ -59,7 +59,7 @@ csr register status --json
 
 ### Keeper jobs and the race test (A3c)
 
-`node --test --test-concurrency=1 acceptance/a3c/p2.test.mjs acceptance/a3c/p3.test.mjs` (devnet running, `bash scripts/build-services.sh` done). `p2`: an `every:2` job runs three times, the float grows by exactly the tips. `p3`: two CSR instances with separate data roots share the devnet node and race for one job; exactly one settles, the other ends in `Lost` at no cost. Manual demo steps: `docs/milestones/A3c.md`.
+`node --test --test-concurrency=1 acceptance/a3c/p2.test.mjs acceptance/a3c/p3.test.mjs` (devnet running, `bash scripts/build-services.sh` done). `p2`: an `every:2` job runs three times, the payout cell grows by exactly the tips. `p3`: two CSR instances with separate data roots share the devnet node and race for one job; exactly one settles, the other ends in `Lost` at no cost. Manual demo steps: `docs/milestones/A3c.md`.
 
 ### Manual testnet runbook (not run by the test suite)
 

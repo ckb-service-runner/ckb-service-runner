@@ -72,7 +72,7 @@ strict molecule `Job` (exact field count, no trailing bytes; error 6).
   hash `refund_lock_hash` is present → anything allowed.
 * *Run path* (taken when the refund conditions do not hold **and** a registry cell dep is present):
   1. The trigger holds (table above).
-  2. Exactly one cell dep with type hash `registry_type_hash` exists; its data's `float_lock_hash` = F, and
+  2. Exactly one cell dep with type hash `registry_type_hash` exists; its data's `payout_lock_hash` = F, and
      Σ capacity(outputs with lock hash F) − Σ capacity(inputs with lock hash F) ≥ `tip_shannons`.
   3. *Registered runner* (F2): the registry cell dep's **lock** (a `csr-dual-lock`) must parse as a script with
      64-byte args (else 10); its runner lock hash R = `args[32..64]`. An input with lock hash R must exist – the
@@ -92,14 +92,15 @@ strict molecule `Job` (exact field count, no trailing bytes; error 6).
   reported (a refund transaction never carries a registry dep, a run always does).
 
 Both capacity sums are **net** (outputs − inputs with that lock hash), so a cell of F or of the refund lock
-that is spent and recreated in the same transaction (e.g. the float, or an anyone-can-pay refund cell) counts
-only with the amount actually added.
+that is spent and recreated in the same transaction (e.g. the payout cell, or an anyone-can-pay refund cell)
+counts only with the amount actually added.
 
-The **fee is paid from the job's capacity** (capped by `max_fee_shannons`); the float receives at least the
-tip. (This replaces "float pays the fee, job pays it back" from spec §3.3.) The float lock's runner path
-allows **no loss at all** (audit F4; its `max_fee_shannons` is reserved), so a run transaction that merges the
-tip into the float cell recreates it with input capacity + tip and pays the miner fee from the job cell (see
-`float-lock.md`).
+The **fee is paid from the job's capacity** (capped by `max_fee_shannons`); the payout cell receives at least the
+tip. The payout cell is a standard anyone-can-pay cell (lock `args` = 20 bytes, no minimum, no type, empty
+data), so a run transaction either adds the tip to the existing cell (inputs `[job, payout cell, runner key
+cell]`; the ACP lock needs no signature when the output has at least the input's capacity and the witness is
+empty) or creates a new cell with the same lock. CSR defines no slashing and no job collateral; applications
+that need a bond define it in their own contracts.
 
 Rule order (determines the reported code): job inputs (7), data (6), refund path, registry dep (14/10),
 trigger (8/9), tip (11), registered runner (10/15), live attestation (10/16/17), recreation/refund (12/13).
@@ -107,7 +108,7 @@ trigger (8/9), tip (11), registered runner (10/15), live attestation (10/16/17),
 ### Limits (by design)
 
 * A run is bound to a registered node (rule 3), but not to a particular one: any node with a live registry
-  cell and a fresh attestation may run any job and collects the tip in its own float. Results are off-chain
+  cell and a fresh attestation may run any job and collects the tip in its own payout cell. Results are off-chain
   (part c).
 * Attestation freshness is only as good as the monitor's `clock_ms` updates (rule 4): the clock cell is the
   upper bound for "now"; a stale clock keeps an attestation valid longer.
@@ -154,7 +155,7 @@ trigger (8/9), tip (11), registered runner (10/15), live attestation (10/16/17),
 | 8 | `since` has the wrong form (flags) for the trigger |
 | 9 | trigger not reached |
 | 10 | more than one registry cell dep, or registry data malformed |
-| 11 | tip not paid to the registered float |
+| 11 | tip not paid to the registered payout cell |
 | 12 | recreated job cell missing / wrong (count, data, capacity) |
 | 13 | refund too small |
 | 14 | neither path: no registry cell dep and the refund conditions (`since` absolute block ≥ `expiry_block`, `refund_lock_hash` input) do not hold |
@@ -170,12 +171,12 @@ job lock's code (12) is reported.
 
 ## 5. Worked examples
 
-*OnDemand run, single.* Inputs `[job cell (since 0), float cell, runner key cell]`, outputs `[float cell
+*OnDemand run, single.* Inputs `[job cell (since 0), payout cell, runner key cell]`, outputs `[float cell
 (+tip), runner key cell, refund cell (capacity − tip − fee)]`, cell deps `[registry cell, monitor config cell,
 code deps]`. The runner key cell (lock hash = the registry's runner lock hash) is signed with the service key.
 
-*Every(10) run.* Inputs `[job cell (since = relative 10 blocks), float cell, runner key cell]`, outputs
-`[float (+tip), runner key cell, job cell with `remaining_runs − 1` and capacity ≥ in − tip − max_fee]`.
+*Every(10) run.* Inputs `[job cell (since = relative 10 blocks), payout cell, runner key cell]`, outputs
+`[payout cell (+tip), runner key cell, job cell with `remaining_runs − 1` and capacity ≥ in − tip − max_fee]`.
 
 *Last Every run.* As above with `remaining_runs == 1`: no recreated job cell, a refund cell instead.
 
@@ -192,7 +193,7 @@ after the security fixes (registered-runner and attestation-expiry checks):
 | transaction | cycles |
 |-------------|-------:|
 | OnDemand run, `csr-job-lock` alone (no job type; runner key cell and wallet are an always-success cell) | 51,406 |
-| OnDemand run, whole tx (job lock + job type + float lock + system lock) | 1,779,894 |
+| OnDemand run, whole tx (job lock + job type + anyone-can-pay lock + system lock) | 1,779,894 |
 | Every run with recreation, whole tx | 1,780,935 |
 
 Before the fixes: 38,219 / 1,738,768 / 1,794,708. The extra checks cost ~13 k cycles (one more cell-dep scan,
