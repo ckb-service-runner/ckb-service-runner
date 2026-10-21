@@ -103,11 +103,6 @@ enum Command {
         out: PathBuf,
         #[arg(long, default_value = "deployments/devnet.json")]
         deployments: PathBuf,
-        /// Devnet faucet: CKB sent to the runner wallet (the service key's lock) with the attestation,
-        /// so a runner funded with the concept's "about 500 CKB" can pay the ≈ 540 CKB registry cell.
-        /// 0 disables it; ignored off the devnet.
-        #[arg(long, default_value = "200")]
-        faucet_ckb: String,
     },
     /// Send CKB from the funding account to a secp256k1_blake160 lock
     Fund {
@@ -533,7 +528,6 @@ fn attest(
     expiry: Option<u64>,
     out: &Path,
     deployments: &Path,
-    faucet_ckb: &str,
 ) -> Result<Value, String> {
     let pk = hex_arg(pubkey, 33, "service pubkey")?;
     let network = network.unwrap_or(ctx.chain.network_name());
@@ -572,37 +566,7 @@ fn attest(
         "monitor_pubkey": h(ctx.monitor.pubkey),
     });
     write_json(out, &att)?;
-    // Devnet faucet (decision in docs/decisions.md, A8 Phase 2): the attestation is the one step of the
-    // devnet flow that names the runner, so it also plays the operator's transfer to the runner wallet.
-    let faucet = ckb_to_shannons(faucet_ckb)?;
-    let faucet = if ctx.chain.devnet && faucet > 0 {
-        let runner_args = &ckb_hash::blake2b_256(&pk)[..20];
-        let lock = sighash_lock(runner_args);
-        if faucet < occupied(&lock, &None, 0) * CKB {
-            return Err("--faucet-ckb is below the minimum cell capacity (61 CKB)".into());
-        }
-        let tx = ctx.chain.build_funded(
-            &ctx.funder,
-            vec![Out {
-                capacity: faucet,
-                lock,
-                type_: None,
-                data: vec![],
-                type_id: false,
-            }],
-            vec![],
-        )?;
-        let tx_hash = ctx.chain.send_and_wait(&tx)?;
-        eprintln!(
-            "devnet faucet: sent {} CKB to the runner wallet {} ({tx_hash})",
-            faucet / CKB,
-            h(runner_args)
-        );
-        json!({"tx_hash": tx_hash, "amount_shannons": faucet})
-    } else {
-        Value::Null
-    };
-    Ok(json!({"file": out, "faucet": faucet}))
+    Ok(json!({"file": out}))
 }
 
 fn fund(ctx: &Ctx, lock_args: &str, ckb: &str) -> Result<Value, String> {
@@ -962,7 +926,6 @@ fn run(cli: &Cli) -> Result<Value, String> {
             expiry_ms,
             out,
             deployments,
-            faucet_ckb,
         } => attest(
             &ctx,
             peer_id,
@@ -971,7 +934,6 @@ fn run(cli: &Cli) -> Result<Value, String> {
             *expiry_ms,
             out,
             deployments,
-            faucet_ckb,
         ),
         Command::Fund { lock_args, ckb } => fund(&ctx, lock_args, ckb),
         Command::SignTx {

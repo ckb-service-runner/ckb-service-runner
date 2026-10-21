@@ -399,3 +399,9 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - **No browser dialogs:** removal asks "Remove the registration?" with Yes/Cancel buttons inside the page. The text to sign is a read-only textarea with a copy button; the owner address is shown under it.
 - **Attestation:** the dashboard no longer offers an attestation file; `POST /api/registry/create` gets `{stake, consent}` and the runner asks the monitor. The button reads "Update stake" when registered.
 - **Docs:** the "about 500 CKB" text is shown in the dashboard as specified; the README/testing docs keep the more accurate "about 700 CKB" of phase 2 (the registry cell costs ≈ 540 CKB).
+
+## A8b – faucet removed
+- **Why the faucet existed.** In A8 phase 2 `csr-dev attest` started sending 200 CKB to the runner wallet on the devnet, because `acceptance/a8/p3`–`p5` funded the wallet with only 500 CKB while a registry cell really costs about 540 CKB (plus change). Tests under `acceptance/` could not be changed then, so the dev tool absorbed the gap.
+- **Why the tests were corrected instead.** The runner was right and the tests were wrong: the documented first transfer is about 700 CKB. A dev tool that silently tops up the wallet hides exactly the mistake an operator could make. A8b removes the `--faucet-ckb` option, the transfer, the `faucet` key in the JSON and the stderr line; the attestation file is unchanged. An unknown option now fails as usual.
+- **Replacement tests.** `acceptance/a8b/p3`, `p4`, `p5` replace `acceptance/a8/p3`, `p4`, `p5` (same checks, 700 CKB). The A8 originals are obsolete, no longer run, and left untouched.
+- **Docs.** README, `docs/testing.md` and `docs/milestones/A8.md` say about 700 CKB to send and about 540 CKB for the registry cell; the devnet flow uses `csr-dev fund … --ckb 700`.

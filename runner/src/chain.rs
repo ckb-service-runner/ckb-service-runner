@@ -1593,7 +1593,7 @@ mod tests {
         let d = parse_deployments(TESTNET_DEPLOYMENTS, "deployments/testnet.json").unwrap();
         assert_eq!(
             format!("{:x}", d.registry.code_hash),
-            "4796879ebfc99db2cfd6205545382ab81a662bfdac7cc276d438f8aaef1788eb"
+            "411aceb357a61684226169902cab2ccf64f470f0aaf93687d7cd2904f3c741d8"
         );
         assert_eq!(d.registry.dep_type, DepType::Code);
     }
