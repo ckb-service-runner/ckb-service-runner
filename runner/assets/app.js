@@ -161,7 +161,7 @@
   pages.overview = function (root) {
     var g = el('div', 'grid');
     var cs = card('Network'), cn = card('Node'), cr = card('Runtime'), cres = card('Resources');
-    var cf = card('Runner wallet'), ck = card('CSR monitor');
+    var cf = card('Wallet'), ck = card('CSR monitor');
     [cs, cn, cr, cres, cf, ck].forEach(function (c) { g.appendChild(c); });
     root.appendChild(g);
     function paint() {
@@ -197,7 +197,7 @@
       api('/api/earnings').then(function (e) {
         while (cf.children.length > 1) cf.removeChild(cf.lastChild);
         dl(cf, [['Balance', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
-        var a = el('a', '', 'Wallet & stake'); a.href = '#/payout'; cf.appendChild(a);
+        var a = el('a', '', 'Wallet & registration'); a.href = '#/wallet'; cf.appendChild(a);
       }).catch(function () {});
     }
     function res() {
@@ -322,8 +322,8 @@
     ['ranking.ping_bind', 'Ping bind', 'text', true],
     ['monitor.url', 'Monitor URL', 'text'],
     ['monitor.pubkey', 'Monitor pubkey', 'text'],
-    ['payout.sweep_address', 'Sweep address', 'text'],
-    ['payout.sweep_threshold_ckb', 'Sweep threshold (CKB)', 'int'],
+    ['payout.sweep_address', 'Sweep to address', 'text'],
+    ['payout.sweep_threshold_ckb', 'Sweep when the wallet reaches (CKB)', 'int'],
     ['payout.sweep_amount_ckb', 'Sweep amount (CKB)', 'int'],
     ['runtime.enabled', 'Runtime enabled', 'bool'],
     ['runtime.min_ckb_per_mcycle', 'Min CKB per Mcycle', 'number'],
@@ -436,12 +436,22 @@
     load();
   };
 
-  pages.payout = function (root) {
+  pages.wallet = function (root) {
     var msg = el('p', 'msg');
     function say(t, bad) { msg.className = 'msg' + (bad ? ' err' : ''); msg.textContent = t; }
+    function copyBtn(get) {
+      var b = el('button', 'btn', 'Copy'); b.type = 'button';
+      b.addEventListener('click', function () {
+        var v = get();
+        if (navigator.clipboard && v) navigator.clipboard.writeText(v).then(function () { say('Copied.'); }, function () { say('Copy failed; select the text and copy it by hand.', true); });
+      });
+      return b;
+    }
     var c = card('Runner wallet');
-    c.appendChild(el('p', '', 'The runner wallet pays the registration and its own small fees and receives the tips. Send about 600 CKB to the runner address once, from any wallet. CSR signs its transactions itself.'));
+    c.appendChild(el('p', '', 'Send about 500 CKB here from your wallet to start. The registration uses about 161 CKB, the rest pays small fees. Tips are added here.'));
     var info = el('div');
+    var addr = el('input'); addr.readOnly = true; addr.size = 70; addr.setAttribute('aria-label', 'Runner address');
+    var arow = el('div', 'row'); arow.appendChild(addr); arow.appendChild(copyBtn(function () { return addr.value; }));
     var to = el('input'); to.placeholder = 'to: ckb1…/ckt1… address'; to.size = 50;
     var amt = el('input'); amt.placeholder = 'CKB'; amt.size = 10;
     var send = el('button', 'btn', 'Send'); send.type = 'button';
@@ -452,56 +462,66 @@
         .catch(function (x) { say(x.message, true); });
     });
     var srow = el('div', 'row'); [to, amt, send].forEach(function (n) { srow.appendChild(n); });
-    [info, srow].forEach(function (n) { c.appendChild(n); });
+    [el('h3', '', 'Runner address'), arow, info, el('h3', '', 'Send'), srow].forEach(function (n) { c.appendChild(n); });
 
     var cr = card('Stake and registration');
-    cr.appendChild(el('p', '', 'The stake is a Nervos DAO deposit of at least 10,000 CKB in your own wallet; it stays there. Its owner consents by signing a one-line text ("Sign message" in Neuron).'));
+    cr.appendChild(el('p', '', 'The stake is a Nervos DAO deposit of at least 10,000 CKB in your own wallet; it stays there. Its owner consents by signing a one-line text.'));
     var rinfo = el('div');
     var stake = el('input'); stake.placeholder = 'stake: DAO deposit 0x<tx hash>:<index>'; stake.size = 50;
-    var getText = el('button', 'btn', 'Get text to sign'); getText.type = 'button';
-    var text = el('textarea'); text.readOnly = true; text.rows = 3; text.cols = 70;
-    var sig = el('input'); sig.placeholder = 'signature 0x… (from "Sign message")'; sig.size = 50;
-    var att = el('input'); att.type = 'file'; att.accept = '.json,application/json';
+    var getText = el('button', 'btn', 'Show text to sign'); getText.type = 'button';
+    var textBox = el('div'); textBox.hidden = true;
+    var text = el('textarea'); text.readOnly = true; text.rows = 4; text.cols = 70; text.setAttribute('aria-label', 'Text to sign');
+    var owner = el('p');
+    var trow = el('div', 'row'); trow.appendChild(text); trow.appendChild(copyBtn(function () { return text.value; }));
+    [el('label', '', 'Text to sign'), trow, owner,
+      el('p', '', 'Sign this text in your wallet with the address of the DAO deposit (Neuron: Tools → Sign/Verify Message) and paste the signature below.')]
+      .forEach(function (n) { textBox.appendChild(n); });
+    var sig = el('input'); sig.placeholder = 'Signature 0x…'; sig.size = 50; sig.setAttribute('aria-label', 'Signature');
     var reg = el('button', 'btn', 'Register'); reg.type = 'button';
     var rm = el('button', 'btn', 'Remove registration'); rm.type = 'button';
+    var ask = el('div', 'row'); ask.hidden = true;
+    var yes = el('button', 'btn', 'Yes, remove'); yes.type = 'button';
+    var no = el('button', 'btn', 'Cancel'); no.type = 'button';
+    [el('span', '', 'Remove the registration? Its CKB returns to the runner wallet.'), yes, no].forEach(function (n) { ask.appendChild(n); });
     getText.addEventListener('click', function () {
       if (!stake.value.trim()) return say('Enter the stake (out point of your Nervos DAO deposit).', true);
       api('/api/registry/consent-message', { method: 'POST', body: { stake: stake.value.trim() } }).then(function (j) {
         text.value = j.message;
-        say('Sign this text with the wallet of ' + j.stake_owner_address + ' and paste the signature.');
+        owner.textContent = 'Stake owner: ' + j.stake_owner_address;
+        textBox.hidden = false;
+        say('');
       }).catch(function (x) { say(x.message, true); });
     });
     reg.addEventListener('click', function () {
       if (!stake.value.trim() || !sig.value.trim()) return say('Enter the stake and the signature.', true);
-      var f = att.files && att.files[0];
-      (f ? f.text().then(function (t) { return JSON.parse(t); }) : Promise.resolve(null)).then(function (a) {
-        var body = { stake: stake.value.trim(), consent: sig.value.trim() };
-        if (a) body.attestation = a;
-        return api('/api/registry/create', { method: 'POST', body: body });
-      }).then(function (j) { say((j.updated ? 'Registration updated: ' : 'Registered: ') + j.tx_hash); load(); })
+      api('/api/registry/create', { method: 'POST', body: { stake: stake.value.trim(), consent: sig.value.trim() } })
+        .then(function (j) { say((j.updated ? 'Registration updated: ' : 'Registered: ') + j.tx_hash); load(); })
         .catch(function (x) { say(x.message, true); });
     });
-    rm.addEventListener('click', function () {
-      if (!window.confirm('Remove the registration? Its CKB returns to the runner wallet.')) return;
+    rm.addEventListener('click', function () { ask.hidden = false; });
+    no.addEventListener('click', function () { ask.hidden = true; });
+    yes.addEventListener('click', function () {
+      ask.hidden = true;
       api('/api/registry/remove', { method: 'POST', body: {} })
         .then(function (j) { say('Removed: ' + j.tx_hash); load(); })
         .catch(function (x) { say(x.message, true); });
     });
     var r1 = el('div', 'row'); [stake, getText].forEach(function (n) { r1.appendChild(n); });
-    var r2 = el('div', 'row'); [sig, att, reg, rm].forEach(function (n) { r2.appendChild(n); });
-    [rinfo, r1, text, r2].forEach(function (n) { cr.appendChild(n); });
+    var r2 = el('div', 'row'); [sig, reg, rm].forEach(function (n) { r2.appendChild(n); });
+    [rinfo, r1, textBox, r2, ask].forEach(function (n) { cr.appendChild(n); });
     root.appendChild(c); root.appendChild(cr); root.appendChild(msg);
     function load() {
-      Promise.all([api('/api/wallet'), api('/api/registry')]).then(function (r) {
+      Promise.all([api('/api/wallet'), api('/api/registry'), api('/api/runner-cell')]).then(function (r) {
         var w = r[0], ls = w.last_sweep;
+        addr.value = r[2].runner_address || w.address || '';
         info.textContent = '';
         dl(info, [
-          ['Runner address', w.address],
           ['Balance', ckb(w.capacity_shannons)],
           ['Sweep to', w.sweep_address || 'not set (payout.sweep_address)'],
-          ['Sweep', w.sweep_amount_ckb + ' CKB at ' + w.sweep_threshold_ckb + ' CKB'],
+          ['Sweep', w.sweep_amount_ckb + ' CKB when the wallet reaches ' + w.sweep_threshold_ckb + ' CKB'],
           ['Last sweep', ls ? ckb(ls.amount_shannons) + ' – ' + new Date(ls.at_ms).toLocaleString() : 'never'],
         ]);
+        reg.textContent = r[1].registered ? 'Update stake' : 'Register';
         rinfo.textContent = '';
         var st = r[1].stake;
         dl(rinfo, [
@@ -594,7 +614,7 @@
     var c = card('Earnings');
     var info = el('div'), chartBox = el('div'), table = el('div');
     var btns = el('div', 'row');
-    var pa = el('a', 'btn', 'Wallet & stake'); pa.href = '#/payout';
+    var pa = el('a', 'btn', 'Wallet & registration'); pa.href = '#/wallet';
     btns.appendChild(pa);
     [info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
     root.appendChild(c);

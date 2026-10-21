@@ -35,6 +35,7 @@ input[type=checkbox]{width:auto}
 .restart{color:var(--warn);font-size:.8rem}
 .msg{margin:.5rem 0}.msg.err{color:var(--bad)}.msg.ok{color:var(--ok)}
 pre.log{background:var(--card);border:1px solid var(--bd);padding:.5rem;overflow:auto;max-height:60vh;font-size:12px;white-space:pre-wrap;word-break:break-all}
+h3{margin:.8rem 0 .3rem}
 .row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.6rem}
 .row select{width:auto}
 @media(max-width:480px){.view{padding:.5rem}.nav a{padding:.3rem .45rem}}

@@ -49,6 +49,8 @@ csr register create --stake 0x<tx>:<index> --consent 0x<signature> --attestation
 csr register status --json
 csr wallet status --json
 csr register remove --json                           # the registry capacity returns to the wallet
+csr wallet send --to <ckt1… address> --ckb 100 --json # by hand
+csr wallet sweep --json                               # one sweep now (needs [payout] sweep_address, sweep_threshold_ckb, sweep_amount_ckb)
 ```
 
 `register create` refuses (in this order) without a Synced R2, for an attestation whose public key or network differs from this node's (or that is already expired by the on-chain clock), for a bad stake (malformed out point, not a live cell, not a Nervos DAO deposit, below 10,000 CKB, not under a standard secp256k1 lock), for a consent that does not recover to the stake owner (the text is rebuilt with the attestation's peer id), and when the runner wallet cannot pay the cell, the fee and the 61 CKB change (the message names the runner address). The registry cell is output 0 with dual lock `runner ‖ runner`, the stake is `cell_deps[0]`, and witness 0 carries the runner's signature and the consent (`output_type`). A second `register create` with a new deposit updates the same cell. Mine blocks (`scripts/devnet.sh mine N`) if a transaction stays pending. Tests: `node --test --test-concurrency=1 acceptance/a8/p3.test.mjs acceptance/a8/p4.test.mjs`.
@@ -57,11 +59,11 @@ csr register remove --json                           # the registry capacity ret
 
 `node --test --test-concurrency=1 acceptance/a3c/p2.test.mjs acceptance/a3c/p3.test.mjs` (devnet running, `bash scripts/build-services.sh` done). `p2`: an `every:2` job runs three times, the tips are settled (since A8 they go into the runner wallet, `acceptance/a8/p4.test.mjs`). `p3`: two CSR instances with separate data roots share the devnet node and race for one job; exactly one settles, the other ends in `Lost` at no cost. Manual demo steps: `docs/milestones/A3c.md`.
 
-### Manual testnet runbook (not run by the test suite)
+### Manual testnet runbook "with Neuron" (not run by the test suite)
 
 Prerequisites: a synced testnet CKB node (full node with the Indexer module), a funded testnet key, the built contracts.
 
-1. **Deployment.** The testnet deployment is embedded in the runner (`deployments/testnet.json`, compiled in) and `config/networks/testnet.toml` carries the real monitor; nothing to configure. (Developers redeploy with `bash scripts/build-contracts.sh` and `csr-dev deploy-contracts --out deployments/testnet.json`.)
+1. **Deployment.** The testnet deployment is embedded in the runner (`deployments/testnet.json`, compiled in) and `config/networks/testnet.toml` carries the real monitor; nothing to configure. (Developers redeploy with `bash scripts/build-contracts.sh`, free the old cells with `csr-dev reclaim --outpoint 0x<tx>:<i> …` and run `csr-dev deploy-contracts --keep-config deployments/testnet.json --reuse-unchanged --out deployments/testnet.json`.)
 2. **Clock.** The monitor `monitor-testnet.vericell.net` keeps the on-chain clock fresh; no `csr-dev clock-update` is needed.
 3. **Runner wallet.** `csr identity --json` (network `testnet`) shows `runner_address`; send about 700 CKB there from any wallet (the registry cell takes ≈ 540 CKB, 61 CKB stay as change).
 4. **Sweep (optional).** Set `[payout] sweep_address` to your own wallet's address; the runner sends `sweep_amount_ckb` there whenever the wallet reaches `sweep_threshold_ckb`.
@@ -69,3 +71,5 @@ Prerequisites: a synced testnet CKB node (full node with the Indexer module), a 
 6. **Consent.** `csr register consent-message --stake 0x<tx>:<index>` prints the one-line text; sign it with the deposit's wallet ("Sign message" in Neuron) and check with `csr register verify-consent --message '<text>' --signature 0x…`.
 7. **Register.** `csr register create --stake 0x<tx>:<index> --consent 0x<signature>` asks the real testnet monitor for the attestation (it needs `[ranking] join = true` and successful checks in the last 24 hours, otherwise `not_eligible`), then builds, signs and submits the registration; `csr register status --json` shows `registered: true`.
 8. **Payout.** Tips go into the runner wallet; `csr wallet send --to <address> --ckb N` moves CKB out by hand.
+
+In the dashboard (`#/wallet`, "Wallet & registration") the same steps are: copy the runner address, send the CKB from Neuron, enter the stake out point, "Show text to sign", sign it in Neuron (Tools → Sign/Verify Message, with the deposit's address), paste the signature and press "Register"; set `payout.sweep_address` (Settings) to your Neuron address.

@@ -93,5 +93,5 @@ are node diversity, bonding/slashing on leaks, and thresholds.
 ## Operator safety rules
 
 - **Allowlist, not auto-discovery.** Only code hashes the operator approved run.
-- **One payout address, no wallet in the runner.** Any lock: multisig, JoyID…
+- **The runner wallet, no operator wallet signing.** The runner owns a plain wallet (cells of its own service-key lock) that pays the registration and its fees and receives the tips; it sweeps surplus to the operator's `sweep_address` (any full-format address). The DAO stake stays in the operator's wallet, which consents once by signing a text.
 - **The node always wins.** Services pause while syncing or under load.
