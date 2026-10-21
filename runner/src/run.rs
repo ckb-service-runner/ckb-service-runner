@@ -18,6 +18,7 @@ const R2_INTERVAL: Duration = Duration::from_secs(10);
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
 const RESOURCE_INTERVAL: Duration = Duration::from_secs(5);
+const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const MAINNET_MARKER: &str = ".mainnet-confirmed";
 
 pub fn now() -> i64 {
@@ -58,6 +59,72 @@ async fn shutdown_signal() {
 fn write_marker(path: &Path) -> Result<(), String> {
     std::fs::write(path, format!("confirmed {}\n", now()))
         .map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// The automatic sweep of the runner wallet (`payout.sweep_*`).
+#[derive(Default)]
+struct Sweeper {
+    /// When the last sweep check ran (the first one runs as soon as the node is reachable).
+    checked: Option<Instant>,
+    /// The sweep transaction not committed yet.
+    pending: Option<String>,
+    warned: bool,
+}
+
+impl Sweeper {
+    async fn step(&mut self, state: &Arc<AppState>, cfg: &Config) {
+        let due = self
+            .checked
+            .is_none_or(|t| t.elapsed() >= period(SWEEP_INTERVAL));
+        if self.pending.is_none() && (!due || cfg.payout.sweep_address().is_none()) {
+            return;
+        }
+        let chain = match crate::chain::Chain::connect(cfg, &state.service_pubkey).await {
+            Ok(c) => c.with_service_key(state.service_key),
+            Err(e) => {
+                if !self.warned {
+                    tracing::warn!("runner wallet sweep unavailable: {e}");
+                    self.warned = true;
+                }
+                return;
+            }
+        };
+        if let Some(tx) = &self.pending {
+            match chain.tx_status(tx).await {
+                Ok((s, _)) if s == "committed" => {
+                    tracing::info!("runner wallet: sweep {tx} committed");
+                    self.pending = None;
+                }
+                Ok((s, _)) if s == "pending" || s == "proposed" => return,
+                Ok((s, _)) => {
+                    tracing::warn!("runner wallet: sweep {tx} was not committed ({s})");
+                    self.pending = None;
+                }
+                Err(_) => return,
+            }
+        }
+        if !due {
+            return;
+        }
+        // One runner transaction at a time: not while keeper transactions are pending.
+        let busy = state
+            .db
+            .runs_in(&[crate::keeper::SUBMITTING])
+            .map(|r| !r.is_empty())
+            .unwrap_or(true);
+        if busy {
+            return;
+        }
+        self.checked = Some(Instant::now());
+        let _wallet = state.wallet_tx.lock().await;
+        match crate::wallet::sweep(&chain, cfg, &state.net_dir).await {
+            Ok(v) if v["swept"] == true => {
+                self.pending = v["tx_hash"].as_str().map(str::to_string);
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("runner wallet sweep failed: {e}"),
+        }
+    }
 }
 
 pub async fn run(
@@ -110,6 +177,7 @@ pub async fn run(
         resources: RwLock::new(Some(monitor.sample())),
         last_check_ok_at: AtomicI64::new(0),
         config_write: Mutex::new(()),
+        wallet_tx: Default::default(),
         monitor_cache: Default::default(),
         sessions: Mutex::new(Default::default()),
         config: RwLock::new(cfg),
@@ -121,6 +189,12 @@ pub async fn run(
         state.config.read().unwrap().network,
         state.service_pubkey
     );
+    if !state.config.read().unwrap().payout.lock_args.is_empty() {
+        tracing::warn!(
+            "payout.lock_args is set but ignored: since A8 the tips go into the runner wallet \
+             (see `csr wallet status`); remove it from the config"
+        );
+    }
 
     let (stop_tx, stop_rx) = watch::channel(false);
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<String>(1);
@@ -208,6 +282,8 @@ pub async fn run(
     }
 
     // Keeper: on every new block discover jobs (runtime on), run a batch and track settlements.
+    // The same task sweeps the runner wallet (every 60 s, independent of the runtime), so that the
+    // runner's own transactions go out one at a time.
     if let Ok(n) = state.db.requeue_interrupted() {
         if n > 0 {
             tracing::info!("{n} interrupted job run(s) queued again");
@@ -223,12 +299,18 @@ pub async fn run(
             let mut keeper: Option<crate::keeper::Keeper> = None;
             let mut last_tip = None;
             let mut warned = false;
+            let mut sweeper = Sweeper::default();
             loop {
                 tokio::select! {
                     _ = tick.tick() => {},
                     _ = stop.changed() => return,
                 }
                 let cfg = state.config.read().unwrap().clone();
+                sweeper.step(&state, &cfg).await;
+                // Never start keeper transactions while a sweep is pending: both spend the wallet.
+                if sweeper.pending.is_some() {
+                    continue;
+                }
                 let r2 = state.node.read().unwrap().report.state;
                 let (rt, reason) = crate::app::runtime_state(cfg.runtime.enabled, &cfg.network, r2);
                 let submitting = state
@@ -275,6 +357,7 @@ pub async fn run(
                 };
                 // Errors are retried at the next block.
                 last_tip = Some(chain_tip);
+                let _wallet = state.wallet_tx.lock().await;
                 match k
                     .tick(&state, &cfg, rt != "off" && rt != "inactive", hold)
                     .await

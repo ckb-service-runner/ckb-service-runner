@@ -41,6 +41,8 @@ per_service_quota_mb = 64           # <= total_quota_mb
 level = "info"                      # error | warn | info | debug | trace
 
 [payout]
-# Tips go to your payout cell: an anyone-can-pay cell with these 20-byte args (usually the blake160 of
-# your wallet key, i.e. its secp256k1 lock args). Empty = not set up yet (`csr payout …` refuses to run).
-lock_args = ""                      # "" or 0x + 40 hex digits
+# Tips go into the runner wallet (the runner address, `csr wallet status`). When it holds at least
+# sweep_threshold_ckb, the runner sends sweep_amount_ckb to sweep_address (your own wallet).
+sweep_address = ""                  # "" = no sweep; a full-format address (ckb1…/ckt1…) of this network
+sweep_threshold_ckb = 1500          # >= sweep_amount_ckb + 100
+sweep_amount_ckb = 1000             # >= 61

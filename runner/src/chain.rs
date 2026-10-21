@@ -1,7 +1,8 @@
-//! On-chain operator flows: runner key cell, payout cell and transaction submission.
+//! On-chain flows: the runner wallet, the registration, job runs and transaction submission.
 //!
-//! CSR never holds the owner's key. The `prepare_*` functions build unsigned transactions (ckb-cli
-//! "tx" file format); the owner signs them in their wallet and `submit` broadcasts the result.
+//! The runner wallet is the set of plain cells of the runner's own secp256k1 lock (`blake160` of the
+//! service key). CSR builds and signs every transaction itself with the service key (decision D-A8-1); the
+//! operator only funds the wallet and signs the stake consent text in its own wallet.
 
 use crate::config::Config;
 use crate::node::r2::expected_chain;
@@ -20,7 +21,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 pub const CKB: u64 = 100_000_000;
-/// Fee reserve when picking the owner's cells; the exact fee comes out of the change.
+/// Fee reserve when picking runner wallet cells; the exact fee comes out of the change.
 const FEE_RESERVE: u64 = 1_000_000;
 
 const SIGHASH_CODE_HASH: H256 =
@@ -70,15 +71,6 @@ pub fn ckb_to_shannons(s: &str) -> Result<u64, String> {
         .ok_or_else(bad)
 }
 
-pub fn parse_lock_args(s: &str) -> Result<Vec<u8>, String> {
-    let b = hex::decode(s.trim().trim_start_matches("0x"))
-        .map_err(|_| "owner lock args are not hex".to_string())?;
-    if b.len() != 20 {
-        return Err("owner lock args must be 20 bytes (secp256k1_blake160)".into());
-    }
-    Ok(b)
-}
-
 /// Minimum registration stake (`spec/registry.md`, stake rule 3): 10,000 CKB.
 pub const MIN_STAKE: u64 = 1_000_000_000_000;
 
@@ -101,8 +93,9 @@ pub fn parse_stake(s: &str) -> Result<String, String> {
     Ok(format!("0x{}:{i}", h.to_ascii_lowercase()))
 }
 
-/// Why a cell is not a valid stake for `owner_lock_hash` (stake rules 2–4), or `None` if it is.
-fn stake_problem(out: &CellOutput, data: &[u8], owner_lock_hash: &[u8]) -> Option<String> {
+/// Why a cell is not a valid stake (stake rules 2–3: a Nervos DAO deposit of at least `MIN_STAKE`), or
+/// `None` if it is. Who owns it is checked by the consent (rule 4).
+fn stake_problem(out: &CellOutput, data: &[u8]) -> Option<String> {
     let dao = out.type_().to_opt().is_some_and(|t| {
         t.code_hash().as_slice() == DAO_TYPE_CODE_HASH.as_bytes()
             && t.hash_type().as_slice() == [ScriptHashType::Type as u8]
@@ -119,10 +112,16 @@ fn stake_problem(out: &CellOutput, data: &[u8], owner_lock_hash: &[u8]) -> Optio
             MIN_STAKE / CKB
         ));
     }
-    if out.lock().calc_script_hash().as_slice() != owner_lock_hash {
-        return Some("the stake is not owned by the owner lock (--owner-lock-args)".into());
-    }
     None
+}
+
+/// The 20 lock args of a `secp256k1_blake160_sighash_all` lock in the `type` form (what a wallet's
+/// "Sign message" key controls); `None` for any other lock.
+fn sighash_args(lock: &Script) -> Option<[u8; 20]> {
+    (lock.code_hash().as_slice() == SIGHASH_CODE_HASH.as_bytes()
+        && lock.hash_type().as_slice() == [ScriptHashType::Type as u8])
+    .then(|| lock.args().raw_data().as_ref().try_into().ok())
+    .flatten()
 }
 
 fn out_point_str(op: &OutPoint) -> String {
@@ -192,8 +191,6 @@ impl Deployed {
 }
 
 struct Deployments {
-    /// The anyone-can-pay lock of the payout cell.
-    acp: Deployed,
     dual: Deployed,
     registry: Deployed,
     job_type: Deployed,
@@ -265,7 +262,6 @@ fn parse_deployments(text: &str, source: &str) -> Result<Deployments, String> {
             .map_err(|_| format!("{f}: bad {what}"))
     };
     Ok(Deployments {
-        acp: load_deployed(&v, "anyone_can_pay", f)?,
         dual: load_deployed(&v, "dual_lock", f)?,
         registry: load_deployed(&v, "registry", f)?,
         job_type: load_deployed(&v, "job_type", f)?,
@@ -455,21 +451,38 @@ fn parse_registry_data(d: &[u8]) -> Option<RegistryData> {
     })
 }
 
-/// Signs the sighash group made of input 0 only (the runner key cell) with the service key.
-fn sign_first_input(
+/// Signs the sighash group made of inputs `0..group` (runner wallet cells) with the service key. Witness 0
+/// keeps its other fields (the consent in `output_type` is covered by the signature).
+fn sign_wallet_inputs(
     tx: &TransactionView,
+    group: usize,
     key: &secp256k1::SecretKey,
 ) -> Result<TransactionView, String> {
     let mut witnesses: Vec<Bytes> = tx.witnesses().into_iter().map(|w| w.raw_data()).collect();
-    let placeholder = WitnessArgs::new_builder()
+    let n_inputs = tx.inputs().len();
+    while witnesses.len() < n_inputs {
+        witnesses.push(Bytes::new());
+    }
+    let args = if witnesses[0].is_empty() {
+        WitnessArgs::default()
+    } else {
+        WitnessArgs::from_slice(&witnesses[0]).map_err(|e| format!("bad witness 0: {e}"))?
+    };
+    let placeholder = args
+        .clone()
+        .as_builder()
         .lock(Some(Bytes::from(vec![0u8; 65])).pack())
         .build();
-    let n_inputs = tx.inputs().len();
     let mut h = ckb_hash::new_blake2b();
     h.update(tx.hash().as_slice());
     h.update(&(placeholder.as_bytes().len() as u64).to_le_bytes());
     h.update(&placeholder.as_bytes());
-    for w in witnesses.iter().skip(n_inputs) {
+    for w in witnesses
+        .iter()
+        .take(group)
+        .skip(1)
+        .chain(witnesses.iter().skip(n_inputs))
+    {
         h.update(&(w.len() as u64).to_le_bytes());
         h.update(w);
     }
@@ -480,7 +493,8 @@ fn sign_first_input(
         .serialize_compact();
     let mut sig = compact.to_vec();
     sig.push(rec.to_i32() as u8);
-    witnesses[0] = WitnessArgs::new_builder()
+    witnesses[0] = args
+        .as_builder()
         .lock(Some(Bytes::from(sig)).pack())
         .build()
         .as_bytes();
@@ -490,12 +504,16 @@ fn sign_first_input(
         .build())
 }
 
+fn code_dep(op: OutPoint) -> CellDep {
+    CellDep::new_builder()
+        .out_point(op)
+        .dep_type(packed::Byte::new(DepType::Code as u8))
+        .build()
+}
+
 pub struct Chain {
     rpc: RpcClient,
     network: String,
-    acp: Deployed,
-    /// `payout.lock_args` (anyone-can-pay args of the payout cell), if configured.
-    payout_args: Option<Vec<u8>>,
     dual: Deployed,
     registry: Deployed,
     job_type: Deployed,
@@ -525,13 +543,6 @@ pub struct RawJob {
     pub data: Vec<u8>,
 }
 
-/// An unsigned transaction in `ckb-cli` tx file format.
-pub struct Prepared {
-    pub file: Value,
-    pub fee_shannons: u64,
-    pub tx_hash: String,
-}
-
 impl Chain {
     /// Connects to the configured node; the chain must be the network's chain.
     pub async fn connect(cfg: &Config, service_pubkey: &str) -> Result<Chain, String> {
@@ -552,8 +563,6 @@ impl Chain {
         Ok(Chain {
             rpc,
             network: cfg.network.clone(),
-            acp: dep.acp,
-            payout_args: cfg.payout.args()?,
             dual: dep.dual,
             registry: dep.registry,
             job_type: dep.job_type,
@@ -567,7 +576,7 @@ impl Chain {
         })
     }
 
-    /// The service key signs the runner key cell input of registration transactions.
+    /// The service key signs the runner wallet inputs of every transaction CSR builds.
     pub fn with_service_key(mut self, key: secp256k1::SecretKey) -> Chain {
         self.service_key = Some(key);
         self
@@ -577,18 +586,13 @@ impl Chain {
         script_hash(&self.runner_lock)
     }
 
-    /// `payout.lock_args`; every payout command needs it.
-    fn payout_args(&self) -> Result<&[u8], String> {
-        self.payout_args.as_deref().ok_or_else(|| {
-            "payout.lock_args is not set: put the 20-byte args of your payout (anyone-can-pay) cell \
-             into [payout] lock_args of the config"
-                .to_string()
-        })
+    /// The runner address: full-format address of the runner wallet lock.
+    pub fn runner_address(&self) -> String {
+        crate::address::sighash_address(&self.network, &self.runner_lock.args().raw_data())
     }
 
-    /// The anyone-can-pay lock of the payout cell.
-    pub fn payout_lock(&self) -> Result<Script, String> {
-        Ok(self.acp.script(self.payout_args()?))
+    pub fn network(&self) -> &str {
+        &self.network
     }
 
     async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
@@ -654,33 +658,13 @@ impl Chain {
             "found": !cells.is_empty(),
             "outpoint": cells.first().map(|c| out_point_str(&c.out_point)),
             "capacity_shannons": total,
+            "runner_address": self.runner_address(),
         }))
     }
 
-    /// The payout cell: the oldest live cell under the exact payout lock, without type and data.
-    pub async fn payout(&self) -> Result<Option<Cell>, String> {
-        let lock = self.payout_lock()?;
-        let cells = self
-            .get_cells(json!({
-                "script": json::Script::from(lock),
-                "script_type": "lock",
-                "script_search_mode": "exact",
-                "filter": {"script_len_range": ["0x0", "0x1"], "output_data_len_range": ["0x0", "0x1"]},
-            }))
-            .await?;
-        Ok(cells.into_iter().next())
-    }
-
-    pub async fn payout_status(&self) -> Result<Value, String> {
-        let lock = self.payout_lock()?;
-        let cell = self.payout().await?;
-        Ok(json!({
-            "found": cell.is_some(),
-            "outpoint": cell.as_ref().map(|c| out_point_str(&c.out_point)),
-            "capacity_shannons": cell.as_ref().map(|c| c.capacity),
-            "lock_args": hx(lock.args().raw_data()),
-            "lock_hash": hx(script_hash(&lock).as_bytes()),
-        }))
+    /// Capacity of the runner wallet: the sum of all plain runner-lock cells.
+    pub async fn wallet_capacity(&self) -> Result<u64, String> {
+        Ok(self.runner_cells().await?.iter().map(|c| c.capacity).sum())
     }
 
     /// Cell dep of the secp256k1_blake160 dep group (found in the genesis block).
@@ -719,29 +703,50 @@ impl Chain {
         Err("secp256k1_blake160 dep group not found in the genesis block".into())
     }
 
-    /// Builds the unsigned transaction: `pre` cells are spent first, then as many of the owner's
-    /// plain cells as needed. Outputs are `fixed` plus the change to the owner, who pays the fee.
-    async fn assemble(
+    /// The refusal when the runner wallet cannot pay a transaction.
+    fn wallet_short(&self, have: u64, need: u64) -> String {
+        format!(
+            "the runner wallet has {} CKB, but this transaction needs {} CKB (including the {} CKB \
+             that stay in the wallet and the fee); send at least {} CKB to the runner address {}",
+            have as f64 / CKB as f64,
+            need as f64 / CKB as f64,
+            occupied(&self.runner_lock, None, 0) / CKB,
+            need.saturating_sub(have).div_ceil(CKB).max(1),
+            self.runner_address()
+        )
+    }
+
+    /// Builds and signs a runner wallet transaction: inputs `[runner wallet cells…, extra…]`, outputs
+    /// `[fixed…, wallet change]`. The wallet pays what the outputs need beyond the extra inputs, plus the fee,
+    /// and keeps at least 61 CKB. `stake_dep` becomes `cell_deps[0]`; `consent` goes into
+    /// `WitnessArgs.output_type` of witness 0 (output 0 is then the registry cell).
+    async fn wallet_tx(
         &self,
-        owner: &Script,
-        pre: Vec<Cell>,
+        extra: Vec<Cell>,
         fixed: Vec<Out>,
         mut deps: Vec<CellDep>,
         stake_dep: Option<CellDep>,
-        sign_runner_input: bool,
-    ) -> Result<Prepared, String> {
+        consent: Option<Vec<u8>>,
+    ) -> Result<TransactionView, String> {
+        let key = self
+            .service_key
+            .as_ref()
+            .ok_or("the service key is not available")?;
         deps.insert(0, self.secp_dep().await?);
         if let Some(stake) = stake_dep {
             // First, so only code deps precede it (`spec/registry.md`, stake rule 1).
             deps.insert(0, stake);
         }
+        let owner = &self.runner_lock;
         let change_min = occupied(owner, None, 0);
-        let in_pre: u64 = pre.iter().map(|c| c.capacity).sum();
+        let in_extra: u64 = extra.iter().map(|c| c.capacity).sum();
         let out_fixed: u64 = fixed.iter().map(|o| o.cap).sum();
-        let need = out_fixed + FEE_RESERVE + change_min;
+        let need = (out_fixed + FEE_RESERVE + change_min).saturating_sub(in_extra);
+        let cells = self.runner_cells().await?;
+        let total: u64 = cells.iter().map(|c| c.capacity).sum();
         let mut picked: Vec<Cell> = Vec::new();
-        let mut have = in_pre;
-        for c in self.plain_cells(owner).await? {
+        let mut have = 0u64;
+        for c in cells {
             if !picked.is_empty() && have >= need {
                 break;
             }
@@ -749,25 +754,18 @@ impl Chain {
             picked.push(c);
         }
         if picked.is_empty() || have < need {
-            return Err(format!(
-                "the owner's cells are insufficient: have {have} shannons, need {need}"
-            ));
+            return Err(self.wallet_short(total, need.max(change_min)));
         }
-        let owner_first = pre.len();
-        let inputs: Vec<CellInput> = pre
+        let group = picked.len();
+        let inputs: Vec<CellInput> = picked
             .iter()
-            .chain(&picked)
+            .chain(&extra)
             .map(|c| CellInput::new(c.out_point.clone(), 0))
             .collect();
         let mut witnesses = vec![Bytes::new(); inputs.len()];
-        if sign_runner_input {
-            witnesses[0] = WitnessArgs::new_builder()
-                .lock(Some(Bytes::from(vec![0u8; 65])).pack())
-                .build()
-                .as_bytes();
-        }
-        witnesses[owner_first] = WitnessArgs::new_builder()
+        witnesses[0] = WitnessArgs::new_builder()
             .lock(Some(Bytes::from(vec![0u8; 65])).pack())
+            .output_type(consent.map(Bytes::from).pack())
             .build()
             .as_bytes();
         let build = |change: u64| -> TransactionView {
@@ -789,165 +787,36 @@ impl Chain {
             }
             b.build()
         };
+        let gross = have + in_extra - out_fixed;
         // 2 shannons per byte (the node's minimum is 1) plus a constant.
-        let fee = build(have - out_fixed).data().as_slice().len() as u64 * 2 + 1000;
-        let change = have - out_fixed - fee;
+        let fee = build(gross).data().as_slice().len() as u64 * 2 + 1000;
+        let change = gross.saturating_sub(fee);
         if change < change_min {
-            return Err("the owner's cells cannot cover the change output and the fee".into());
+            return Err(self.wallet_short(total, need.max(change_min) + fee));
         }
-        let mut tx = build(change);
-        if sign_runner_input {
-            let key = self
-                .service_key
-                .as_ref()
-                .ok_or("the service key is not available")?;
-            tx = sign_first_input(&tx, key)?;
-        }
-        Ok(Prepared {
-            file: json!({
-                "transaction": serde_json::to_value(json::TransactionView::from(tx.clone()).inner)
-                    .map_err(|e| e.to_string())?,
-                "multisig_configs": {},
-                "signatures": {},
-            }),
-            fee_shannons: fee,
-            tx_hash: hx(tx.hash().as_slice()),
-        })
+        sign_wallet_inputs(&build(change), group, key)
     }
 
-    /// Unsigned transaction creating the payout cell with `ckb` CKB, paid by the secp256k1 lock
-    /// of `owner_lock_args`.
-    pub async fn prepare_payout_create(
-        &self,
-        ckb: &str,
-        owner_lock_args: &str,
-    ) -> Result<Prepared, String> {
-        let lock = self.payout_lock()?;
-        let owner = sighash_lock(&parse_lock_args(owner_lock_args)?);
-        let cap = ckb_to_shannons(ckb)?;
-        let min = occupied(&lock, None, 0);
-        if cap < min {
-            return Err(format!("a payout cell needs at least {} CKB", min / CKB));
-        }
-        if let Some(c) = self.payout().await? {
+    /// Broadcasts a transaction CSR built; the error carries the node's message.
+    async fn broadcast(&self, tx: &TransactionView) -> Result<String, String> {
+        self.send(tx)
+            .await
+            .map_err(|m| format!("the node rejected the transaction: {m}"))
+    }
+
+    /// Sends exactly `amount` shannons from the runner wallet to `to` (the fee comes from the wallet).
+    pub async fn wallet_send(&self, to: Script, amount: u64) -> Result<String, String> {
+        let min = occupied(&to, None, 0).max(61 * CKB);
+        if amount < min {
             return Err(format!(
-                "a payout cell already exists ({}); anyone can add CKB to it",
-                out_point_str(&c.out_point)
+                "the amount must be at least {} CKB (a cell needs it)",
+                min / CKB
             ));
         }
-        self.assemble(
-            &owner,
-            vec![],
-            vec![Out::plain(lock, cap)],
-            vec![],
-            None,
-            false,
-        )
-        .await
-    }
-
-    /// Unsigned transaction moving `ckb` CKB (or everything with `all`) from the payout cell to the
-    /// secp256k1 lock of `payout.lock_args`. The payout cell is spent on the anyone-can-pay
-    /// signature path; the fee comes out of the withdrawn amount. If what arrives is below a
-    /// cell's minimum capacity, it is added to one of the receiver's plain cells instead.
-    pub async fn prepare_payout_withdraw(
-        &self,
-        ckb: Option<&str>,
-        all: bool,
-    ) -> Result<Prepared, String> {
-        let receiver = sighash_lock(self.payout_args()?);
-        let payout = self
-            .payout()
-            .await?
-            .ok_or("no payout cell found; use prepare-create")?;
-        let keep = occupied(&payout.lock, None, 0);
-        let (amount, left) = if all {
-            (payout.capacity, None)
-        } else {
-            let amount = ckb_to_shannons(ckb.ok_or("give --ckb N or --all")?)?;
-            let left = payout
-                .capacity
-                .checked_sub(amount)
-                .filter(|l| *l >= keep)
-                .ok_or_else(|| {
-                    format!(
-                        "the payout cell keeps at least {} CKB (its occupied capacity); use --all to close it",
-                        keep / CKB
-                    )
-                })?;
-            (amount, Some(left))
-        };
-        if amount == 0 {
-            return Err("nothing to withdraw".into());
-        }
-        let change_min = occupied(&receiver, None, 0);
-        let mut inputs = vec![payout.clone()];
-        let mut into = 0u64;
-        // Upper bound of the fee: the transaction is far below 10 KB.
-        if amount < change_min + 20_000 {
-            let cell = self
-                .plain_cells(&receiver)
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    format!(
-                        "{} CKB minus the fee is below the {} CKB a cell needs, and the receiving \
-                         lock has no cell to add it to; withdraw more",
-                        amount as f64 / CKB as f64,
-                        change_min / CKB
-                    )
-                })?;
-            into = cell.capacity;
-            inputs.push(cell);
-        }
-        let deps = vec![self.secp_dep().await?, self.acp.cell_dep()];
-        let placeholder = WitnessArgs::new_builder()
-            .lock(Some(Bytes::from(vec![0u8; 65])).pack())
-            .build()
-            .as_bytes();
-        let build = |fee: u64| -> TransactionView {
-            let mut b = TransactionBuilder::default()
-                .cell_deps(deps.clone())
-                .inputs(
-                    inputs
-                        .iter()
-                        .map(|c| CellInput::new(c.out_point.clone(), 0)),
-                )
-                .witnesses(vec![placeholder.pack(); inputs.len()]);
-            let mut outs = Vec::new();
-            if let Some(left) = left {
-                outs.push(Out::plain(payout.lock.clone(), left));
-            }
-            outs.push(Out::plain(receiver.clone(), into + amount - fee));
-            for o in outs {
-                b = b
-                    .output(
-                        CellOutput::new_builder()
-                            .capacity(Pack::<packed::Uint64>::pack(&o.cap))
-                            .lock(o.lock)
-                            .build(),
-                    )
-                    .output_data(o.data.pack());
-            }
-            b.build()
-        };
-        // 2 shannons per byte (the node's minimum is 1) plus a constant.
-        let fee = build(0).data().as_slice().len() as u64 * 2 + 1000;
-        if into + amount < fee + change_min {
-            return Err("the withdrawn amount cannot cover the fee".into());
-        }
-        let tx = build(fee);
-        Ok(Prepared {
-            file: json!({
-                "transaction": serde_json::to_value(json::TransactionView::from(tx.clone()).inner)
-                    .map_err(|e| e.to_string())?,
-                "multisig_configs": {},
-                "signatures": {},
-            }),
-            fee_shannons: fee,
-            tx_hash: hx(tx.hash().as_slice()),
-        })
+        let tx = self
+            .wallet_tx(vec![], vec![Out::plain(to, amount)], vec![], None, None)
+            .await?;
+        self.broadcast(&tx).await
     }
 
     /// Tip block number, packed epoch and median time (ms) for trigger checks.
@@ -1061,19 +930,15 @@ impl Chain {
             .max_by_key(|(_, r)| r.expiry_ms))
     }
 
-    /// The registration's stake now: `deposited` (stake rules 2–4 hold), `withdrawn` (the cell is
-    /// dead) or `invalid` (live but failing a rule).
-    async fn stake_status(
-        &self,
-        stake: &OutPoint,
-        owner_lock_hash: &[u8],
-    ) -> Result<Value, String> {
+    /// The registration's stake now: `deposited` (stake rules 2–3 hold), `withdrawn` (the cell is dead)
+    /// or `invalid` (live but not a deposit of at least 10,000 CKB).
+    async fn stake_status(&self, stake: &OutPoint) -> Result<Value, String> {
         let op = out_point_str(stake);
         Ok(match self.live_cell(&op).await? {
             None => json!({"outpoint": op, "status": "withdrawn", "capacity_shannons": null}),
             Some((out, data)) => {
                 let cap: u64 = out.capacity().unpack();
-                let status = if stake_problem(&out, &data, owner_lock_hash).is_none() {
+                let status = if stake_problem(&out, &data).is_none() {
                     "deposited"
                 } else {
                     "invalid"
@@ -1086,12 +951,8 @@ impl Chain {
     pub async fn register_status(&self) -> Result<Value, String> {
         Ok(match self.registry_cell().await? {
             Some((c, r)) => {
-                let owner_lock_hash = c.lock.args().raw_data();
                 let stake = match &r.stake {
-                    Some(op) => {
-                        self.stake_status(op, owner_lock_hash.get(..32).unwrap_or(&[]))
-                            .await?
-                    }
+                    Some(op) => self.stake_status(op).await?,
                     None => Value::Null,
                 };
                 json!({
@@ -1114,15 +975,60 @@ impl Chain {
         })
     }
 
-    /// Unsigned registry creation: the owner pays; the runner key cell is spent and re-created and
-    /// its input is signed here with the service key (`spec/registry.md`, rule 6). The stake (a
-    /// Nervos DAO deposit of the owner, `0x<tx>:<index>`) becomes `cell_deps[0]`.
-    pub async fn prepare_register(
+    /// The registry lock owned by the runner wallet: dual lock `runner_lock_hash ‖ runner_lock_hash`.
+    fn runner_owned_lock(&self) -> Script {
+        let h = self.runner_lock_hash();
+        let mut args = h.as_bytes().to_vec();
+        args.extend_from_slice(h.as_bytes());
+        self.dual.script(&args)
+    }
+
+    /// The stake as a live, valid deposit: `(out point, lock args of its sighash owner)`.
+    async fn checked_stake(&self, stake: &str) -> Result<(OutPoint, [u8; 20]), String> {
+        let stake = parse_stake(stake)?;
+        let (out, data) = self
+            .live_cell(&stake)
+            .await?
+            .ok_or_else(|| format!("the stake {stake} is not a live cell"))?;
+        if let Some(p) = stake_problem(&out, &data) {
+            return Err(format!("{p} ({stake})"));
+        }
+        let owner = sighash_args(&out.lock()).ok_or_else(|| {
+            format!(
+                "the stake {stake} is not locked by a standard secp256k1_blake160 wallet lock, so its \
+                 owner cannot consent by a signed message"
+            )
+        })?;
+        let (h, i) = parse_out_point(&stake)?;
+        Ok((out_point_from(&h, i)?, owner))
+    }
+
+    /// The text the stake owner signs for registering this runner with `stake` on the local node.
+    pub async fn consent_message(&self, stake: &str) -> Result<Value, String> {
+        let (stake, owner) = self.checked_stake(stake).await?;
+        let info = self.call("local_node_info", json!([])).await?;
+        let peer_id = info["node_id"]
+            .as_str()
+            .ok_or("the node reported no node_id")?;
+        let stake_bytes: [u8; 36] = stake.as_slice().try_into().expect("36-byte out point");
+        let message =
+            crate::consent::message(&self.network, &stake_bytes, &self.service_pubkey, peer_id)?;
+        Ok(json!({
+            "message": message,
+            "stake_owner_lock_args": hx(owner),
+            "stake_owner_address": crate::address::sighash_address(&self.network, &owner),
+        }))
+    }
+
+    /// Registers this node with `stake` and the stake owner's `consent` signature (`spec/registry.md` §9):
+    /// creates the runner-owned registry cell, or updates the existing one (new stake and attestation).
+    /// Paid from and signed by the runner wallet.
+    pub async fn register_create(
         &self,
         attestation: &Value,
-        owner_lock_args: &str,
         stake: &str,
-    ) -> Result<Prepared, String> {
+        consent: &str,
+    ) -> Result<Value, String> {
         let polled = crate::node::poll(&self.rpc, &self.network).await;
         if polled.report.state != crate::node::r2::R2State::Synced {
             return Err(format!(
@@ -1144,38 +1050,35 @@ impl Chain {
         if att.expiry_ms <= clock {
             return Err("the attestation has expired".into());
         }
-        // Tips go to the payout cell; it must exist before registering.
-        let payout = self.payout().await?.ok_or(
-            "no payout cell found: create it first (csr payout prepare-create); tips are paid to it",
-        )?;
-        let payout_lock_hash = script_hash(&payout.lock);
-        let runner_cell = self
-            .runner_cells()
-            .await?
-            .into_iter()
-            .next()
-            .ok_or("no runner key cell found; fund the runner lock first")?;
-        let owner = sighash_lock(&parse_lock_args(owner_lock_args)?);
-        let owner_lock_hash = script_hash(&owner);
-        let stake = parse_stake(stake)?;
-        let (stake_out, stake_data) = self
-            .live_cell(&stake)
-            .await?
-            .ok_or_else(|| format!("the stake {stake} is not a live cell"))?;
-        if let Some(p) = stake_problem(&stake_out, &stake_data, owner_lock_hash.as_bytes()) {
-            return Err(format!("{p} ({stake})"));
+        let (stake_point, owner) = self.checked_stake(stake).await?;
+        // The consent: the text of this registration (the attestation's peer id), signed by the stake owner.
+        let sig = crate::consent::parse_signature_hex(consent)
+            .map_err(|e| format!("bad consent: {e}"))?;
+        let peer_id = std::str::from_utf8(&att.peer_id)
+            .map_err(|_| "attestation: peer_id is not UTF-8".to_string())?;
+        let stake_bytes: [u8; 36] = stake_point.as_slice().try_into().expect("36 bytes");
+        let text =
+            crate::consent::message(&self.network, &stake_bytes, &self.service_pubkey, peer_id)?;
+        let signer =
+            crate::consent::recover_signer(&text, &sig).map_err(|e| format!("bad consent: {e}"))?;
+        if signer != owner {
+            return Err(format!(
+                "the consent is not the stake owner's: the signature recovers to lock args {}, the \
+                 stake belongs to {}; the owner must sign exactly the text of `csr register \
+                 consent-message`",
+                hx(signer),
+                hx(owner)
+            ));
         }
-        let (h, i) = parse_out_point(&stake)?;
-        let stake_point = out_point_from(&h, i)?;
-        let mut args = owner_lock_hash.as_bytes().to_vec();
-        args.extend_from_slice(self.runner_lock_hash().as_bytes());
-        let lock = Script::new_builder()
-            .code_hash(self.dual.code_hash.pack())
-            .hash_type(packed::Byte::new(self.dual.hash_type as u8))
-            .args(Bytes::from(args).pack())
-            .build();
+
+        let lock = self.runner_owned_lock();
+        let existing = self
+            .registry_cell()
+            .await?
+            .filter(|(c, _)| c.lock == lock)
+            .map(|(c, _)| c);
         let type_ = self.registry_type();
-        let data = Bytes::from(att.registry_data(&payout_lock_hash, &stake_point));
+        let data = Bytes::from(att.registry_data(&self.runner_lock_hash(), &stake_point));
         let cap = occupied(&lock, Some(&type_), data.len());
         let registry = Out {
             lock,
@@ -1183,30 +1086,56 @@ impl Chain {
             data,
             cap,
         };
-        let key_cell = Out::plain(runner_cell.lock.clone(), runner_cell.capacity);
-        let deps = vec![
-            CellDep::new_builder()
-                .out_point(self.registry.code_cell.clone())
-                .dep_type(packed::Byte::new(DepType::Code as u8))
-                .build(),
-            CellDep::new_builder()
-                .out_point(config.out_point)
-                .dep_type(packed::Byte::new(DepType::Code as u8))
-                .build(),
+        let mut deps = vec![
+            code_dep(self.registry.code_cell.clone()),
+            code_dep(config.out_point),
         ];
-        let stake_dep = CellDep::new_builder()
-            .out_point(stake_point)
-            .dep_type(packed::Byte::new(DepType::Code as u8))
-            .build();
-        self.assemble(
-            &owner,
-            vec![runner_cell],
-            vec![registry, key_cell],
-            deps,
-            Some(stake_dep),
-            true,
-        )
-        .await
+        if existing.is_some() {
+            deps.push(self.dual.cell_dep());
+        }
+        let updated = existing.is_some();
+        let tx = self
+            .wallet_tx(
+                existing.into_iter().collect(),
+                vec![registry],
+                deps,
+                Some(code_dep(stake_point)),
+                Some(sig),
+            )
+            .await?;
+        let tx_hash = self.broadcast(&tx).await?;
+        Ok(json!({
+            "tx_hash": tx_hash,
+            "outpoint": format!("{tx_hash}:0"),
+            "stake_owner_lock_args": hx(owner),
+            "updated": updated,
+        }))
+    }
+
+    /// Destroys the runner-owned registry cell; its capacity returns to the runner wallet.
+    pub async fn register_remove(&self) -> Result<Value, String> {
+        let lock = self.runner_owned_lock();
+        let (cell, _) = self
+            .registry_cell()
+            .await?
+            .ok_or("this node is not registered")?;
+        if cell.lock != lock {
+            return Err(
+                "the registry cell is not owned by the runner wallet (an A7 registration); only its \
+                 owner's wallet can remove it"
+                    .into(),
+            );
+        }
+        let (config, _) = self.config_cell().await?;
+        let capacity = cell.capacity;
+        let deps = vec![
+            self.dual.cell_dep(),
+            code_dep(self.registry.code_cell.clone()),
+            code_dep(config.out_point),
+        ];
+        let tx = self.wallet_tx(vec![cell], vec![], deps, None, None).await?;
+        let tx_hash = self.broadcast(&tx).await?;
+        Ok(json!({"tx_hash": tx_hash, "capacity_shannons": capacity}))
     }
 
     /// Broadcasts a signed transaction file (ckb-cli tx file or a bare transaction).
@@ -1270,51 +1199,40 @@ impl Chain {
         Ok(self.live_cell(outpoint).await?.is_some())
     }
 
-    /// Everything a run transaction needs besides the job: payout cell, runner key cell and deps.
+    /// Everything a run transaction needs besides the job: a runner wallet cell and the deps. The
+    /// registration must pay its tips into the runner wallet (`payout_lock_hash = runner_lock_hash`).
     pub async fn run_context(&self) -> Result<RunContext, String> {
-        let payout = self
-            .payout()
+        let (registry, reg) = self
+            .registry_cell()
             .await?
-            .ok_or("no payout cell found; create the payout cell first")?;
+            .ok_or("this node is not registered")?;
+        if reg.payout_lock_hash != self.runner_lock_hash().as_bytes() {
+            return Err(
+                "the registry cell pays the tips to another lock (an A7 payout cell); register \
+                 again (csr register create) so that they go into the runner wallet"
+                    .into(),
+            );
+        }
         let runner = self
             .runner_cells()
             .await?
             .into_iter()
             .next()
-            .ok_or("no runner key cell found")?;
-        let (registry, reg) = self
-            .registry_cell()
-            .await?
-            .ok_or("this node is not registered")?;
-        if reg.payout_lock_hash != script_hash(&payout.lock).as_bytes() {
-            return Err(
-                "the registry cell points to another payout lock (payout.lock_args changed?)"
-                    .into(),
-            );
-        }
+            .ok_or_else(|| {
+                format!(
+                    "the runner wallet is empty; send CKB to the runner address {}",
+                    self.runner_address()
+                )
+            })?;
         let (config, _) = self.config_cell().await?;
-        let code = |d: &Deployed| {
-            CellDep::new_builder()
-                .out_point(d.code_cell.clone())
-                .dep_type(packed::Byte::new(DepType::Code as u8))
-                .build()
-        };
-        let cell_dep = |op: OutPoint| {
-            CellDep::new_builder()
-                .out_point(op)
-                .dep_type(packed::Byte::new(DepType::Code as u8))
-                .build()
-        };
         Ok(RunContext {
-            payout,
             runner,
             deps: vec![
                 self.secp_dep().await?,
-                code(&self.job_lock),
-                code(&self.job_type),
-                self.acp.cell_dep(),
-                cell_dep(registry.out_point),
-                cell_dep(config.out_point),
+                code_dep(self.job_lock.code_cell.clone()),
+                code_dep(self.job_type.code_cell.clone()),
+                code_dep(registry.out_point),
+                code_dep(config.out_point),
             ],
         })
     }
@@ -1367,9 +1285,9 @@ impl Chain {
     }
 
     /// Builds and signs the run transaction of `job` on top of `ctx` (see `job-cell-standard.md`
-    /// §5): inputs `[runner key cell, job, payout cell, skeleton inputs…]`, outputs `[runner key
-    /// cell, payout cell + tip, recreated job | refund, skeleton outputs…]`. The fee comes from the
-    /// job. The payout cell is spent on the anyone-can-pay path (empty witness, capacity grows).
+    /// §5, `registry.md` §9): inputs `[runner wallet cell, job, skeleton inputs…]`, outputs `[runner
+    /// wallet cell + tip, recreated job | refund, skeleton outputs…]`. The fee comes from the job, so
+    /// the wallet grows by exactly the tip.
     pub fn build_run(&self, ctx: &RunContext, job: &RunJob) -> Result<BuiltRun, String> {
         let key = self
             .service_key
@@ -1392,8 +1310,8 @@ impl Chain {
         if sk_out > sk_in {
             return Err("the transaction skeleton creates capacity it does not bring".into());
         }
-        let payout_cap = ctx
-            .payout
+        let wallet_cap = ctx
+            .runner
             .capacity
             .checked_add(job.tip_shannons)
             .ok_or("capacity overflow")?;
@@ -1415,7 +1333,6 @@ impl Chain {
         let mut inputs = vec![
             CellInput::new(ctx.runner.out_point.clone(), 0),
             CellInput::new(job_op, job.since),
-            CellInput::new(ctx.payout.out_point.clone(), 0),
         ];
         let mut deps = ctx.deps.clone();
         let mut header_deps = Vec::new();
@@ -1424,7 +1341,6 @@ impl Chain {
                 .lock(Some(Bytes::from(vec![0u8; 65])).pack())
                 .build()
                 .as_bytes(),
-            Bytes::new(),
             Bytes::new(),
         ];
         let mut extra_outputs = Vec::new();
@@ -1466,15 +1382,8 @@ impl Chain {
                 .inputs(inputs.clone())
                 .output(
                     CellOutput::new_builder()
-                        .capacity(Pack::<packed::Uint64>::pack(&ctx.runner.capacity))
+                        .capacity(Pack::<packed::Uint64>::pack(&wallet_cap))
                         .lock(ctx.runner.lock.clone())
-                        .build(),
-                )
-                .output_data(Bytes::new().pack())
-                .output(
-                    CellOutput::new_builder()
-                        .capacity(Pack::<packed::Uint64>::pack(&payout_cap))
-                        .lock(ctx.payout.lock.clone())
                         .build(),
                 )
                 .output_data(Bytes::new().pack())
@@ -1497,7 +1406,7 @@ impl Chain {
                 job.max_fee_shannons
             ));
         }
-        let tx = sign_first_input(&build(fee)?, key)?;
+        let tx = sign_wallet_inputs(&build(fee)?, 1, key)?;
         let hash = tx.hash();
         let op = |i: u32| {
             OutPoint::new_builder()
@@ -1508,12 +1417,8 @@ impl Chain {
         let next = RunContext {
             runner: Cell {
                 out_point: op(0),
+                capacity: wallet_cap,
                 ..ctx.runner.clone()
-            },
-            payout: Cell {
-                out_point: op(1),
-                capacity: payout_cap,
-                ..ctx.payout.clone()
             },
             deps: ctx.deps.clone(),
         };
@@ -1637,11 +1542,10 @@ impl Chain {
     }
 }
 
-/// Payout cell, runner key cell and cell deps of run transactions; advanced after each submitted
-/// run so that runs of one batch chain on each other's outputs.
+/// Runner wallet cell and cell deps of run transactions; advanced after each submitted run so that
+/// runs of one batch chain on each other's outputs.
 #[derive(Clone)]
 pub struct RunContext {
-    pub payout: Cell,
     pub runner: Cell,
     deps: Vec<CellDep>,
 }
@@ -1682,17 +1586,6 @@ pub fn read_json(p: &Path) -> Result<Value, String> {
     serde_json::from_str(&t).map_err(|e| format!("{} is not JSON: {e}", p.display()))
 }
 
-/// Writes a prepared transaction file; returns the CLI/API summary.
-pub fn write_prepared(p: &Prepared, out: &Path) -> Result<Value, String> {
-    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    }
-    let text = serde_json::to_string_pretty(&p.file).map_err(|e| e.to_string())?;
-    std::fs::write(out, text + "\n").map_err(|e| format!("cannot write {}: {e}", out.display()))?;
-    Ok(json!({"file": out, "fee_shannons": p.fee_shannons, "tx_hash": p.tx_hash}))
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1702,19 +1595,13 @@ mod tests {
             format!("{:x}", d.registry.code_hash),
             "4796879ebfc99db2cfd6205545382ab81a662bfdac7cc276d438f8aaef1788eb"
         );
-        assert_eq!(
-            format!("{:x}", d.acp.code_hash),
-            "3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356"
-        );
-        assert_eq!(d.acp.hash_type, ScriptHashType::Type);
-        assert_eq!(d.acp.dep_type, DepType::DepGroup);
         assert_eq!(d.registry.dep_type, DepType::Code);
     }
 
     #[test]
     fn deployments_reject_unknown_dep_type() {
         let mut v: Value = serde_json::from_str(TESTNET_DEPLOYMENTS).unwrap();
-        v["scripts"]["anyone_can_pay"]["dep_type"] = json!("group");
+        v["scripts"]["registry"]["dep_type"] = json!("group");
         assert!(parse_deployments(&v.to_string(), "x").is_err());
     }
 
@@ -1727,12 +1614,6 @@ mod tests {
         assert!(ckb_to_shannons("1.123456789").is_err());
         assert!(ckb_to_shannons("x").is_err());
         assert!(ckb_to_shannons("").is_err());
-    }
-
-    #[test]
-    fn lock_args_must_be_20_bytes() {
-        assert!(parse_lock_args("0x00").is_err());
-        assert!(parse_lock_args(&format!("0x{}", "ab".repeat(20))).is_ok());
     }
 
     #[test]
@@ -1800,7 +1681,6 @@ mod tests {
     #[test]
     fn stake_rules() {
         let owner = sighash_lock(&[1u8; 20]);
-        let owner_hash = script_hash(&owner);
         let dao = Script::new_builder()
             .code_hash(DAO_TYPE_CODE_HASH.pack())
             .hash_type(packed::Byte::new(ScriptHashType::Type as u8))
@@ -1813,14 +1693,51 @@ mod tests {
                 .build()
         };
         let ok = cell(MIN_STAKE, &owner, Some(dao.clone()));
-        assert_eq!(stake_problem(&ok, &[0; 8], owner_hash.as_bytes()), None);
-        let p = |o: &CellOutput, d: &[u8]| stake_problem(o, d, owner_hash.as_bytes()).unwrap();
+        assert_eq!(stake_problem(&ok, &[0; 8]), None);
+        let p = |o: &CellOutput, d: &[u8]| stake_problem(o, d).unwrap();
         assert!(p(&ok, &[1, 0, 0, 0, 0, 0, 0, 0]).contains("DAO"));
         assert!(p(&ok, &[]).contains("DAO"));
         assert!(p(&cell(MIN_STAKE, &owner, None), &[0; 8]).contains("DAO"));
-        assert!(p(&cell(MIN_STAKE - 1, &owner, Some(dao.clone())), &[0; 8]).contains("minimum"));
-        let other = sighash_lock(&[2u8; 20]);
-        assert!(p(&cell(MIN_STAKE, &other, Some(dao)), &[0; 8]).contains("owner"));
+        assert!(p(&cell(MIN_STAKE - 1, &owner, Some(dao)), &[0; 8]).contains("minimum"));
+        // The owner may be any wallet; only the sighash `type` form can consent by a signed message.
+        assert_eq!(sighash_args(&owner), Some([1u8; 20]));
+        let data_form = owner
+            .clone()
+            .as_builder()
+            .hash_type(packed::Byte::new(ScriptHashType::Data1 as u8))
+            .build();
+        assert_eq!(sighash_args(&data_form), None);
+        let long = sighash_lock(&[1u8; 21]);
+        assert_eq!(sighash_args(&long), None);
+    }
+
+    #[test]
+    fn wallet_signature_covers_the_consent() {
+        let key = secp256k1::SecretKey::from_slice(&[3u8; 32]).unwrap();
+        let w = WitnessArgs::new_builder()
+            .output_type(Some(Bytes::from(vec![9u8; 65])).pack())
+            .build();
+        let tx = TransactionBuilder::default()
+            .input(CellInput::new(OutPoint::default(), 0))
+            .input(CellInput::new(OutPoint::default(), 0))
+            .witness(w.as_bytes().pack())
+            .witness(Bytes::new().pack())
+            .build();
+        let signed = sign_wallet_inputs(&tx, 2, &key).unwrap();
+        let w0 = WitnessArgs::from_slice(&signed.witnesses().get(0).unwrap().raw_data()).unwrap();
+        assert_eq!(w0.output_type().to_opt().unwrap().raw_data().len(), 65);
+        assert_eq!(w0.lock().to_opt().unwrap().raw_data().len(), 65);
+        // another consent gives another signature
+        let w2 = WitnessArgs::new_builder()
+            .output_type(Some(Bytes::from(vec![8u8; 65])).pack())
+            .build();
+        let tx2 = tx
+            .as_advanced_builder()
+            .set_witnesses(vec![w2.as_bytes().pack(), Bytes::new().pack()])
+            .build();
+        let s2 = sign_wallet_inputs(&tx2, 2, &key).unwrap();
+        let l2 = WitnessArgs::from_slice(&s2.witnesses().get(0).unwrap().raw_data()).unwrap();
+        assert_ne!(w0.lock().as_slice(), l2.lock().as_slice());
     }
 
     #[test]
@@ -1831,7 +1748,7 @@ mod tests {
     }
 
     #[test]
-    fn payout_cell_occupies_61_ckb() {
+    fn wallet_cell_occupies_61_ckb() {
         let l = sighash_lock(&[0; 20]);
         assert_eq!(occupied(&l, None, 0), 61 * CKB);
     }

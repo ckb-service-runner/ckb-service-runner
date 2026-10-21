@@ -86,12 +86,30 @@ pub struct StorageCfg {
     pub per_service_quota_mb: u64,
 }
 
-/// The operator's payout cell: an anyone-can-pay cell that receives the job tips.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
+/// Tips go into the runner wallet; `[payout]` only configures the automatic sweep to the operator.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct PayoutCfg {
-    /// `0x` + 20 bytes of anyone-can-pay args (usually the operator's blake160), or empty.
+    /// A7's anyone-can-pay args: still accepted so that A7 configs load, but ignored.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub lock_args: String,
+    /// Full-format address (of the configured network) the sweep sends to; empty = no sweep.
+    pub sweep_address: String,
+    /// The sweep runs when the runner wallet holds at least this much.
+    pub sweep_threshold_ckb: u64,
+    /// What one sweep sends.
+    pub sweep_amount_ckb: u64,
+}
+
+impl Default for PayoutCfg {
+    fn default() -> Self {
+        PayoutCfg {
+            lock_args: String::new(),
+            sweep_address: String::new(),
+            sweep_threshold_ckb: 1500,
+            sweep_amount_ckb: 1000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -381,26 +399,36 @@ impl Config {
         if self.storage.per_service_quota_mb > self.storage.total_quota_mb {
             return Err("storage.per_service_quota_mb must be <= storage.total_quota_mb".into());
         }
-        self.payout.args()?;
+        self.payout.validate(&self.network)?;
         Ok(())
     }
 }
 
 impl PayoutCfg {
-    /// The 20 anyone-can-pay args bytes; `None` if not configured.
-    pub fn args(&self) -> Result<Option<Vec<u8>>, String> {
-        let s = self.lock_args.as_str();
-        if s.is_empty() {
-            return Ok(None);
+    fn validate(&self, network: &str) -> Result<(), String> {
+        if !self.sweep_address.is_empty() {
+            crate::address::decode(network, &self.sweep_address)
+                .map_err(|e| format!("payout.sweep_address: {e}"))?;
         }
-        let bad = || {
-            format!("payout.lock_args must be empty or 0x + 40 hex digits (20 bytes), got \"{s}\"")
-        };
-        let h = s.strip_prefix("0x").ok_or_else(bad)?;
-        if h.len() != 40 {
-            return Err(bad());
+        if self.sweep_amount_ckb < 61 {
+            return Err(format!(
+                "payout.sweep_amount_ckb must be at least 61 (a cell needs 61 CKB), got {}",
+                self.sweep_amount_ckb
+            ));
         }
-        hex::decode(h).map(Some).map_err(|_| bad())
+        if self.sweep_threshold_ckb < self.sweep_amount_ckb.saturating_add(100) {
+            return Err(format!(
+                "payout.sweep_threshold_ckb must be at least payout.sweep_amount_ckb + 100 ({}), got {}",
+                self.sweep_amount_ckb.saturating_add(100),
+                self.sweep_threshold_ckb
+            ));
+        }
+        Ok(())
+    }
+
+    /// The sweep target, `None` when no sweep address is set.
+    pub fn sweep_address(&self) -> Option<&str> {
+        Some(self.sweep_address.as_str()).filter(|s| !s.is_empty())
     }
 }
 
@@ -480,19 +508,43 @@ mod tests {
     }
 
     #[test]
-    fn payout_lock_args_rule() {
-        Config::parse("[payout]\nlock_args = \"\"").unwrap();
-        let a = format!("0x{}", "ab".repeat(20));
-        let c = Config::parse(&format!("[payout]\nlock_args = \"{a}\"")).unwrap();
-        assert_eq!(c.payout.args().unwrap(), Some(vec![0xab; 20]));
-        for bad in [
-            "0x1234",
-            "ab".repeat(20).as_str(),
-            &format!("0x{}", "zz".repeat(20)),
+    fn payout_sweep_rules() {
+        // A7's lock_args is still accepted (any value) and ignored.
+        let c = Config::parse("[payout]\nlock_args = \"0x1234\"").unwrap();
+        assert_eq!(c.payout.sweep_address(), None);
+        assert_eq!(
+            (c.payout.sweep_threshold_ckb, c.payout.sweep_amount_ckb),
+            (1500, 1000)
+        );
+        let addr = "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqvfcp906t0dguj7j9gzpjm40gsdx5l3p9qutm6yg";
+        let c = Config::parse(&format!("[payout]\nsweep_address = \"{addr}\"")).unwrap();
+        assert_eq!(c.payout.sweep_address(), Some(addr));
+        for (text, key) in [
+            (
+                format!("network = \"mainnet\"\n[payout]\nsweep_address = \"{addr}\""),
+                "payout.sweep_address",
+            ),
+            (
+                "[payout]\nsweep_address = \"0x89c04afd2ded4725e915020cb757a20d353f1094\"".into(),
+                "payout.sweep_address",
+            ),
+            (
+                "[payout]\nsweep_amount_ckb = 60".into(),
+                "payout.sweep_amount_ckb",
+            ),
+            (
+                "[payout]\nsweep_threshold_ckb = 1099".into(),
+                "payout.sweep_threshold_ckb",
+            ),
         ] {
-            let e = err(&format!("[payout]\nlock_args = \"{bad}\""));
-            assert!(e.contains("payout.lock_args"), "{e}");
+            let e = err(&text);
+            assert!(e.contains(key), "{e}");
         }
+        Config::parse("[payout]\nsweep_threshold_ckb = 1100").unwrap();
+        // lock_args is not written back when empty
+        assert!(!toml::to_string(&Config::default())
+            .unwrap()
+            .contains("lock_args"));
     }
 
     #[test]

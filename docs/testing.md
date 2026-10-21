@@ -32,34 +32,30 @@ bash scripts/devnet.sh stop
 
 ### `csr-dev`
 
-`target/debug/csr-dev [--rpc URL] [--json] <deploy-contracts|clock-update|attest|fund|dao-deposit|sign-tx|owner-lock-args|deploy-service|job>` – devnet/testnet only (refuses other chains; testnet needs `CSR_DEV_TESTNET_KEY`). Run `bash scripts/build-contracts.sh` first; `deploy-contracts` writes `deployments/devnet.json` (the four CSR contracts, the monitor config cell and, on the devnet, the vendored anyone-can-pay lock `devtools/vendor/anyone_can_pay`; `--keep-config EXISTING` reuses the config cell of another deployments file). `dao-deposit --ckb N [--key genesis|0x<key>]` makes a Nervos DAO deposit (output 0). `sign-tx` signs every secp256k1 and anyone-can-pay lock group of the key. Tests: `node --test --test-concurrency=1 acceptance/a7/p2.test.mjs` (devnet running).
+`target/debug/csr-dev [--rpc URL] [--json] <deploy-contracts|clock-update|attest|fund|dao-deposit|sign-tx|sign-message|reclaim|owner-lock-args|deploy-service|job>` – devnet/testnet only (refuses other chains; testnet needs `CSR_DEV_TESTNET_KEY`). Run `bash scripts/build-contracts.sh` first; `deploy-contracts` writes `deployments/devnet.json` (the four CSR contracts, the monitor config cell and, on the devnet, the vendored anyone-can-pay lock `devtools/vendor/anyone_can_pay`; `--keep-config EXISTING` reuses the config cell of another deployments file). `attest … --service-pubkey P` also runs the **devnet faucet**: it sends `--faucet-ckb` (default 200, `0` = off; devnet only) CKB to the runner wallet of `P`, so a runner funded with 500 CKB can pay the ≈ 540 CKB registry cell (`docs/decisions.md`, A8 phase 2). `dao-deposit --ckb N [--key genesis|0x<key>]` makes a Nervos DAO deposit (output 0). `sign-tx` signs every secp256k1 and anyone-can-pay lock group of the key. `sign-message --text T [--key genesis|0x<key>]` signs like Neuron's "Sign message" (`{signature, lock_args}`; the stake consent). `reclaim --outpoint 0x<tx>:<i> [--outpoint …]` spends plain cells of the key's own lock back to it (refuses typed cells and other locks). `deploy-contracts --keep-config EXISTING --reuse-unchanged` keeps every contract whose binary is unchanged and whose code cell is live. Tests: `node --test --test-concurrency=1 acceptance/a8/p3.test.mjs` (devnet running).
 
 ### Operator flow on devnet (registration end to end)
 
 With the devnet running and `deployments/devnet.json` written (`csr-dev deploy-contracts`), and a debug `csr` with `network = "devnet"`, `[devnet] deployments = "deployments/devnet.json"`:
 
 ```
-csr identity --json                                   # service_pubkey, runner_lock_args
-csr-dev fund --lock-args <runner_lock_args> --ckb 200 # runner key cell
-csr-dev owner-lock-args                               # the "operator wallet" (genesis account)
-# config: [payout] lock_args = <args>               (the payout cell is an anyone-can-pay cell)
-csr payout prepare-create --ckb 100 --owner-lock-args <args> --out payout.json
-csr-dev sign-tx --in payout.json --out payout.signed.json --key genesis
-csr tx submit payout.signed.json --json
-csr payout status --json
-csr-dev dao-deposit --ckb 10000                      # the stake: {tx_hash, index} of a DAO deposit of the genesis key
-csr-dev attest --peer-id <peer id> --service-pubkey <pubkey> --network devnet --out att.json
-csr register prepare --attestation att.json --owner-lock-args <args> --stake 0x<tx>:<index> --out reg.json
-csr-dev sign-tx --in reg.json --out reg.signed.json --key genesis   # owner input only
-csr tx submit reg.signed.json --json
+csr identity --json                                   # service_pubkey, runner_lock_args, runner_address
+csr-dev fund --lock-args <runner_lock_args> --ckb 500 # the runner wallet; registry cell ≈ 540 CKB + 61 CKB change: `attest` below adds 200 CKB (devnet faucet)
+csr-dev dao-deposit --ckb 10000                       # the stake: {tx_hash, index} of a DAO deposit of the genesis key
+csr register consent-message --stake 0x<tx>:<index> --json         # the text the stake owner signs
+csr-dev sign-message --text '<message>' --key genesis               # = "Sign message" in Neuron
+csr-dev attest --peer-id <node id> --service-pubkey <pubkey> --network devnet --out att.json
+csr register create --stake 0x<tx>:<index> --consent 0x<signature> --attestation att.json --json
 csr register status --json
+csr wallet status --json
+csr register remove --json                           # the registry capacity returns to the wallet
 ```
 
-`register prepare` refuses (in this order) without a Synced R2, for an attestation whose public key or network differs from this node's (or that is already expired by the on-chain clock), without a payout cell, without a runner key cell, and for a bad stake: malformed out point, not a live cell, not a Nervos DAO deposit (DAO type script, 8 zero bytes of data), below 10,000 CKB, or not owned by the secp256k1 lock of `--owner-lock-args`. The stake is `cell_deps[0]` (`dep_type code`), followed by the secp256k1 dep group, the registry code and the monitor config cell. CSR signs the runner key cell input itself with the service key. `register status` shows `stake: {outpoint, status: deposited|withdrawn|invalid, capacity_shannons}`. Mine blocks (`scripts/devnet.sh mine N`) if a transaction stays pending. Test: `node --test --test-concurrency=1 acceptance/a7/p3.test.mjs`.
+`register create` refuses (in this order) without a Synced R2, for an attestation whose public key or network differs from this node's (or that is already expired by the on-chain clock), for a bad stake (malformed out point, not a live cell, not a Nervos DAO deposit, below 10,000 CKB, not under a standard secp256k1 lock), for a consent that does not recover to the stake owner (the text is rebuilt with the attestation's peer id), and when the runner wallet cannot pay the cell, the fee and the 61 CKB change (the message names the runner address). The registry cell is output 0 with dual lock `runner ‖ runner`, the stake is `cell_deps[0]`, and witness 0 carries the runner's signature and the consent (`output_type`). A second `register create` with a new deposit updates the same cell. Mine blocks (`scripts/devnet.sh mine N`) if a transaction stays pending. Tests: `node --test --test-concurrency=1 acceptance/a8/p3.test.mjs acceptance/a8/p4.test.mjs`.
 
 ### Keeper jobs and the race test (A3c)
 
-`node --test --test-concurrency=1 acceptance/a3c/p2.test.mjs acceptance/a3c/p3.test.mjs` (devnet running, `bash scripts/build-services.sh` done). `p2`: an `every:2` job runs three times, the payout cell grows by exactly the tips. `p3`: two CSR instances with separate data roots share the devnet node and race for one job; exactly one settles, the other ends in `Lost` at no cost. Manual demo steps: `docs/milestones/A3c.md`.
+`node --test --test-concurrency=1 acceptance/a3c/p2.test.mjs acceptance/a3c/p3.test.mjs` (devnet running, `bash scripts/build-services.sh` done). `p2`: an `every:2` job runs three times, the tips are settled (since A8 they go into the runner wallet, `acceptance/a8/p4.test.mjs`). `p3`: two CSR instances with separate data roots share the devnet node and race for one job; exactly one settles, the other ends in `Lost` at no cost. Manual demo steps: `docs/milestones/A3c.md`.
 
 ### Manual testnet runbook (not run by the test suite)
 
@@ -67,12 +63,9 @@ Prerequisites: a synced testnet CKB node (full node with the Indexer module), a 
 
 1. **Deployment.** The testnet deployment is embedded in the runner (`deployments/testnet.json`, compiled in) and `config/networks/testnet.toml` carries the real monitor; nothing to configure. (Developers redeploy with `bash scripts/build-contracts.sh` and `csr-dev deploy-contracts --out deployments/testnet.json`.)
 2. **Clock.** The monitor `monitor-testnet.vericell.net` keeps the on-chain clock fresh; no `csr-dev clock-update` is needed.
-3. **Identity.** `csr identity --json` (network `testnet`), fund `runner_lock_args` with ≥ 100 CKB from any wallet.
-4. **Payout cell.** Set `[payout] lock_args` to your wallet's lock args, then `csr payout prepare-create --ckb N --owner-lock-args <your wallet lock args> --out payout.json` (N ≥ 61). Open `payout.json` for signing:
-   - ckb-cli: `ckb-cli tx sign-inputs --tx-file payout.json --privkey-path <key> --add-signatures` (or `ckb-cli wallet`-based signing), then `ckb-cli tx send --tx-file payout.json`; or
-   - Neuron: offline signing import of the same file (see `docs/open-questions.md`: acceptance is unverified).
-   Alternatively submit with `csr tx submit payout.signed.json`.
-5. **Stake.** Deposit at least 10,000 CKB into the Nervos DAO with the wallet whose lock args you use as `--owner-lock-args` (Neuron or `ckb-cli dao deposit`); note the deposit's out point `0x<tx hash>:<index>`. CSR never moves it; keep it deposited while registered.
-6. **Attestation.** `csr register attest --stake 0x<tx>:<index> --out att.json` asks the real testnet monitor (`POST /v1/attest`, with the stake) and checks the answer. It needs `[ranking] join = true` and successful checks in the last 24 hours, otherwise the monitor replies `not_eligible`; a deposit the monitor does not accept gives `stake_invalid: <reason>` or `stake_in_use`.
-7. **Register.** `csr register prepare --attestation att.json --owner-lock-args <args> --stake 0x<tx>:<index> --out reg.json`; the owner signs only the owner input (the runner key cell input is already signed by CSR); submit; `csr register status --json` shows `registered: true`.
-8. **Withdraw.** `csr payout prepare-withdraw (--ckb N | --all) --out w.json` and the same sign/submit steps (the payout cell is an anyone-can-pay cell: anyone can add CKB to it without a signature, only your key withdraws).
+3. **Runner wallet.** `csr identity --json` (network `testnet`) shows `runner_address`; send about 700 CKB there from any wallet (the registry cell takes ≈ 540 CKB, 61 CKB stay as change).
+4. **Sweep (optional).** Set `[payout] sweep_address` to your own wallet's address; the runner sends `sweep_amount_ckb` there whenever the wallet reaches `sweep_threshold_ckb`.
+5. **Stake.** Deposit at least 10,000 CKB into the Nervos DAO with your wallet (Neuron or `ckb-cli dao deposit`); note the deposit's out point `0x<tx hash>:<index>`. CSR never moves it; keep it deposited while registered.
+6. **Consent.** `csr register consent-message --stake 0x<tx>:<index>` prints the one-line text; sign it with the deposit's wallet ("Sign message" in Neuron) and check with `csr register verify-consent --message '<text>' --signature 0x…`.
+7. **Register.** `csr register create --stake 0x<tx>:<index> --consent 0x<signature>` asks the real testnet monitor for the attestation (it needs `[ranking] join = true` and successful checks in the last 24 hours, otherwise `not_eligible`), then builds, signs and submits the registration; `csr register status --json` shows `registered: true`.
+8. **Payout.** Tips go into the runner wallet; `csr wallet send --to <address> --ckb N` moves CKB out by hand.

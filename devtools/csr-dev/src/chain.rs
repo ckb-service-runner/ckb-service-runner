@@ -307,6 +307,37 @@ impl Chain {
         sign_sighash(&build(&outs), &(0..inputs.len()).collect::<Vec<_>>(), key)
     }
 
+    /// Spends `cells` (all of the key's lock, `total` capacity) into one cell of the key's lock; the fee
+    /// comes out of it.
+    pub fn build_spend(
+        &self,
+        key: &Key,
+        cells: &[(OutPoint, u64)],
+        total: u64,
+    ) -> Result<TransactionView, String> {
+        let lock = key.lock();
+        let dep = self.secp_dep()?;
+        let build = |cap: u64| -> TransactionView {
+            TransactionBuilder::default()
+                .cell_dep(dep.clone())
+                .inputs(cells.iter().map(|(op, _)| CellInput::new(op.clone(), 0)))
+                .output(
+                    CellOutput::new_builder()
+                        .capacity(Pack::<packed::Uint64>::pack(&cap))
+                        .lock(lock.clone())
+                        .build(),
+                )
+                .output_data(Bytes::new().pack())
+                .build()
+        };
+        let group: Vec<usize> = (0..cells.len()).collect();
+        let fee = fee_for(&sign_sighash(&build(total), &group, key)?);
+        let cap = total
+            .checked_sub(fee)
+            .ok_or("the cells cannot pay the fee")?;
+        sign_sighash(&build(cap), &group, key)
+    }
+
     pub fn send(&self, tx: &TransactionView) -> Result<String, String> {
         let jtx = json::TransactionView::from(tx.clone()).inner;
         let r = self

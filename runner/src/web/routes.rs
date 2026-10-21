@@ -31,23 +31,20 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/services", get(services))
         .route("/api/services/{hash}/{verb}", post(service_action))
         .route("/api/runner-cell", get(super::operator::runner_cell))
-        .route("/api/payout", get(super::operator::payout_status))
-        .route(
-            "/api/payout/prepare-create",
-            post(super::operator::payout_prepare_create),
-        )
-        .route(
-            "/api/payout/prepare-withdraw",
-            post(super::operator::payout_prepare_withdraw),
-        )
+        .route("/api/wallet", get(super::operator::wallet_status))
+        .route("/api/wallet/send", post(super::operator::wallet_send))
         .route("/api/registry", get(super::operator::registry_status))
         .route(
-            "/api/registry/prepare-create",
-            post(super::operator::prepare_register),
+            "/api/registry/consent-message",
+            post(super::operator::consent_message),
         )
         .route(
-            "/api/tx/submit-signed",
-            post(super::operator::submit_signed),
+            "/api/registry/create",
+            post(super::operator::register_create),
+        )
+        .route(
+            "/api/registry/remove",
+            post(super::operator::register_remove),
         )
         .route("/api/jobs", get(jobs))
         .route("/api/jobs/{id}", get(job))
@@ -186,7 +183,7 @@ async fn job(State(s): St, Path(id): Path<String>) -> Response {
     }
 }
 
-/// Settlements verified on chain; the payout cell balance is read from the node.
+/// Settlements verified on chain; the runner wallet balance is read from the node.
 async fn earnings(State(s): St) -> Response {
     let mut v = match crate::keeper::earnings_json(&s) {
         Ok(v) => v,
@@ -194,8 +191,8 @@ async fn earnings(State(s): St) -> Response {
     };
     let cfg = s.config.read().unwrap().clone();
     if let Ok(c) = crate::chain::Chain::connect(&cfg, &s.service_pubkey).await {
-        if let Ok(p) = c.payout_status().await {
-            v["payout"]["capacity_shannons"] = p["capacity_shannons"].clone();
+        if let Ok(cap) = c.wallet_capacity().await {
+            v["wallet"]["capacity_shannons"] = json!(cap);
         }
     }
     Json(v).into_response()

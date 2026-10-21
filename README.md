@@ -69,8 +69,10 @@ or on the dashboard page `#/services`. Host interface: `spec/host-interface.md`.
 ## Jobs and earnings (A3c)
 With `runtime.enabled = true`, `csr run` discovers keeper job cells on the chain, runs approved on-chain services (`csr service add-onchain`), submits the job transactions and tracks settlement. `csr jobs plan --json` shows the selection. Dashboard pages `#/jobs` and `#/earnings`. Demo: `docs/milestones/A3c.md`.
 
-## Stake and payout (A7)
-A registration references a **stake**: a Nervos DAO deposit of at least 10,000 CKB that the operator makes in their own wallet (it keeps earning DAO compensation; CSR never moves it). Tips go to the operator's **payout cell**, a standard anyone-can-pay cell (`[payout] lock_args`). Commands: `csr payout status|prepare-create|prepare-withdraw`, `csr register attest|prepare --stake 0x<tx>:<index>`; dashboard page `#/payout` ("Stake & payout"). Details: `docs/milestones/A7.md`, `spec/registry.md`.
+## Runner wallet, stake and registration (A8)
+The **runner wallet** is the set of plain cells of the runner's own key; `csr identity` and `csr wallet status` show its **runner address**. Send about 700 CKB there once from any wallet: it pays the registration and the runner's small fees, and the job **tips** go into it. With `[payout] sweep_address` set, the runner sends `sweep_amount_ckb` (default 1,000) there whenever the wallet holds `sweep_threshold_ckb` (default 1,500); `csr wallet send --to ADDRESS --ckb N` sends by hand.
+
+A registration references a **stake**: a Nervos DAO deposit of at least 10,000 CKB that stays in the operator's wallet. Its owner consents by signing one line of text ("Sign message" in Neuron): `csr register consent-message --stake 0x<tx>:<index>` prints it, `csr register create --stake … --consent 0x<signature>` registers (CSR signs the transaction itself), `csr register remove` returns the registry cell's CKB to the wallet. Dashboard page `#/payout` ("Wallet & stake"). Details: `spec/registry.md` §4.2 and §9, `docs/decisions.md` (D-A8-1).
 
 ## Roadmap
 

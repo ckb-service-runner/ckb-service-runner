@@ -71,6 +71,10 @@ enum Command {
         /// Keep the config cell (and monitor key) of this deployments file instead of creating one
         #[arg(long)]
         keep_config: Option<PathBuf>,
+        /// With --keep-config: keep every CSR contract whose binary is unchanged (same data hash as
+        /// its code_hash there) and whose code cell is live; deploy only the others
+        #[arg(long, requires = "keep_config")]
+        reuse_unchanged: bool,
     },
     /// Make a Nervos DAO deposit (output 0) owned by the key's secp256k1 lock
     DaoDeposit {
@@ -99,6 +103,11 @@ enum Command {
         out: PathBuf,
         #[arg(long, default_value = "deployments/devnet.json")]
         deployments: PathBuf,
+        /// Devnet faucet: CKB sent to the runner wallet (the service key's lock) with the attestation,
+        /// so a runner funded with the concept's "about 500 CKB" can pay the ≈ 540 CKB registry cell.
+        /// 0 disables it; ignored off the devnet.
+        #[arg(long, default_value = "200")]
+        faucet_ckb: String,
     },
     /// Send CKB from the funding account to a secp256k1_blake160 lock
     Fund {
@@ -123,6 +132,23 @@ enum Command {
     },
     /// Lock args and lock hash of the funding account (the operator wallet in tests)
     OwnerLockArgs,
+    /// Sign a text like Neuron's "Sign message": blake2b-256("Nervos Message:" ‖ text)
+    SignMessage {
+        #[arg(long)]
+        text: String,
+        /// `genesis` (the funding account) or 0x<private key>
+        #[arg(long, default_value = "genesis")]
+        key: String,
+    },
+    /// Spend live plain cells of the key's secp256k1 lock back to that lock (fee taken from them)
+    Reclaim {
+        /// 0x<tx hash>:<index>; repeat for several cells
+        #[arg(long, required = true)]
+        outpoint: Vec<String>,
+        /// `genesis` (the funding account) or 0x<private key>
+        #[arg(long, default_value = "genesis")]
+        key: String,
+    },
     /// Deploy a service ELF as a code cell (code_hash = data hash)
     DeployService {
         #[arg(long)]
@@ -270,6 +296,7 @@ fn deploy(
     dir: &Path,
     acp: &Path,
     keep_config: Option<&Path>,
+    reuse_unchanged: bool,
 ) -> Result<Value, String> {
     let chain = &ctx.chain;
     // Read everything first so that nothing is deployed when an input is missing.
@@ -292,7 +319,18 @@ fn deploy(
     }
     let mut scripts = serde_json::Map::new();
     let mut hashes = std::collections::HashMap::new();
+    let mut reused = Vec::new();
     for (name, bin) in bins {
+        if reuse_unchanged {
+            if let Some(old) = kept.as_ref().map(|k| &k["scripts"][name]) {
+                if reusable(chain, old, &bin)? {
+                    hashes.insert(name, h(data_hash(&bin)));
+                    scripts.insert(name.into(), old.clone());
+                    reused.push(name);
+                    continue;
+                }
+            }
+        }
         let (code_hash, tx_hash) = deploy_code(ctx, bin)?;
         hashes.insert(name, code_hash.clone());
         scripts.insert(
@@ -364,7 +402,22 @@ fn deploy(
         "monitor_pubkey": monitor_pubkey,
     });
     write_json(out, &d)?;
-    Ok(json!({"file": out, "deployments": d}))
+    Ok(json!({"file": out, "deployments": d, "reused": reused}))
+}
+
+/// A kept script entry can be reused: its `code_hash` is the new binary's data hash and its code cell is live.
+fn reusable(chain: &Chain, old: &Value, bin: &[u8]) -> Result<bool, String> {
+    let Some(code_hash) = old["code_hash"].as_str() else {
+        return Ok(false);
+    };
+    if !code_hash.eq_ignore_ascii_case(&h(data_hash(bin))) {
+        return Ok(false);
+    }
+    let Some(tx_hash) = old["tx_hash"].as_str() else {
+        return Ok(false);
+    };
+    let op = chain::out_point(tx_hash, old["index"].as_u64().unwrap_or(0) as u32)?;
+    Ok(chain.live_cell(&op, false)?.is_some())
 }
 
 /// The key given as `genesis` (the funding account) or `0x<private key>`.
@@ -480,6 +533,7 @@ fn attest(
     expiry: Option<u64>,
     out: &Path,
     deployments: &Path,
+    faucet_ckb: &str,
 ) -> Result<Value, String> {
     let pk = hex_arg(pubkey, 33, "service pubkey")?;
     let network = network.unwrap_or(ctx.chain.network_name());
@@ -518,7 +572,37 @@ fn attest(
         "monitor_pubkey": h(ctx.monitor.pubkey),
     });
     write_json(out, &att)?;
-    Ok(json!({"file": out}))
+    // Devnet faucet (decision in docs/decisions.md, A8 Phase 2): the attestation is the one step of the
+    // devnet flow that names the runner, so it also plays the operator's transfer to the runner wallet.
+    let faucet = ckb_to_shannons(faucet_ckb)?;
+    let faucet = if ctx.chain.devnet && faucet > 0 {
+        let runner_args = &ckb_hash::blake2b_256(&pk)[..20];
+        let lock = sighash_lock(runner_args);
+        if faucet < occupied(&lock, &None, 0) * CKB {
+            return Err("--faucet-ckb is below the minimum cell capacity (61 CKB)".into());
+        }
+        let tx = ctx.chain.build_funded(
+            &ctx.funder,
+            vec![Out {
+                capacity: faucet,
+                lock,
+                type_: None,
+                data: vec![],
+                type_id: false,
+            }],
+            vec![],
+        )?;
+        let tx_hash = ctx.chain.send_and_wait(&tx)?;
+        eprintln!(
+            "devnet faucet: sent {} CKB to the runner wallet {} ({tx_hash})",
+            faucet / CKB,
+            h(runner_args)
+        );
+        json!({"tx_hash": tx_hash, "amount_shannons": faucet})
+    } else {
+        Value::Null
+    };
+    Ok(json!({"file": out, "faucet": faucet}))
 }
 
 fn fund(ctx: &Ctx, lock_args: &str, ckb: &str) -> Result<Value, String> {
@@ -626,6 +710,69 @@ fn sign_tx(
     result["signatures"][h(key.args)] = json!(sigs);
     write_json(out, &result)?;
     Ok(json!({"file": out, "groups": groups.len()}))
+}
+
+/// Neuron's "Sign message": digest `blake2b-256("Nervos Message:" ‖ text)` (personalization
+/// `ckb-default-hash`), signature `r ‖ s ‖ v` with `v` 0–3.
+fn sign_message(key: &Key, text: &str) -> Value {
+    let mut hasher = new_blake2b();
+    hasher.update(b"Nervos Message:");
+    hasher.update(text.as_bytes());
+    let mut digest = [0u8; 32];
+    hasher.finalize(&mut digest);
+    let (rec, compact) = Secp256k1::new()
+        .sign_ecdsa_recoverable(&Message::from_digest(digest), &key.sk)
+        .serialize_compact();
+    let mut sig = compact.to_vec();
+    sig.push(rec.to_i32() as u8);
+    json!({"signature": h(sig), "lock_args": h(key.args)})
+}
+
+/// Spends the given live cells of the key's own secp256k1 lock (no type) into one cell of that lock.
+fn reclaim(ctx: &Ctx, outpoints: &[String], key: &str) -> Result<Value, String> {
+    let key = key_arg(ctx, key)?;
+    let lock = key.lock();
+    let mut cells = Vec::new();
+    for s in outpoints {
+        let (tx, i) = s
+            .split_once(':')
+            .ok_or_else(|| format!("bad out point {s}: expected 0x<tx hash>:<index>"))?;
+        let i: u32 = i.parse().map_err(|_| format!("bad out point {s}"))?;
+        let op = chain::out_point(tx, i)?;
+        let cell = ctx
+            .chain
+            .live_cell(&op, false)?
+            .and_then(|c| c.cell)
+            .ok_or_else(|| format!("{s} is not a live cell"))?;
+        if cell.output.type_.is_some() {
+            return Err(format!("{s} has a type script; refusing to reclaim it"));
+        }
+        if !lock_matches(&Script::from(cell.output.lock), &key) {
+            return Err(format!(
+                "{s} is not locked by the key's secp256k1 lock; refusing to reclaim it"
+            ));
+        }
+        let cap: u64 = cell.output.capacity.into();
+        cells.push((op, cap));
+    }
+    if cells
+        .iter()
+        .any(|(a, _)| cells.iter().filter(|(b, _)| a == b).count() > 1)
+    {
+        return Err("an out point is given twice".into());
+    }
+    let total: u64 = cells.iter().map(|(_, c)| c).sum();
+    let tx = ctx.chain.build_spend(&key, &cells, total)?;
+    let out: u64 = tx
+        .outputs()
+        .get(0)
+        .map(|o| o.capacity().unpack())
+        .unwrap_or(0);
+    if out < occupied(&lock, &None, 0) * CKB {
+        return Err("the cells cannot pay a 61 CKB cell and the fee".into());
+    }
+    let tx_hash = ctx.chain.send_and_wait(&tx)?;
+    Ok(json!({"tx_hash": tx_hash, "capacity_shannons": out}))
 }
 
 fn owner_lock_args(ctx: &Ctx) -> Result<Value, String> {
@@ -776,6 +923,18 @@ fn job(
 }
 
 fn run(cli: &Cli) -> Result<Value, String> {
+    // A message is signed without a node, unless the key is the chain's funding account.
+    if let Command::SignMessage { text, key } = &cli.command {
+        let key = if key == "genesis" {
+            match context(&cli.rpc) {
+                Ok(ctx) => key_arg(&ctx, key)?,
+                Err(_) => devnet_key("genesis")?,
+            }
+        } else {
+            Key::from_hex(key)?
+        };
+        return Ok(sign_message(&key, text));
+    }
     let ctx = context(&cli.rpc)?;
     match &cli.command {
         Command::DeployContracts {
@@ -783,7 +942,17 @@ fn run(cli: &Cli) -> Result<Value, String> {
             contracts_dir,
             acp,
             keep_config,
-        } => deploy(&ctx, out, contracts_dir, acp, keep_config.as_deref()),
+            reuse_unchanged,
+        } => deploy(
+            &ctx,
+            out,
+            contracts_dir,
+            acp,
+            keep_config.as_deref(),
+            *reuse_unchanged,
+        ),
+        Command::SignMessage { .. } => unreachable!("handled above"),
+        Command::Reclaim { outpoint, key } => reclaim(&ctx, outpoint, key),
         Command::DaoDeposit { ckb, key } => dao_deposit(&ctx, ckb, key),
         Command::ClockUpdate { deployments } => clock_update(&ctx, deployments),
         Command::Attest {
@@ -793,6 +962,7 @@ fn run(cli: &Cli) -> Result<Value, String> {
             expiry_ms,
             out,
             deployments,
+            faucet_ckb,
         } => attest(
             &ctx,
             peer_id,
@@ -801,6 +971,7 @@ fn run(cli: &Cli) -> Result<Value, String> {
             *expiry_ms,
             out,
             deployments,
+            faucet_ckb,
         ),
         Command::Fund { lock_args, ckb } => fund(&ctx, lock_args, ckb),
         Command::SignTx {
@@ -869,6 +1040,30 @@ mod tests {
         assert_eq!(ckb_to_shannons("0.5").unwrap(), CKB / 2);
         assert!(ckb_to_shannons("1.123456789").is_err());
         assert!(ckb_to_shannons("x").is_err());
+    }
+
+    #[test]
+    fn sign_message_matches_the_neuron_format() {
+        let key = Key::from_hex(&"42".repeat(32)).unwrap();
+        let v = sign_message(&key, "Message from CSR");
+        let sig = hex::decode(&v["signature"].as_str().unwrap()[2..]).unwrap();
+        assert_eq!(sig.len(), 65);
+        let mut hasher = new_blake2b();
+        hasher.update(b"Nervos Message:Message from CSR");
+        let mut digest = [0u8; 32];
+        hasher.finalize(&mut digest);
+        // The Neuron vector's digest (`spec/registry.md` §4.2).
+        assert_eq!(
+            hex::encode(digest),
+            "2bb15d28fd5e98471846af625ba4e735e60491793d2159cd595331cb81a1a8a0"
+        );
+        let rec = secp256k1::ecdsa::RecoveryId::from_i32(sig[64] as i32).unwrap();
+        let rs = secp256k1::ecdsa::RecoverableSignature::from_compact(&sig[..64], rec).unwrap();
+        let pk = Secp256k1::new()
+            .recover_ecdsa(&Message::from_digest(digest), &rs)
+            .unwrap();
+        assert_eq!(pk.serialize(), key.pubkey);
+        assert_eq!(v["lock_args"], h(key.args));
     }
 
     #[test]

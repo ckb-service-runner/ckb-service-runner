@@ -97,6 +97,27 @@ fn now_ms() -> u64 {
 /// Requests an attestation from the monitor for the registration staking `stake` (a checked,
 /// lower-case `0x<tx>:<index>`), checks it and writes it to `out`.
 pub async fn run(cfg: &Config, id: &Identity, stake: &str, out: &Path) -> Result<Value, String> {
+    let body = request(cfg, &id.service_key, &id.service_pubkey, stake).await?;
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let text = serde_json::to_string_pretty(&body).map_err(|e| e.to_string())? + "\n";
+    std::fs::write(out, text).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+    Ok(json!({
+        "file": out,
+        "peer_id": body["peer_id"],
+        "expiry_ms": body["expiry_ms"],
+    }))
+}
+
+/// Requests and checks the monitor's attestation for this node and `stake`; returns it.
+pub async fn request(
+    cfg: &Config,
+    service_key: &secp256k1::SecretKey,
+    service_pubkey: &str,
+    stake: &str,
+) -> Result<Value, String> {
     let defaults = crate::network::NetworkDefaults::for_network(&cfg.network);
     let url = if cfg.monitor.url.is_empty() {
         defaults.monitor_url
@@ -122,8 +143,8 @@ pub async fn run(cfg: &Config, id: &Identity, stake: &str, out: &Path) -> Result
         .to_string();
 
     let binding_sig = proto::sign(
-        &id.service_key,
-        &proto::binding_message(&peer_id, &id.service_pubkey, &cfg.network),
+        service_key,
+        &proto::binding_message(&peer_id, service_pubkey, &cfg.network),
     );
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -133,7 +154,7 @@ pub async fn run(cfg: &Config, id: &Identity, stake: &str, out: &Path) -> Result
         .post(format!("{base}/v1/attest"))
         .json(&json!({
             "peer_id": peer_id,
-            "service_pubkey": id.service_pubkey,
+            "service_pubkey": service_pubkey,
             "network": cfg.network,
             "binding_sig": binding_sig,
             "stake": stake,
@@ -159,10 +180,8 @@ pub async fn run(cfg: &Config, id: &Identity, stake: &str, out: &Path) -> Result
             msg = format!("{msg}: {reason}");
         }
         match err {
-            "stake_invalid" => msg.push_str(
-                " (the stake must be a live Nervos DAO deposit of at least 10,000 CKB owned by \
-                 the registration's owner lock)",
-            ),
+            "stake_invalid" => msg
+                .push_str(" (the stake must be a live Nervos DAO deposit of at least 10,000 CKB)"),
             "stake_in_use" => {
                 msg.push_str(" (this deposit already backs another registration; use another one)")
             }
@@ -174,23 +193,12 @@ pub async fn run(cfg: &Config, id: &Identity, stake: &str, out: &Path) -> Result
     check(
         &body,
         &peer_id,
-        &id.service_pubkey,
+        service_pubkey,
         &cfg.network,
         &monitor,
         now_ms(),
     )?;
-
-    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    }
-    let text = serde_json::to_string_pretty(&body).map_err(|e| e.to_string())? + "\n";
-    std::fs::write(out, text).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
-    Ok(json!({
-        "file": out,
-        "peer_id": peer_id,
-        "expiry_ms": body["expiry_ms"],
-    }))
+    Ok(body)
 }
 
 #[cfg(test)]

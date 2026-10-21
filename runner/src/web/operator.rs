@@ -1,4 +1,5 @@
-//! Operator signing flow: prepare unsigned payout transactions, submit signed ones.
+//! Operator flows of the dashboard: the runner wallet and the registration. CSR signs every transaction
+//! itself with the service key; the same JSON as the CLI, errors → 400 `{"error"}`.
 
 use crate::app::AppState;
 use crate::chain::Chain;
@@ -38,10 +39,6 @@ fn amount(b: &Value) -> Option<String> {
     }
 }
 
-fn prepared(p: crate::chain::Prepared) -> Value {
-    json!({"file": p.file, "fee_shannons": p.fee_shannons, "tx_hash": p.tx_hash})
-}
-
 pub async fn runner_cell(State(s): St) -> Response {
     match chain(&s).await {
         Ok(c) => reply(c.runner_cell_status().await),
@@ -49,55 +46,24 @@ pub async fn runner_cell(State(s): St) -> Response {
     }
 }
 
-pub async fn payout_status(State(s): St) -> Response {
+pub async fn wallet_status(State(s): St) -> Response {
+    let cfg = s.config.read().unwrap().clone();
     match chain(&s).await {
-        Ok(c) => reply(c.payout_status().await),
+        Ok(c) => reply(crate::wallet::status(&c, &cfg, &s.net_dir).await),
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
 }
 
-/// Body: `ckb` and `owner_lock_args` (the wallet that pays for the cell).
-pub async fn payout_prepare_create(State(s): St, Json(b): Json<Value>) -> Response {
-    let (Some(ckb), Some(owner)) = (amount(&b), b["owner_lock_args"].as_str()) else {
-        return fail(
-            StatusCode::BAD_REQUEST,
-            "ckb and owner_lock_args are required".into(),
-        );
+/// Body: `to` (a full-format address of this network) and `ckb`.
+pub async fn wallet_send(State(s): St, Json(b): Json<Value>) -> Response {
+    let (Some(to), Some(ckb)) = (b["to"].as_str(), amount(&b)) else {
+        return fail(StatusCode::BAD_REQUEST, "to and ckb are required".into());
     };
     match chain(&s).await {
-        Ok(c) => reply(c.prepare_payout_create(&ckb, owner).await.map(prepared)),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
-    }
-}
-
-/// Body: `ckb` or `all: true`.
-pub async fn payout_prepare_withdraw(State(s): St, Json(b): Json<Value>) -> Response {
-    let all = b["all"].as_bool().unwrap_or(false);
-    let ckb = amount(&b);
-    if all == ckb.is_some() {
-        return fail(
-            StatusCode::BAD_REQUEST,
-            "give either ckb or all = true".into(),
-        );
-    }
-    match chain(&s).await {
-        Ok(c) => reply(
-            c.prepare_payout_withdraw(ckb.as_deref(), all)
-                .await
-                .map(prepared),
-        ),
-        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
-    }
-}
-
-pub async fn submit_signed(State(s): St, Json(b): Json<Value>) -> Response {
-    match chain(&s).await {
         Ok(c) => {
-            let r = c.submit(&b).await;
-            if let Ok(v) = &r {
-                tracing::info!("signed transaction submitted: {}", v["tx_hash"]);
-            }
-            reply(r)
+            // One runner transaction at a time (the keeper and the sweep spend the same wallet).
+            let _tx = s.wallet_tx.lock().await;
+            reply(crate::wallet::send(&c, to, &ckb).await)
         }
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
@@ -110,30 +76,91 @@ pub async fn registry_status(State(s): St) -> Response {
     }
 }
 
-/// Body: `attestation` (the monitor's attestation JSON), `owner_lock_args` and `stake`
-/// (`0x<tx hash>:<index>` of the owner's Nervos DAO deposit).
-pub async fn prepare_register(State(s): St, Json(b): Json<Value>) -> Response {
-    let Some(owner) = b["owner_lock_args"].as_str() else {
-        return fail(
-            StatusCode::BAD_REQUEST,
-            "owner_lock_args is required".into(),
-        );
-    };
-    if !b["attestation"].is_object() {
-        return fail(StatusCode::BAD_REQUEST, "attestation is required".into());
-    }
-    let Some(stake) = b["stake"].as_str() else {
-        return fail(
+fn stake_of(b: &Value) -> Result<String, Response> {
+    let stake = b["stake"].as_str().ok_or_else(|| {
+        fail(
             StatusCode::BAD_REQUEST,
             "stake is required (0x<tx hash>:<index> of a Nervos DAO deposit)".into(),
-        );
+        )
+    })?;
+    crate::chain::parse_stake(stake).map_err(|e| fail(StatusCode::BAD_REQUEST, e))
+}
+
+/// Body: `stake`.
+pub async fn consent_message(State(s): St, Json(b): Json<Value>) -> Response {
+    let stake = match stake_of(&b) {
+        Ok(s) => s,
+        Err(r) => return r,
     };
     match chain(&s).await {
-        Ok(c) => reply(
-            c.prepare_register(&b["attestation"], owner, stake)
-                .await
-                .map(prepared),
-        ),
+        Ok(c) => reply(c.consent_message(&stake).await),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// Body: `stake`, `consent` (the stake owner's signature) and optionally `attestation` (the monitor's
+/// attestation object; without it the monitor is asked).
+pub async fn register_create(State(s): St, Json(b): Json<Value>) -> Response {
+    let stake = match stake_of(&b) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let Some(consent) = b["consent"].as_str() else {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "consent is required (the stake owner's signature of the consent message)".into(),
+        );
+    };
+    let att = match &b["attestation"] {
+        Value::Null => None,
+        v if v.is_object() => Some(v.clone()),
+        _ => {
+            return fail(
+                StatusCode::BAD_REQUEST,
+                "attestation must be the attestation JSON object".into(),
+            )
+        }
+    };
+    let c = match chain(&s).await {
+        Ok(c) => c,
+        Err(e) => return fail(StatusCode::BAD_GATEWAY, e),
+    };
+    let att = match att {
+        Some(a) => a,
+        None => {
+            let cfg = s.config.read().unwrap().clone();
+            match crate::attest::request(&cfg, &s.service_key, &s.service_pubkey, &stake).await {
+                Ok(a) => a,
+                Err(e) => return fail(StatusCode::BAD_REQUEST, e),
+            }
+        }
+    };
+    let _tx = s.wallet_tx.lock().await;
+    let r = c.register_create(&att, &stake, consent).await;
+    if let Ok(v) = &r {
+        tracing::info!(
+            "registration {}: {} (stake {stake})",
+            if v["updated"] == true {
+                "updated"
+            } else {
+                "created"
+            },
+            v["tx_hash"]
+        );
+    }
+    reply(r)
+}
+
+pub async fn register_remove(State(s): St) -> Response {
+    match chain(&s).await {
+        Ok(c) => {
+            let _tx = s.wallet_tx.lock().await;
+            let r = c.register_remove().await;
+            if let Ok(v) = &r {
+                tracing::info!("registration removed: {}", v["tx_hash"]);
+            }
+            reply(r)
+        }
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
 }

@@ -1,7 +1,9 @@
+mod address;
 mod app;
 mod attest;
 mod chain;
 mod config;
+mod consent;
 mod db;
 mod identity;
 mod jobs;
@@ -18,6 +20,7 @@ mod run;
 mod runtime;
 mod service;
 mod storage;
+mod wallet;
 mod web;
 
 /// Scratch directory for unit tests (`/tmp` may be read-only).
@@ -103,10 +106,10 @@ enum Command {
         #[command(subcommand)]
         action: RunnerCellAction,
     },
-    /// The payout cell that receives the tips (prepare unsigned owner transactions, show status)
-    Payout {
+    /// The runner wallet: pays the registration and fees, receives the tips
+    Wallet {
         #[command(subcommand)]
-        action: PayoutAction,
+        action: WalletAction,
     },
     /// The registry cell
     Register {
@@ -149,33 +152,23 @@ enum RunnerCellAction {
 }
 
 #[derive(Subcommand)]
-enum PayoutAction {
-    /// Unsigned transaction creating the payout (anyone-can-pay) cell
-    PrepareCreate {
+enum WalletAction {
+    /// Address, balance and sweep settings of the runner wallet
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send CKB from the runner wallet to a full-format address of this network
+    Send {
+        #[arg(long)]
+        to: String,
         #[arg(long)]
         ckb: String,
-        /// secp256k1 lock args of the wallet that pays for the cell
-        #[arg(long)]
-        owner_lock_args: String,
-        #[arg(long)]
-        out: PathBuf,
         #[arg(long)]
         json: bool,
     },
-    /// Unsigned transaction moving CKB from the payout cell to the secp256k1 lock of payout.lock_args
-    PrepareWithdraw {
-        #[arg(long, conflicts_with = "all", required_unless_present = "all")]
-        ckb: Option<String>,
-        /// Close the payout cell and withdraw everything
-        #[arg(long)]
-        all: bool,
-        #[arg(long)]
-        out: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Show the payout cell
-    Status {
+    /// Sweep sweep_amount_ckb to payout.sweep_address if the wallet holds sweep_threshold_ckb
+    Sweep {
         #[arg(long)]
         json: bool,
     },
@@ -183,17 +176,39 @@ enum PayoutAction {
 
 #[derive(Subcommand)]
 enum RegisterAction {
-    /// Unsigned transaction creating the registry cell (the runner key cell input is signed by CSR)
-    Prepare {
-        #[arg(long)]
-        attestation: PathBuf,
-        #[arg(long)]
-        owner_lock_args: String,
+    /// The text the stake owner signs in its wallet ("Sign message") to consent to this registration
+    ConsentMessage {
         /// The Nervos DAO deposit staked for this registration: 0x<tx hash>:<index>
         #[arg(long)]
         stake: String,
         #[arg(long)]
-        out: PathBuf,
+        json: bool,
+    },
+    /// Who signed a message (lock args and address of the signer); needs no node
+    VerifyConsent {
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        signature: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Register (or update the registration) with the stake and the stake owner's consent signature
+    Create {
+        /// The Nervos DAO deposit staked for this registration: 0x<tx hash>:<index>
+        #[arg(long)]
+        stake: String,
+        /// The stake owner's signature of the consent message (0x + 65 bytes)
+        #[arg(long)]
+        consent: String,
+        /// The monitor's attestation (file); without it the monitor is asked
+        #[arg(long)]
+        attestation: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove the registry cell; its capacity returns to the runner wallet
+    Remove {
         #[arg(long)]
         json: bool,
     },
@@ -310,6 +325,15 @@ where
     F: FnOnce(chain::Chain) -> Fut,
     Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
 {
+    node_cmd(cli, json, |c, _, _| f(c))
+}
+
+/// As `chain_cmd`, also handing over the config, the identity and the network's data directory.
+fn node_cmd<F, Fut>(cli: &Cli, json: bool, f: F) -> ExitCode
+where
+    F: FnOnce(chain::Chain, config::Config, (identity::Identity, PathBuf)) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
+{
     let r = (|| -> Result<serde_json::Value, String> {
         let cfg = load_config(cli)?;
         let net_dir = data_root(cli).join(&cfg.network);
@@ -320,26 +344,10 @@ where
             let c = chain::Chain::connect(&cfg, &id.service_pubkey)
                 .await?
                 .with_service_key(id.service_key);
-            f(c).await
+            f(c, cfg, (id, net_dir)).await
         })
     })();
     print_result(r, json)
-}
-
-/// Every `csr payout` command needs `payout.lock_args`; reports why not on stderr.
-fn payout_configured(cli: &Cli) -> bool {
-    let r = load_config(cli).and_then(|c| match c.payout.args()? {
-        Some(_) => Ok(()),
-        None => Err(
-            "payout.lock_args is not set: put the 20-byte args of your payout \
-                     (anyone-can-pay) cell into [payout] lock_args of the config"
-                .to_string(),
-        ),
-    });
-    if let Err(e) = &r {
-        eprintln!("{e}");
-    }
-    r.is_ok()
 }
 
 /// Prints a command result (one JSON line, or `key: value` lines); errors go to stderr.
@@ -485,11 +493,13 @@ fn main() -> ExitCode {
                     .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
                 let id = identity::Identity::load_or_create(&net_dir)?;
                 let (args, hash) = id.runner_lock()?;
+                let raw = hex::decode(args.trim_start_matches("0x")).map_err(|e| e.to_string())?;
                 Ok(serde_json::json!({
                     "network": cfg.network,
                     "service_pubkey": id.service_pubkey,
                     "runner_lock_args": args,
                     "runner_lock_hash": hash,
+                    "runner_address": address::sighash_address(&cfg.network, &raw),
                 }))
             })();
             match r {
@@ -502,6 +512,7 @@ fn main() -> ExitCode {
                             "service_pubkey",
                             "runner_lock_args",
                             "runner_lock_hash",
+                            "runner_address",
                         ] {
                             println!("{k}: {}", j[k].as_str().unwrap_or(""));
                         }
@@ -517,33 +528,72 @@ fn main() -> ExitCode {
         Command::RunnerCell {
             action: RunnerCellAction::Status { json },
         } => chain_cmd(&cli, *json, |c| async move { c.runner_cell_status().await }),
-        Command::Payout { .. } if !payout_configured(&cli) => ExitCode::from(1),
-        Command::Payout { action } => match action {
-            PayoutAction::Status { json } => {
-                chain_cmd(&cli, *json, |c| async move { c.payout_status().await })
-            }
-            PayoutAction::PrepareCreate {
-                ckb,
-                owner_lock_args,
-                out,
-                json,
-            } => chain_cmd(&cli, *json, |c| async move {
-                let p = c.prepare_payout_create(ckb, owner_lock_args).await?;
-                chain::write_prepared(&p, out)
+        Command::Wallet { action } => match action {
+            WalletAction::Status { json } => node_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
+                wallet::status(&c, &cfg, &dir).await
             }),
-            PayoutAction::PrepareWithdraw {
-                ckb,
-                all,
-                out,
-                json,
-            } => chain_cmd(&cli, *json, |c| async move {
-                let p = c.prepare_payout_withdraw(ckb.as_deref(), *all).await?;
-                chain::write_prepared(&p, out)
+            WalletAction::Send { to, ckb, json } => node_cmd(&cli, *json, |c, _, _| async move {
+                wallet::send(&c, to, ckb).await
+            }),
+            WalletAction::Sweep { json } => node_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
+                wallet::sweep(&c, &cfg, &dir).await
             }),
         },
         Command::Register { action } => match action {
             RegisterAction::Status { json } => {
                 chain_cmd(&cli, *json, |c| async move { c.register_status().await })
+            }
+            RegisterAction::VerifyConsent {
+                message,
+                signature,
+                json,
+            } => {
+                let r = (|| {
+                    let cfg = load_config(&cli)?;
+                    let sig = consent::parse_signature_hex(signature)?;
+                    let args = consent::recover_signer(message, &sig)?;
+                    Ok(serde_json::json!({
+                        "lock_args": format!("0x{}", hex::encode(args)),
+                        "address": address::sighash_address(&cfg.network, &args),
+                    }))
+                })();
+                print_result(r, *json)
+            }
+            RegisterAction::ConsentMessage { stake, json } => {
+                if let Err(e) = chain::parse_stake(stake) {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+                chain_cmd(
+                    &cli,
+                    *json,
+                    |c| async move { c.consent_message(stake).await },
+                )
+            }
+            RegisterAction::Create {
+                stake,
+                consent,
+                attestation,
+                json,
+            } => {
+                if let Err(e) = chain::parse_stake(stake) {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+                node_cmd(&cli, *json, |c, cfg, (id, _)| async move {
+                    let att = match attestation {
+                        Some(f) => chain::read_json(f)?,
+                        None => {
+                            let stake = chain::parse_stake(stake)?;
+                            attest::request(&cfg, &id.service_key, &id.service_pubkey, &stake)
+                                .await?
+                        }
+                    };
+                    c.register_create(&att, stake, consent).await
+                })
+            }
+            RegisterAction::Remove { json } => {
+                chain_cmd(&cli, *json, |c| async move { c.register_remove().await })
             }
             RegisterAction::Attest { stake, out, json } => {
                 let r = (|| {
@@ -557,17 +607,6 @@ fn main() -> ExitCode {
                 })();
                 print_result(r, *json)
             }
-            RegisterAction::Prepare {
-                attestation,
-                owner_lock_args,
-                stake,
-                out,
-                json,
-            } => chain_cmd(&cli, *json, |c| async move {
-                let att = chain::read_json(attestation)?;
-                let p = c.prepare_register(&att, owner_lock_args, stake).await?;
-                chain::write_prepared(&p, out)
-            }),
         },
         Command::Tx {
             action: TxAction::Submit { file, json },

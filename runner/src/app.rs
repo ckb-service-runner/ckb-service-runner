@@ -32,6 +32,8 @@ pub struct AppState {
     pub last_check_ok_at: AtomicI64,
     /// Serialises writes of the config file.
     pub config_write: Mutex<()>,
+    /// Serialises the transactions that spend the runner wallet (keeper, sweep, send, registration).
+    pub wallet_tx: tokio::sync::Mutex<()>,
     /// Dashboard sessions (in memory only).
     /// Cached monitor public-API data.
     pub monitor_cache: tokio::sync::Mutex<crate::monitor::Cache>,

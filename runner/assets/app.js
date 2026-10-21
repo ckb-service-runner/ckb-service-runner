@@ -161,7 +161,7 @@
   pages.overview = function (root) {
     var g = el('div', 'grid');
     var cs = card('Network'), cn = card('Node'), cr = card('Runtime'), cres = card('Resources');
-    var cf = card('Payout'), ck = card('CSR monitor');
+    var cf = card('Runner wallet'), ck = card('CSR monitor');
     [cs, cn, cr, cres, cf, ck].forEach(function (c) { g.appendChild(c); });
     root.appendChild(g);
     function paint() {
@@ -196,8 +196,8 @@
     function payoutCard() {
       api('/api/earnings').then(function (e) {
         while (cf.children.length > 1) cf.removeChild(cf.lastChild);
-        dl(cf, [['Balance', ckb((e.payout || {}).capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
-        var a = el('a', '', 'Stake & payout'); a.href = '#/payout'; cf.appendChild(a);
+        dl(cf, [['Balance', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
+        var a = el('a', '', 'Wallet & stake'); a.href = '#/payout'; cf.appendChild(a);
       }).catch(function () {});
     }
     function res() {
@@ -322,7 +322,9 @@
     ['ranking.ping_bind', 'Ping bind', 'text', true],
     ['monitor.url', 'Monitor URL', 'text'],
     ['monitor.pubkey', 'Monitor pubkey', 'text'],
-    ['payout.lock_args', 'Payout lock args', 'text'],
+    ['payout.sweep_address', 'Sweep address', 'text'],
+    ['payout.sweep_threshold_ckb', 'Sweep threshold (CKB)', 'int'],
+    ['payout.sweep_amount_ckb', 'Sweep amount (CKB)', 'int'],
     ['runtime.enabled', 'Runtime enabled', 'bool'],
     ['runtime.min_ckb_per_mcycle', 'Min CKB per Mcycle', 'number'],
     ['limits.max_concurrent_jobs', 'Max concurrent jobs', 'int'],
@@ -435,95 +437,79 @@
   };
 
   pages.payout = function (root) {
-    var c = card('Payout cell');
-    var info = el('div');
     var msg = el('p', 'msg');
-    var form = el('div', 'row');
-    var amt = el('input'); amt.placeholder = 'CKB'; amt.size = 10;
-    var owner = el('input'); owner.placeholder = 'owner lock args (0x…)'; owner.size = 44;
-    form.appendChild(amt); form.appendChild(owner);
-    var btns = el('div', 'row');
-    var signed = el('input'); signed.type = 'file'; signed.accept = '.json,application/json';
-    var submit = el('button', 'btn', 'Submit signed file'); submit.type = 'button';
     function say(t, bad) { msg.className = 'msg' + (bad ? ' err' : ''); msg.textContent = t; }
-    function download(name, obj) {
-      var u = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2) + '\n'], { type: 'application/json' }));
-      var a = el('a'); a.href = u; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(function () { URL.revokeObjectURL(u); }, 1000);
-    }
-    function prepare(path, body, name) {
-      api(path, { method: 'POST', body: body }).then(function (j) {
-        download(name, j.file);
-        say('Unsigned transaction downloaded (fee ' + j.fee_shannons + ' shannons). Sign it in your wallet, then submit the signed file below.');
-      }).catch(function (x) { say(x.message, true); });
-    }
-    var bc = el('button', 'btn', 'Create payout cell'); bc.type = 'button';
-    bc.addEventListener('click', function () {
-      if (!amt.value.trim()) return say('Enter the amount in CKB.', true);
-      if (!owner.value.trim()) return say('Enter the owner lock args.', true);
-      prepare('/api/payout/prepare-create', { ckb: amt.value.trim(), owner_lock_args: owner.value.trim() }, 'payout-create-unsigned.json');
-    });
-    var bw = el('button', 'btn', 'Withdraw'); bw.type = 'button';
-    bw.addEventListener('click', function () {
-      var body = amt.value.trim() ? { ckb: amt.value.trim() } : { all: true };
-      prepare('/api/payout/prepare-withdraw', body, 'payout-withdraw-unsigned.json');
-    });
-    btns.appendChild(bc); btns.appendChild(bw);
-    var hint = el('p', '', 'Leave the amount empty to withdraw everything.');
-    var cr = card('Stake and registration');
-    cr.appendChild(el('p', '', 'The stake is a Nervos DAO deposit of at least 10,000 CKB made in your own wallet (Neuron or ckb-cli). It stays yours and keeps earning DAO compensation; CSR only references it.'));
-    var rinfo = el('div');
-    var att = el('input'); att.type = 'file'; att.accept = '.json,application/json';
-    var stake = el('input'); stake.placeholder = 'stake: DAO deposit 0x<tx hash>:<index>'; stake.size = 44;
-    var reg = el('button', 'btn', 'Register'); reg.type = 'button';
-    reg.addEventListener('click', function () {
-      var f = att.files && att.files[0];
-      if (!f) return say('Choose the monitor attestation file first.', true);
-      if (!owner.value.trim()) return say('Enter the owner lock args.', true);
-      if (!stake.value.trim()) return say('Enter the stake (out point of your Nervos DAO deposit).', true);
-      f.text().then(function (t) {
-        return api('/api/registry/prepare-create', { method: 'POST', body: { attestation: JSON.parse(t), owner_lock_args: owner.value.trim(), stake: stake.value.trim() } });
-      }).then(function (j) {
-        download('register-unsigned.json', j.file);
-        say('Unsigned registration downloaded (fee ' + j.fee_shannons + ' shannons). Sign it in your wallet, then submit the signed file below.');
-      }).catch(function (x) { say(x.message, true); });
-    });
-    var regrow = el('div', 'row'); regrow.appendChild(att); regrow.appendChild(stake); regrow.appendChild(reg);
-    submit.addEventListener('click', function () {
-      var f = signed.files && signed.files[0];
-      if (!f) return say('Choose the signed transaction file first.', true);
-      f.text().then(function (t) {
-        return api('/api/tx/submit-signed', { method: 'POST', body: JSON.parse(t) });
-      }).then(function (j) { say('Submitted: ' + j.tx_hash); load(); })
+    var c = card('Runner wallet');
+    c.appendChild(el('p', '', 'The runner wallet pays the registration and its own small fees and receives the tips. Send about 600 CKB to the runner address once, from any wallet. CSR signs its transactions itself.'));
+    var info = el('div');
+    var to = el('input'); to.placeholder = 'to: ckb1…/ckt1… address'; to.size = 50;
+    var amt = el('input'); amt.placeholder = 'CKB'; amt.size = 10;
+    var send = el('button', 'btn', 'Send'); send.type = 'button';
+    send.addEventListener('click', function () {
+      if (!to.value.trim() || !amt.value.trim()) return say('Enter the address and the amount.', true);
+      api('/api/wallet/send', { method: 'POST', body: { to: to.value.trim(), ckb: amt.value.trim() } })
+        .then(function (j) { say('Sent: ' + j.tx_hash); load(); })
         .catch(function (x) { say(x.message, true); });
     });
-    var sub = el('div', 'row'); sub.appendChild(signed); sub.appendChild(submit);
-    [info, form, btns, hint].forEach(function (n) { c.appendChild(n); });
-    [rinfo, regrow].forEach(function (n) { cr.appendChild(n); });
-    root.appendChild(c); root.appendChild(cr);
-    var cs = card('Submit signed transaction');
-    [sub, msg].forEach(function (n) { cs.appendChild(n); });
-    root.appendChild(cs);
+    var srow = el('div', 'row'); [to, amt, send].forEach(function (n) { srow.appendChild(n); });
+    [info, srow].forEach(function (n) { c.appendChild(n); });
+
+    var cr = card('Stake and registration');
+    cr.appendChild(el('p', '', 'The stake is a Nervos DAO deposit of at least 10,000 CKB in your own wallet; it stays there. Its owner consents by signing a one-line text ("Sign message" in Neuron).'));
+    var rinfo = el('div');
+    var stake = el('input'); stake.placeholder = 'stake: DAO deposit 0x<tx hash>:<index>'; stake.size = 50;
+    var getText = el('button', 'btn', 'Get text to sign'); getText.type = 'button';
+    var text = el('textarea'); text.readOnly = true; text.rows = 3; text.cols = 70;
+    var sig = el('input'); sig.placeholder = 'signature 0x… (from "Sign message")'; sig.size = 50;
+    var att = el('input'); att.type = 'file'; att.accept = '.json,application/json';
+    var reg = el('button', 'btn', 'Register'); reg.type = 'button';
+    var rm = el('button', 'btn', 'Remove registration'); rm.type = 'button';
+    getText.addEventListener('click', function () {
+      if (!stake.value.trim()) return say('Enter the stake (out point of your Nervos DAO deposit).', true);
+      api('/api/registry/consent-message', { method: 'POST', body: { stake: stake.value.trim() } }).then(function (j) {
+        text.value = j.message;
+        say('Sign this text with the wallet of ' + j.stake_owner_address + ' and paste the signature.');
+      }).catch(function (x) { say(x.message, true); });
+    });
+    reg.addEventListener('click', function () {
+      if (!stake.value.trim() || !sig.value.trim()) return say('Enter the stake and the signature.', true);
+      var f = att.files && att.files[0];
+      (f ? f.text().then(function (t) { return JSON.parse(t); }) : Promise.resolve(null)).then(function (a) {
+        var body = { stake: stake.value.trim(), consent: sig.value.trim() };
+        if (a) body.attestation = a;
+        return api('/api/registry/create', { method: 'POST', body: body });
+      }).then(function (j) { say((j.updated ? 'Registration updated: ' : 'Registered: ') + j.tx_hash); load(); })
+        .catch(function (x) { say(x.message, true); });
+    });
+    rm.addEventListener('click', function () {
+      if (!window.confirm('Remove the registration? Its CKB returns to the runner wallet.')) return;
+      api('/api/registry/remove', { method: 'POST', body: {} })
+        .then(function (j) { say('Removed: ' + j.tx_hash); load(); })
+        .catch(function (x) { say(x.message, true); });
+    });
+    var r1 = el('div', 'row'); [stake, getText].forEach(function (n) { r1.appendChild(n); });
+    var r2 = el('div', 'row'); [sig, att, reg, rm].forEach(function (n) { r2.appendChild(n); });
+    [rinfo, r1, text, r2].forEach(function (n) { cr.appendChild(n); });
+    root.appendChild(c); root.appendChild(cr); root.appendChild(msg);
     function load() {
-      Promise.all([api('/api/runner-cell'), api('/api/payout'), api('/api/registry')]).then(function (r) {
+      Promise.all([api('/api/wallet'), api('/api/registry')]).then(function (r) {
+        var w = r[0], ls = w.last_sweep;
         info.textContent = '';
         dl(info, [
-          ['Payout cell', r[1].found ? r[1].outpoint : 'none'],
-          ['Payout balance', ckb(r[1].capacity_shannons)],
-          ['Payout lock args', r[1].lock_args],
-          ['Payout lock hash', r[1].lock_hash],
-          ['Runner key cell', r[0].found ? r[0].outpoint : 'none'],
-          ['Runner key cell capacity (shannons)', r[0].capacity_shannons],
+          ['Runner address', w.address],
+          ['Balance', ckb(w.capacity_shannons)],
+          ['Sweep to', w.sweep_address || 'not set (payout.sweep_address)'],
+          ['Sweep', w.sweep_amount_ckb + ' CKB at ' + w.sweep_threshold_ckb + ' CKB'],
+          ['Last sweep', ls ? ckb(ls.amount_shannons) + ' – ' + new Date(ls.at_ms).toLocaleString() : 'never'],
         ]);
         rinfo.textContent = '';
-        var st = r[2].stake;
+        var st = r[1].stake;
         dl(rinfo, [
-          ['Registered', r[2].registered ? r[2].outpoint : 'no'],
-          ['Attestation expiry (ms)', r[2].attestation_expiry_ms],
+          ['Registered', r[1].registered ? r[1].outpoint : 'no'],
+          ['Attestation expiry (ms)', r[1].attestation_expiry_ms],
           ['Stake', st ? st.outpoint : '–'],
           ['Stake status', st ? st.status : '–'],
-          ['Stake', st ? ckb(st.capacity_shannons) : '–'],
+          ['Stake amount', st ? ckb(st.capacity_shannons) : '–'],
         ]);
       }).catch(function (x) { info.textContent = x.message; });
     }
@@ -605,17 +591,17 @@
   };
 
   pages.earnings = function (root) {
-    var c = card('Earnings & payout');
+    var c = card('Earnings');
     var info = el('div'), chartBox = el('div'), table = el('div');
     var btns = el('div', 'row');
-    var pa = el('a', 'btn', 'Stake & payout'); pa.href = '#/payout';
+    var pa = el('a', 'btn', 'Wallet & stake'); pa.href = '#/payout';
     btns.appendChild(pa);
     [info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
     root.appendChild(c);
     function load() {
       api('/api/earnings').then(function (e) {
         info.textContent = '';
-        dl(info, [['Payout balance', ckb((e.payout || {}).capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid', ckb(e.fees_shannons)]]);
+        dl(info, [['Runner wallet', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid', ckb(e.fees_shannons)]]);
         var days = {};
         e.settlements.forEach(function (x) {
           var d = new Date((x.t || 0) * 1000).toISOString().slice(0, 10);
