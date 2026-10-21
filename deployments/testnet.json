@@ -7,7 +7,7 @@
   },
   "monitor_pubkey": "0x03db2a5f9af76cf37294137ec5d5533abf014b6c399cd4ca0722778ffa07980c7c",
   "network": "testnet",
-  "registry_type_hash": "0x5d94fe8c6bec821dcaa7ae97c336cf03e266f6e97be412ee988e678822bd470d",
+  "registry_type_hash": "0x5f0c1dc9ea126bd2464983a60f11731ce3a68a499ec37ea8f516fd2c06f32cb6",
   "rpc": "http://127.0.0.1:8112",
   "scripts": {
     "anyone_can_pay": {
@@ -36,10 +36,10 @@
       "tx_hash": "0xc39018b91d82f324e9c56b02d21963c48a768838cc68b7e390a8b5846926d276"
     },
     "registry": {
-      "code_hash": "0x4796879ebfc99db2cfd6205545382ab81a662bfdac7cc276d438f8aaef1788eb",
+      "code_hash": "0x411aceb357a61684226169902cab2ccf64f470f0aaf93687d7cd2904f3c741d8",
       "hash_type": "data2",
       "index": 0,
-      "tx_hash": "0x949a7b65ac4168bbcff944afa973d0862af45730995f4bd9a5e805187c59f98a"
+      "tx_hash": "0xfe9a2556f632079ec2a4c08a0b9c371685d7de5d3dfd4dbc4b5c70fae18b2f58"
     }
   }
 }
