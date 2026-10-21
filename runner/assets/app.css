@@ -58,3 +58,8 @@ tr.click{cursor:pointer}
 .wm-c{fill:var(--wm-land);stroke:var(--wm-border);stroke-width:.3;stroke-linejoin:round;stroke-linecap:round}
 .wm-dot{fill:var(--wm-dot);fill-opacity:.75;stroke:var(--wm-land);stroke-width:.3;cursor:pointer}
 .credit{color:var(--mut);font-size:.75rem;margin:.4rem 0 0}
+
+.logo,.logo-full{background:#fff;padding:4px;border-radius:8px;box-sizing:border-box}
+.logo{width:40px;height:40px;flex:none}
+.logo-full{display:block;margin:0 auto 1rem;width:100%;max-width:240px;height:auto}
+.addr-full{display:block;width:100%;box-sizing:border-box;font-family:ui-monospace,monospace;overflow-wrap:anywhere;user-select:all;margin:.3rem 0}

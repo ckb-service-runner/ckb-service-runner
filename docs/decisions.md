@@ -405,3 +405,7 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - **Why the tests were corrected instead.** The runner was right and the tests were wrong: the documented first transfer is about 700 CKB. A dev tool that silently tops up the wallet hides exactly the mistake an operator could make. A8b removes the `--faucet-ckb` option, the transfer, the `faucet` key in the JSON and the stderr line; the attestation file is unchanged. An unknown option now fails as usual.
 - **Replacement tests.** `acceptance/a8b/p3`, `p4`, `p5` replace `acceptance/a8/p3`, `p4`, `p5` (same checks, 700 CKB). The A8 originals are obsolete, no longer run, and left untouched.
 - **Docs.** README, `docs/testing.md` and `docs/milestones/A8.md` say about 700 CKB to send and about 540 CKB for the registry cell; the devnet flow uses `csr-dev fund … --ckb 700`.
+
+## A8b – dashboard polish
+- The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
+- Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.

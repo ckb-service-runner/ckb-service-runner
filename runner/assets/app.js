@@ -102,6 +102,8 @@
   function renderLogin() {
     view.textContent = '';
     var c = card('Login');
+    var lg = el('img', 'logo-full'); lg.src = '/logo-full.png'; lg.alt = 'ckb-service-runner';
+    c.appendChild(lg);
     var f = el('form');
     var i = el('input');
     i.type = 'password'; i.autocomplete = 'current-password'; i.placeholder = 'Password';
@@ -439,19 +441,26 @@
   pages.wallet = function (root) {
     var msg = el('p', 'msg');
     function say(t, bad) { msg.className = 'msg' + (bad ? ' err' : ''); msg.textContent = t; }
-    function copyBtn(get) {
+    function copyBtn(get, box) {
       var b = el('button', 'btn', 'Copy'); b.type = 'button';
       b.addEventListener('click', function () {
         var v = get();
-        if (navigator.clipboard && v) navigator.clipboard.writeText(v).then(function () { say('Copied.'); }, function () { say('Copy failed; select the text and copy it by hand.', true); });
+        if (!v) return;
+        function fallback() {
+          var ok = false;
+          try { box.focus(); box.select(); ok = document.execCommand('copy'); } catch (e) { ok = false; }
+          if (ok) say('Copied.'); else { try { box.select(); } catch (e) { /* ignore */ } say('Press Ctrl+C to copy', true); }
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(v).then(function () { say('Copied.'); }, fallback);
+        else fallback();
       });
       return b;
     }
     var c = card('Runner wallet');
-    c.appendChild(el('p', '', 'Send about 500 CKB here from your wallet to start. The registration uses about 161 CKB, the rest pays small fees. Tips are added here.'));
+    c.appendChild(el('p', '', 'Send about 700 CKB here from your wallet to start. The registration cell uses about 540 CKB, the rest pays small fees. Tips are added here.'));
     var info = el('div');
-    var addr = el('input'); addr.readOnly = true; addr.size = 70; addr.setAttribute('aria-label', 'Runner address');
-    var arow = el('div', 'row'); arow.appendChild(addr); arow.appendChild(copyBtn(function () { return addr.value; }));
+    var addr = el('div', 'addr-full'); addr.setAttribute('aria-label', 'Runner address');
+    var arow = addr;
     var to = el('input'); to.placeholder = 'to: ckb1…/ckt1… address'; to.size = 50;
     var amt = el('input'); amt.placeholder = 'CKB'; amt.size = 10;
     var send = el('button', 'btn', 'Send'); send.type = 'button';
@@ -472,7 +481,7 @@
     var textBox = el('div'); textBox.hidden = true;
     var text = el('textarea'); text.readOnly = true; text.rows = 4; text.cols = 70; text.setAttribute('aria-label', 'Text to sign');
     var owner = el('p');
-    var trow = el('div', 'row'); trow.appendChild(text); trow.appendChild(copyBtn(function () { return text.value; }));
+    var trow = el('div', 'row'); trow.appendChild(text); trow.appendChild(copyBtn(function () { return text.value; }, text));
     [el('label', '', 'Text to sign'), trow, owner,
       el('p', '', 'Sign this text in your wallet with the address of the DAO deposit (Neuron: Tools → Sign/Verify Message) and paste the signature below.')]
       .forEach(function (n) { textBox.appendChild(n); });
@@ -513,7 +522,7 @@
     function load() {
       Promise.all([api('/api/wallet'), api('/api/registry'), api('/api/runner-cell')]).then(function (r) {
         var w = r[0], ls = w.last_sweep;
-        addr.value = r[2].runner_address || w.address || '';
+        addr.textContent = r[2].runner_address || w.address || '';
         info.textContent = '';
         dl(info, [
           ['Balance', ckb(w.capacity_shannons)],

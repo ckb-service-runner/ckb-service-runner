@@ -29,6 +29,8 @@ async fn static_file(uri: Uri) -> Response {
                 Some("css") => "text/css; charset=utf-8",
                 Some("html") => "text/html; charset=utf-8",
                 Some("svg") => "image/svg+xml",
+                Some("png") => "image/png",
+                Some("ico") => "image/x-icon",
                 _ => "application/octet-stream",
             };
             ([(header::CONTENT_TYPE, ct)], f.data.into_owned()).into_response()
