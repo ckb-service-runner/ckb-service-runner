@@ -19,7 +19,8 @@
 ```
 
 The runner is a **separate process and a separate install**. It never modifies
-the `ckb` binary, its config or its data directory. A crash or exploit in a
+the `ckb` binary, its config or its data directory (the node's P2P key file is only read, and only when the
+operator sets `node.p2p_key_file`). A crash or exploit in a
 service cannot take the node down, and the runner has its own release schedule.
 
 ## R1 — Node reputation ledger
@@ -53,7 +54,14 @@ Local check, in code, not configurable:
 
 Remote proof:
 
-- the runner signs "service key X belongs to peer ID Y" with the node's P2P key
+- binding of service key and node (D6 A): the runner reads the node's P2P secret key (read only, from the
+  file the operator grants access to, `node.p2p_key_file`), checks that it derives the node ID the node
+  reports, and sends the monitors a node-identity proof — `CSR-NODE-IDENTITY-v1` signed by the P2P key
+  **and** the service key (`spec/ping-protocol.md` §5b). The older binding signature in the ping answer is
+  signed by the service key alone and is only a claim: anyone could name any well-connected node there.
+- runners behind NAT (D12 A): each monitor publishes the P2P address of its own CKB node; the runner asks
+  its node to connect to it (`add_node`, Net RPC module), so the monitor sees and checks the node among its
+  own peers
 - probes request headers and blocks at random heights **over P2P**, plus tip
   challenges with a time limit
 - failures lower the node's reputation (R1)

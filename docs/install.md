@@ -6,7 +6,8 @@ Linux x86_64 only (Windows and macOS are not supported).
 ## Requirements
 
 - A synced `ckb` full node (not a light client) with the `Indexer` RPC module enabled
-  (`modules` in `ckb.toml` must contain `"Indexer"`), RPC on `127.0.0.1:8114`;
+  (`modules` in `ckb.toml` must contain `"Indexer"`, and `"Net"` for the node identity check,
+  see "Node identity"), RPC on `127.0.0.1:8114`;
   or Neuron running in full-node mode.
 - systemd, about 50 MB of RAM and a little disk.
 
@@ -76,6 +77,53 @@ sudo -u csr csr --data-root /var/lib/csr set-password
 The ranking monitor pings your node on **8131/tcp** (`ranking.ping_bind`): open it in your firewall
 and forward it if you are behind NAT. If you cannot accept inbound connections, set
 `ranking.ping_mode = "outbound"` in `csr.toml` (the node connects out to the monitor instead).
+
+## Node identity
+
+The monitors rank a node only if the runner proves that it runs beside that node (decision D6 A). The
+proof is signed with the node's **P2P secret key**: the key the CKB node uses on the peer-to-peer network,
+from which its node ID (`Qm…`, `local_node_info.node_id`) is derived. CKB keeps it in
+`<ckb data dir>/network/secret_key` (32 raw bytes; 64 hex characters are accepted too). Without the key
+anybody could claim any well-connected node; with it, only the operator of the node can.
+
+Set the path in `csr.toml`:
+
+```toml
+[node]
+p2p_key_file = "/var/lib/ckb/data/network/secret_key"
+```
+
+The runner only **reads** the file, at start: it never writes it, never changes its mode or owner, keeps the
+key in memory only and never shows it in a log, the dashboard or an API answer. It refuses a file readable
+by every user ("other"), and it refuses to send a proof if the key does not derive the node ID the node
+reports (wrong file); both show on the Node page and in `csr check`. Without `p2p_key_file` everything works
+as before, but the monitors will not rank the node once they require the proof.
+
+Grant the `csr` user read access without changing the node — an ACL on the file and `x` (search, not
+read) on each directory above it:
+
+```sh
+sudo setfacl -m u:csr:r /var/lib/ckb/data/network/secret_key
+sudo setfacl -m u:csr:x /var/lib/ckb /var/lib/ckb/data /var/lib/ckb/data/network
+```
+
+or, if the node's files belong to a group of their own, add `csr` to it (`sudo usermod -aG ckb csr`) and
+make sure the file is group-readable (`chmod g+r`; not `o+r`). Restart CSR after changing
+`p2p_key_file`. Check it:
+
+```sh
+sudo -u csr csr --data-root /var/lib/csr check
+```
+
+prints `node identity: proven` (other states: `off` = not configured, `mismatch` = the key belongs to
+another node, `unreadable` = missing, no access, readable by everyone or not a key, `unknown` = the node does
+not answer).
+
+**Behind NAT.** Each monitor publishes the P2P address of its own CKB node (D12 A). CSR asks your node to
+connect to it once at start and every 6 hours (`add_node`), so that the monitor sees your node among its
+peers even if nobody can connect in. This needs the node's **Net** RPC module: `modules` under `[rpc]` in
+`ckb.toml` must include `"Net"` (restart the node after the change). If it is missing, CSR logs one warning
+and the Node page shows it. CSR never removes peers or calls other Net methods.
 
 ## Upgrade
 

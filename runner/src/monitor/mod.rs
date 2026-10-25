@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
 const CACHE_TTL: Duration = Duration::from_secs(300);
 /// After a failed refresh, wait this long before asking the monitor again.
@@ -149,16 +150,21 @@ async fn get(http: &reqwest::Client, url: &str) -> Result<Option<Value>, String>
         .map_err(|e| format!("bad monitor reply: {}", e.without_url()))
 }
 
+/// HTTP client for monitor requests: no proxy, no redirects.
+pub fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("http client: {e}"))
+}
+
 async fn fetch(
     base: &str,
     peer_id: Option<&str>,
 ) -> Result<(NetworkStats, Option<NodeStats>), String> {
-    let http = reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
+    let http = http_client(TIMEOUT)?;
     let net = get(&http, &format!("{base}/v1/network"))
         .await?
         .ok_or_else(|| "monitor has no /v1/network".to_string())?;
@@ -257,7 +263,121 @@ pub async fn network_json(state: &AppState) -> Value {
         "network": snap.map(|s| json!(s.network)),
         "node": snap.and_then(|s| s.node.as_ref()).map(|n| json!(n)),
         "ping": ping,
+        "identity": {
+            "state": state.identity_status.read().unwrap().state,
+            "proofs": state.identity_proofs.lock().unwrap().iter()
+                .map(|(m, r)| { let mut r = r.clone(); r["monitor"] = json!(m); r })
+                .collect::<Vec<_>>(),
+        },
     })
+}
+
+const ADD_NODE_TICK: Duration = Duration::from_secs(10);
+const ADD_NODE_INTERVAL: Duration = Duration::from_secs(6 * 3600);
+const ADD_NODE_RETRY: Duration = Duration::from_secs(600);
+
+/// D12 A: asks the node to connect to the monitor's own CKB node (`p2p_address` of `GET /v1/monitor`),
+/// at start and every 6 h, unless `get_peers` already lists it. Never calls other Net methods.
+pub async fn add_node_loop(state: std::sync::Arc<AppState>, mut stop: watch::Receiver<bool>) {
+    let http = match http_client(TIMEOUT) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("add_node disabled: {e}");
+            return;
+        }
+    };
+    let rpc_url = state.config.read().unwrap().node.rpc_url.clone();
+    let rpc = crate::node::rpc::RpcClient::new(&rpc_url);
+    let p = if crate::run::fast_tick() {
+        Duration::from_secs(1)
+    } else {
+        ADD_NODE_TICK
+    };
+    let mut tick = tokio::time::interval(p);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut next: Option<Instant> = None;
+    let mut warned_addr = false;
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {},
+            _ = stop.changed() => return,
+        }
+        if !state.config.read().unwrap().ranking.join
+            || next.is_some_and(|t| Instant::now() < t)
+        {
+            continue;
+        }
+        // Only while the node answers.
+        let Some(own_id) = state.node.read().unwrap().snap.node_id.clone() else {
+            continue;
+        };
+        let wait = match add_monitor_node(&state, &http, &rpc, &own_id, &mut warned_addr).await {
+            Ok(()) => ADD_NODE_INTERVAL,
+            Err(e) => {
+                tracing::warn!("add_node: {e}");
+                ADD_NODE_RETRY
+            }
+        };
+        next = Some(Instant::now() + if crate::run::fast_tick() { p * 5 } else { wait });
+    }
+}
+
+/// `Ok` also when there is nothing to do (no `p2p_address`, already a peer, Net module off).
+async fn add_monitor_node(
+    state: &AppState,
+    http: &reqwest::Client,
+    rpc: &crate::node::rpc::RpcClient,
+    own_id: &str,
+    warned_addr: &mut bool,
+) -> Result<(), String> {
+    let base = monitor_base(state);
+    let Some(info) = get(http, &format!("{base}/v1/monitor")).await? else {
+        tracing::debug!("monitor {base} has no /v1/monitor");
+        return Ok(());
+    };
+    let Some(addr) = info.get("p2p_address").and_then(Value::as_str) else {
+        tracing::debug!("monitor {base} publishes no p2p_address");
+        return Ok(());
+    };
+    let Some((peer_id, address)) = crate::identity::parse_monitor_p2p(addr) else {
+        if !*warned_addr {
+            tracing::warn!("monitor {base} publishes an unusable p2p_address: {:?}", addr.chars().take(200).collect::<String>());
+            *warned_addr = true;
+        }
+        return Ok(());
+    };
+    if peer_id == own_id {
+        return Ok(());
+    }
+    let net_off = |state: &AppState| {
+        if !state.net_rpc_missing.swap(true, Ordering::Relaxed) {
+            tracing::warn!("{}", crate::app::NET_RPC_HINT);
+        }
+        Ok(())
+    };
+    let peers = match rpc.call("get_peers", json!([])).await {
+        Ok(v) => v,
+        Err(e) if e.is_method_not_found() => return net_off(state),
+        Err(e) => return Err(format!("get_peers: {e}")),
+    };
+    let connected = peers.as_array().is_some_and(|a| {
+        a.iter()
+            .any(|p| p.get("node_id").and_then(Value::as_str) == Some(peer_id.as_str()))
+    });
+    if connected {
+        state.net_rpc_missing.store(false, Ordering::Relaxed);
+        tracing::debug!("the monitor's node {peer_id} is already a peer");
+        return Ok(());
+    }
+    match rpc.call("add_node", json!([peer_id, address])).await {
+        Ok(_) => {
+            state.net_rpc_missing.store(false, Ordering::Relaxed);
+            tracing::info!("asked the node to connect to the monitor's node {peer_id} at {address}");
+            Ok(())
+        }
+        Err(e) if e.is_method_not_found() => net_off(state),
+        Err(e) => Err(format!("add_node: {e}")),
+    }
 }
 
 #[cfg(test)]

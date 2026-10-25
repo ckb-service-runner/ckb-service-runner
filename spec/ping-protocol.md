@@ -1,7 +1,7 @@
 # CSR Ping Protocol v1
 
 Used by the CSR Network Monitor to rank CSR nodes. A CSR node proves that it controls a service key,
-is bound to a CKB node (peer ID), and can read the chain at a height chosen by the monitor.
+is bound to a CKB node (peer ID; proven with the node's P2P key, §5b), and can read the chain at a height chosen by the monitor.
 The monitor is built from this document.
 
 ## 1. Conventions
@@ -23,6 +23,7 @@ The monitor is built from this document.
 | Challenge | `CSR-PING-CHALLENGE-v1\n{nonce}\n{height}\n{issued_at}` signed by the monitor key |
 | Binding | `CSR-BINDING-v1\n{peer_id}\n{service_pubkey}\n{network}` signed by the CSR service key |
 | Answer | `CSR-PING-ANSWER-v1` followed by the fields below, each on its own line, signed by the CSR service key |
+| Node identity | `CSR-NODE-IDENTITY-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}` signed by the node's P2P key **and** by the CSR service key (§5b) |
 
 Answer fields in signing order: `nonce, peer_id, service_pubkey, binding_sig, network, csr_version, node_version,
 r2_state, tip_number, tip_hash, block_hash_at_height, uptime_s, ping_mode`
@@ -114,6 +115,58 @@ Replies: `200` with the attestation JSON (`{peer_id, service_pubkey, network, ne
 errors are JSON `{"error": "<code>"}`, optionally with `"reason"`. Errors and replies are listed in
 `spec/monitor-public-api.md` (`POST /v1/attest`). CSR prints `error` and, if present, `reason`
 (e.g. `monitor replied 403 stake_invalid: too_small`) and exits non-zero.
+
+## 5b. Node identity (`POST /v1/identity`, D6 A)
+
+The Binding (§2) is signed by the service key only, so it is a claim. The node-identity proof is signed by
+the CKB node's P2P secret key as well, so only someone holding the node's key can bind a service key to it.
+
+- **Peer ID.** A CKB peer ID is `base58(0x12 ‖ 0x20 ‖ SHA-256(p2p_pubkey))` (Bitcoin base58 alphabet;
+  multihash SHA-256, as tentacle's `PeerId::from_public_key`), where `p2p_pubkey` is the 33-byte compressed
+  secp256k1 public key.
+- **Message.** `CSR-NODE-IDENTITY-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}`; `ts` is unix seconds
+  (decimal). Both signatures use the scheme of §1 over the same message.
+- **When.** CSR reads the key only if the operator sets `node.p2p_key_file`, and sends a proof only if the
+  key derives the `node_id` the node reports (`local_node_info`). It posts the proof when `ranking.join` is
+  true: at start, every 24 h, and when the node answers again after being unreachable (node restart).
+  Failures (network, 5xx) are retried after 10 minutes.
+
+Request body, exactly these fields:
+
+```json
+{"peer_id":"Qm…","service_pubkey":"0x02…","network":"testnet","ts":1792281600,
+ "p2p_pubkey":"0x02…","p2p_sig":"0x<128 hex>","service_sig":"0x<128 hex>"}
+```
+
+The monitor verifies: `peer_id` is derived from `p2p_pubkey`; `p2p_sig` with `p2p_pubkey` and `service_sig`
+with `service_pubkey`, both over the message (after S normalisation); `network` is its own; `ts` is fresh;
+and `peer_id` is the node ID it sees for the node (monitor spec `node-identity-monitor`).
+
+| Status | Body | Meaning |
+|---|---|---|
+| 200 | `{"ok": true}` | proof accepted |
+| 400 | `{"error": "bad_request"}` | malformed JSON, unknown or missing fields, wrong network, `peer_id` not derived from `p2p_pubkey` |
+| 400 | `{"error": "stale"}` | `ts` too far from the monitor's clock |
+| 401 | `{"error": "bad_signature"}` | `p2p_sig` or `service_sig` invalid |
+| 403 | `{"error": "peer_mismatch"}` | the node the monitor sees under this address/connection has another peer ID |
+
+A monitor without this endpoint answers 404; CSR treats that as "not supported yet" (debug log, retried in
+24 h). The last result per monitor is shown on the dashboard's Network page.
+
+### `p2p_address` (D12 A)
+
+`GET /v1/monitor` carries the P2P address of the monitor's own CKB node:
+
+```json
+{"p2p_address": "/ip4/203.0.113.7/tcp/8115/p2p/Qm…", "…": "…"}
+```
+
+A multiaddr `/ip4|ip6|dns4|dns6/<host>/tcp/<port>/p2p/<peer_id>`. CSR splits it into the peer ID and the
+address without `/p2p/…` and, at start and every 6 h (`ranking.join` true), calls the node RPC
+`add_node(peer_id, address)` unless `get_peers` already lists that peer, so that a runner behind NAT
+connects out to the monitor's node and the monitor can check it among its own peers. A missing or
+unparsable field is ignored. CSR never calls `remove_node` or other Net methods; "method not found" means the
+node's Net RPC module is off (CSR warns once).
 
 ## 6. Versioning
 

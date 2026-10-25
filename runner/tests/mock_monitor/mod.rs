@@ -134,7 +134,7 @@ impl MockMonitor {
     }
 }
 
-fn read_request(c: &mut TcpStream) -> Option<(String, String, String)> {
+pub fn read_request(c: &mut TcpStream) -> Option<(String, String, String)> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {

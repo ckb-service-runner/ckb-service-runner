@@ -409,3 +409,23 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## Node identity – runner
+
+### D6 A: the node's P2P key signs the binding
+- Until now the binding (`CSR-BINDING-v1`) was signed by the runner's service key only, so anyone could claim any well-connected node (F-MON-006, F-RUN-007). The runner now reads the CKB node's P2P secret key (`node.p2p_key_file`, read only, kept in memory), checks that it derives the node ID the node reports (`local_node_info.node_id`; peer ID = `base58(0x12 ‖ 0x20 ‖ SHA-256(compressed pubkey))`, tentacle `PeerId::from_public_key`), and posts `CSR-NODE-IDENTITY-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}` signed by the P2P key and the service key to `POST /v1/identity` (`spec/ping-protocol.md` §5b): at start, every 24 h and after a node restart.
+- This narrows the rule "CSR never touches the node's data": the key file is only read, never written, chmod-ed or chowned, and only when the operator sets it. A file readable by "other" is refused; on a key/node mismatch no proof is sent (error log, Node page, `csr check`).
+- Without the key everything works as before; the monitors will not rank the node once they require the proof. The runner is deployed first: monitors ignore a missing proof until then, and a 404 from an older monitor is not an error.
+
+### D12 A: a daily full-node check for runners behind NAT
+- Each monitor publishes the P2P address of its own CKB node (`p2p_address` in `GET /v1/monitor`). The runner asks its node to connect to it (`add_node(peer_id, address)`, Net RPC module) at start and every 6 h unless `get_peers` already lists that peer; the monitor then checks the node among its own peers. "Method not found" means the Net module is off: one warning with the fix, shown on the Node page. No other Net method (`remove_node`, …) is called.
+
+### Phase 1 implementation notes
+- One monitor: this code base has no `Config::monitors()` list (the `ping-v1-1-runner` change is not in it), so "every configured monitor" is the single `monitor.url` (or the network default). Results are kept per monitor URL so a list fits later.
+- Base58 is implemented in `identity.rs` (about 40 lines, tested) instead of adding `bs58`: the build must work offline, and the crate is not in the local registry.
+- No `zeroize` setup exists here (the `csr-dashboard-security` change is not in this code base): the `P2pKey` erases its secret on drop (`SecretKey::non_secure_erase`), and the file buffer and parse buffer are overwritten with zeros. `P2pKey` has no `Serialize`, and its `Debug` prints only the peer ID.
+- Identity states: `off`, `proven`, `mismatch`, `unreadable`, plus `unknown` while the key is loaded but the node does not report a node ID (unreachable). While the node is unreachable the dashboard keeps the last known state.
+- `add_node` runs only with `ranking.join = true` (it serves the ranking; a non-joined runner does not contact the monitor at all) and does not need the P2P key (the P2P handshake itself proves the peer ID to the monitor's node).
+- Retries: a failed proof post (network, 5xx, 200 without `ok`) is retried after 10 minutes, a failed `/v1/monitor` fetch or RPC error for `add_node` too; 4xx rejections and 404 wait for the next regular interval.
+- `csr check` exit codes are unchanged (they still reflect R2 only); the identity state is printed and in `--json` as `node_identity`.
+- Changing `node.p2p_key_file` in the dashboard settings requires a restart (the key is read at start only).

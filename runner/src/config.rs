@@ -34,6 +34,8 @@ pub struct DevnetCfg {
 pub struct NodeCfg {
     pub rpc_url: String,
     pub node_type: String,
+    /// The CKB node's P2P secret key (`<ckb data dir>/network/secret_key`), read only; empty = off.
+    pub p2p_key_file: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -140,6 +142,7 @@ impl Default for NodeCfg {
         NodeCfg {
             rpc_url: "http://127.0.0.1:8114".into(),
             node_type: "auto".into(),
+            p2p_key_file: String::new(),
         }
     }
 }

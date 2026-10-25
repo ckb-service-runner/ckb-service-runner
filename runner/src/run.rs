@@ -3,7 +3,7 @@
 use crate::app::AppState;
 use crate::config::Config;
 use crate::db::{Db, Sample};
-use crate::identity::Identity;
+use crate::identity::{ConfiguredP2pKey, Identity};
 use crate::node::{self, rpc::RpcClient, Polled};
 use crate::resources::Monitor;
 use crate::{logs, ping, web};
@@ -155,6 +155,9 @@ pub async fn run(
     }
     let set_log_level = logs::init(&net_dir.join("logs").join("csr.log"), &cfg.logging.level)?;
     let identity = Identity::load_or_create(&net_dir)?;
+    // Read only; the key stays in memory. Never logged: only the derived peer ID is.
+    let p2p_key = ConfiguredP2pKey::load(&cfg.node.p2p_key_file);
+    let identity_status = p2p_key.status(first.snap.node_id.as_deref());
     let db = Db::open(&net_dir.join("csr.db"))?;
     let monitor = Arc::new(Monitor::new(data_root.clone()));
     let bind = cfg.dashboard.bind.clone();
@@ -181,6 +184,10 @@ pub async fn run(
         monitor_cache: Default::default(),
         sessions: Mutex::new(Default::default()),
         config: RwLock::new(cfg),
+        p2p_key,
+        identity_status: RwLock::new(identity_status.clone()),
+        identity_proofs: Default::default(),
+        net_rpc_missing: Default::default(),
     });
     tracing::info!(
         "csr {} started on {} ({}), service key {}",
@@ -189,6 +196,20 @@ pub async fn run(
         state.config.read().unwrap().network,
         state.service_pubkey
     );
+    match identity_status.state {
+        "off" => tracing::info!(
+            "node identity: off (node.p2p_key_file not set; monitors will not rank the node once they require the proof)"
+        ),
+        "proven" | "unknown" => tracing::info!(
+            "node identity: P2P key loaded ({})",
+            identity_status.state
+        ),
+        _ => tracing::error!(
+            "node identity: {}: {}",
+            identity_status.state,
+            identity_status.message.as_deref().unwrap_or("")
+        ),
+    }
     if !state.config.read().unwrap().payout.lock_args.is_empty() {
         tracing::warn!(
             "payout.lock_args is set but ignored: since A8 the tips go into the runner wallet \
@@ -410,6 +431,8 @@ pub async fn run(
     };
 
     tokio::spawn(ping::outbound::run(state.clone(), stop_rx.clone()));
+    tokio::spawn(ping::outbound::identity_loop(state.clone(), stop_rx.clone()));
+    tokio::spawn(crate::monitor::add_node_loop(state.clone(), stop_rx.clone()));
 
     let result = tokio::select! {
         _ = shutdown_signal() => {
