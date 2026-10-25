@@ -180,6 +180,7 @@ pub async fn run(
         wallet_tx: Default::default(),
         monitor_cache: Default::default(),
         sessions: Mutex::new(Default::default()),
+        update: Default::default(),
         config: RwLock::new(cfg),
     });
     tracing::info!(
@@ -410,6 +411,7 @@ pub async fn run(
     };
 
     tokio::spawn(ping::outbound::run(state.clone(), stop_rx.clone()));
+    tokio::spawn(crate::update::background(state.clone(), stop_rx.clone()));
 
     let result = tokio::select! {
         _ = shutdown_signal() => {

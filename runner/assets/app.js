@@ -163,12 +163,14 @@
   pages.overview = function (root) {
     var g = el('div', 'grid');
     var cs = card('Network'), cn = card('Node'), cr = card('Runtime'), cres = card('Resources');
-    var cf = card('Wallet'), ck = card('CSR monitor');
-    [cs, cn, cr, cres, cf, ck].forEach(function (c) { g.appendChild(c); });
+    var cf = card('Wallet'), ck = card('CSR monitor'), cu = card('Update');
+    [cs, cn, cr, cres, cf, ck, cu].forEach(function (c) { g.appendChild(c); });
     root.appendChild(g);
+    var upd = updateCard(cu);
     function paint() {
       var s = state.status;
       if (!s) return;
+      upd.notice(s.update);
       [cs, cn, cr, ck].forEach(function (c) { while (c.children.length > 1) c.removeChild(c.lastChild); });
       dl(cs, [['Network', s.network], ['Version', s.version], ['Uptime', fmtUp(s.uptime_s)], ['Peer ID', s.peer_id], ['Service key', s.service_pubkey]]);
       dl(cn, [['R2 state', pill(s.r2.state)], ['Reasons', (s.r2.reasons || []).join('; ') || 'none']]);
@@ -215,6 +217,62 @@
     timers.push(setInterval(payoutCard, 10000));
     timers.push(setInterval(res, 5000));
   };
+
+  // Update card: daily notice (from /api/status), "Check for update" and, with a newer signed
+  // release and a configured release key, "Update" with an in-page confirmation.
+  function updateCard(c) {
+    var note = el('p', 'msg'), info = el('div'), msg = el('div', 'msg');
+    var row = el('div', 'row');
+    var check = el('button', 'btn', 'Check for update');
+    var go = el('button', 'btn primary', 'Update'); go.hidden = true;
+    var sure = el('button', 'btn primary', 'Yes, download and install'); sure.hidden = true;
+    var cancel = el('button', 'btn', 'Cancel'); cancel.hidden = true;
+    [check, go, sure, cancel].forEach(function (b) { b.type = 'button'; row.appendChild(b); });
+    [note, info, row, msg].forEach(function (x) { c.appendChild(x); });
+    function say(cls, text) { msg.className = 'msg' + (cls ? ' ' + cls : ''); msg.textContent = text; }
+    function link(u) { var a = el('a', '', 'Release notes'); a.href = u; a.target = '_blank'; a.rel = 'noopener noreferrer'; return a; }
+    function show(u) {
+      info.textContent = '';
+      dl(info, [['Current', u.current], ['Latest', u.latest], ['Checked', fmtTime(u.checked_at)], ['Notes', link(u.notes_url)]]);
+      var can = u.newer === true && u.key_configured;
+      go.hidden = !can; sure.hidden = true; cancel.hidden = true;
+      if (u.newer === true && !u.key_configured) say('', 'This build has no release key configured: install the update manually (docs/install.md).');
+      else if (u.newer === false) say('ok', 'CSR is up to date.');
+      else if (u.newer === null) say('', 'The latest release tag is not a plain version; nothing to install.');
+      else say('', '');
+    }
+    check.addEventListener('click', function () {
+      check.disabled = true; msg.className = 'msg'; msg.textContent = 'Asking GitHub for the latest release…';
+      api('/api/update').then(show).catch(function (x) { msg.className = 'msg err'; msg.textContent = x.message; })
+        .then(function () { check.disabled = false; });
+    });
+    go.addEventListener('click', function () {
+      go.hidden = true; sure.hidden = false; cancel.hidden = false;
+      msg.className = 'msg'; msg.textContent = 'Download the release, verify its signature and install it? The runner restarts afterwards.';
+    });
+    cancel.addEventListener('click', function () { go.hidden = false; sure.hidden = true; cancel.hidden = true; msg.textContent = ''; });
+    sure.addEventListener('click', function () {
+      sure.disabled = cancel.disabled = check.disabled = true;
+      msg.className = 'msg'; msg.textContent = 'Downloading and verifying the release (binary, SHA256SUMS, SHA256SUMS.sig)…';
+      api('/api/update/install', { method: 'POST', body: {} }).then(function (r) {
+        sure.hidden = cancel.hidden = true;
+        msg.className = 'msg ok'; msg.textContent = r.message || 'Update staged; the runner will restart.';
+      }).catch(function (x) {
+        msg.className = 'msg err'; msg.textContent = 'Update failed: ' + x.message;
+        sure.hidden = cancel.hidden = true; go.hidden = false;
+      }).then(function () { sure.disabled = cancel.disabled = check.disabled = false; });
+    });
+    return {
+      notice: function (u) {
+        if (u && u.newer === true) {
+          note.className = 'msg stale'; note.textContent = 'CSR ' + u.latest + ' is available (this is ' + u.current + '). ';
+          note.appendChild(link(u.notes_url));
+        } else {
+          note.className = 'msg'; note.textContent = 'Version ' + ((state.status || {}).version || '–');
+        }
+      }
+    };
+  }
 
   pages.network = function (root) {
     var cw = card('Nodes worldwide'), cr = card('My rank'), cm = card('Map'), cc = card('Countries');

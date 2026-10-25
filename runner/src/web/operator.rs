@@ -1,5 +1,5 @@
-//! Operator flows of the dashboard: the runner wallet and the registration. CSR signs every transaction
-//! itself with the service key; the same JSON as the CLI, errors → 400 `{"error"}`.
+//! Operator flows of the dashboard: the runner wallet, the registration and the update. CSR signs
+//! every transaction itself with the service key; the same JSON as the CLI, errors → 400 `{"error"}`.
 
 use crate::app::AppState;
 use crate::chain::Chain;
@@ -163,4 +163,17 @@ pub async fn register_remove(State(s): St) -> Response {
         }
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
+}
+
+/// The latest GitHub release compared with this version (cached for an hour).
+pub async fn update_check(State(s): St) -> Response {
+    match s.update.check().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// Downloads, verifies and stages the latest release; the root installer takes it from there.
+pub async fn update_install(State(s): St) -> Response {
+    reply(s.update.stage(&s.net_dir.join("update")).await)
 }

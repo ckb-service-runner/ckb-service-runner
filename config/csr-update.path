@@ -1,0 +1,16 @@
+# Watches for an update staged by the runner (dashboard "Update" or `csr update stage`) and starts
+# csr-update.service, which verifies and installs it as root.
+#
+# The path is <data root>/<network>/update/ready.json. Adapt it to your setup:
+#   - data root: --data-root in csr.service (default /var/lib/csr)
+#   - network: `network` in csr.toml (testnet or mainnet)
+# and use the same directory in csr-update.service.
+[Unit]
+Description=CSR - staged update watcher
+
+[Path]
+PathExists=/var/lib/csr/testnet/update/ready.json
+Unit=csr-update.service
+
+[Install]
+WantedBy=multi-user.target

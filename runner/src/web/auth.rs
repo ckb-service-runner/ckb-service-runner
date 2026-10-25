@@ -104,6 +104,15 @@ fn err(code: StatusCode, msg: &str) -> Response {
     (code, Json(json!({"error": msg}))).into_response()
 }
 
+/// Writes that need a dashboard password to be set: without one they are refused (403), so that
+/// nobody who reaches an unprotected dashboard can install software on the host.
+/// `csr update stage` stays available on the command line.
+pub fn write_needs_password(method: &Method, path: &str) -> bool {
+    const PREFIXES: [&str; 1] = ["/api/update/"];
+    !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+        && PREFIXES.iter().any(|p| path.starts_with(p))
+}
+
 /// Auth for `/api/*` (except session/login) and CSRF for every write.
 pub async fn guard(State(s): St, req: Request, next: Next) -> Response {
     let path = req.uri().path();
@@ -114,6 +123,12 @@ pub async fn guard(State(s): St, req: Request, next: Next) -> Response {
     let sess = s.session(req.headers());
     if !exempt && s.password_required() && !sess.as_ref().is_some_and(|(_, x)| x.authenticated) {
         return err(StatusCode::UNAUTHORIZED, "authentication required");
+    }
+    if write_needs_password(req.method(), path) && !s.password_required() {
+        return err(
+            StatusCode::FORBIDDEN,
+            "set a dashboard password first (csr set-password), or use the command line",
+        );
     }
     let write = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     if write {
@@ -169,4 +184,16 @@ pub async fn login(State(s): St, Json(body): Json<Value>) -> Response {
     let (id, sess) = s.new_session(true);
     tracing::info!("dashboard login ok");
     ([set_cookie(&id)], Json(json!({"csrf_token": sess.csrf}))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_writes_need_a_password() {
+        assert!(write_needs_password(&Method::POST, "/api/update/install"));
+        assert!(!write_needs_password(&Method::GET, "/api/update"));
+        assert!(!write_needs_password(&Method::POST, "/api/wallet/send"));
+    }
 }

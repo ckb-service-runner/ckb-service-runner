@@ -38,6 +38,8 @@ pub struct AppState {
     /// Cached monitor public-API data.
     pub monitor_cache: tokio::sync::Mutex<crate::monitor::Cache>,
     pub sessions: Mutex<std::collections::HashMap<String, crate::web::Session>>,
+    /// Last update check and the lock of check/stage.
+    pub update: crate::update::Cache,
 }
 
 impl AppState {
@@ -70,6 +72,7 @@ impl AppState {
             "r2": {"state": node.report.state.as_str(), "reasons": node.report.reasons},
             "runtime": {"state": state, "reason": reason},
             "mainnet_runtime_unlocked": mainnet_runtime_unlocked(),
+            "update": self.update.cached_json(),
             "ranking": {
                 "join": cfg.ranking.join,
                 "ping_mode": cfg.ranking.ping_mode,
