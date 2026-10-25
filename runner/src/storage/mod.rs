@@ -292,6 +292,40 @@ pub fn simulate_consumed(
     Ok(deleted)
 }
 
+/// Out points of all rules of all services, sorted ascending, without duplicates.
+pub fn rule_outpoints(root: &Path, key: &[u8; 32]) -> Result<Vec<[u8; 36]>, String> {
+    let mut out = Vec::new();
+    for dir in service_dirs(root) {
+        for r in load_rules(&dir, key)? {
+            let op: [u8; 36] = hex::decode(&r.outpoint)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| "corrupt rule".to_string())?;
+            out.push(op);
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// For every rule out point asks `is_live`; for `Ok(false)` applies the rules (as `simulate_consumed`),
+/// for `Ok(true)` or `Err(_)` keeps them. Returns the number of deleted entries.
+pub fn apply_consumed(
+    root: &Path,
+    key: &[u8; 32],
+    is_live: &mut dyn FnMut(&[u8; 36]) -> Result<bool, String>,
+    log: &mut dyn Write,
+) -> Result<usize, String> {
+    let mut deleted = 0;
+    for op in rule_outpoints(root, key)? {
+        if let Ok(false) = is_live(&op) {
+            deleted += simulate_consumed(root, key, &op, log)?;
+        }
+    }
+    Ok(deleted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,3 +413,7 @@ mod tests {
         assert!(s.read_entry(b"k").unwrap().unwrap().0);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../acceptance/aiworker-fix-runner-delete-on-consume/consumed_watch_tests.rs"]
+mod aiworker_consumed_watch_tests;

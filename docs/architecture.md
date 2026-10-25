@@ -83,8 +83,10 @@ This interface is the main candidate for an RFC.
 - directory outside the node's data dir; survives restarts and resyncs
 - atomic writes; encrypted at rest with a runner-held key
 - per-service and total quotas; over quota returns an error
-- event-driven deletion runs even when the service is stopped; deletions are
-  logged (time and cell, never content)
+- event-driven deletion runs even when the service is stopped: `csr run` checks the out points of
+  all `delete_on_consume` rules with `get_live_cell` on every new block and deletes the entries of
+  consumed cells, for every service including disabled ones; deletions are logged (time and cell,
+  never content). `csr storage simulate-consumed` stays as a manual tool
 - entries marked secret are excluded from backups and exports
 
 Known limit: deletion is enforced by honest software, not by maths. Mitigations

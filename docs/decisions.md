@@ -409,3 +409,7 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## F-RUN-001 – delete_on_consume in csr run
+- A background task (own `RpcClient`, checks every 2 s, acts when the tip number changes) asks `get_live_cell` for every rule out point; only status `dead` counts as consumed. `live`, `unknown`, RPC errors and missing methods keep the rules. It runs regardless of the runtime state.
+- Deletion log lines go to the tracing log and are appended to `deletions.log` in the storage root, like the CLI does.
