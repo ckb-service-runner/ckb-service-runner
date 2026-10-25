@@ -1,0 +1,10 @@
+[package]
+name = "csr-config-type"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# `type-id` pulls `ckb-types` (and the `bytes` crate, whose atomics are A instructions): the contract is referenced
+# with hash type data2 (VM version 2 has the A extension; see spec/registry.md §1).
+ckb-std = { version = "=1.1.0", default-features = false, features = ["allocator", "dummy-atomic", "type-id"] }

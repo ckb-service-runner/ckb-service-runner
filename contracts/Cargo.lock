@@ -474,6 +474,8 @@ checksum = "7defadecfc39d5a25cddf11d86308130d745262f8f006bd9f602e7c968596460"
 dependencies = [
  "buddy-alloc",
  "cc",
+ "ckb-gen-types",
+ "ckb-hash",
  "gcd",
  "int-enum",
 ]
@@ -668,12 +670,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "csr-config-type"
+version = "0.1.0"
+dependencies = [
+ "ckb-std",
+]
+
+[[package]]
 name = "csr-contract-tests"
 version = "0.1.0"
 dependencies = [
  "blake2b-ref",
  "ckb-testtool",
  "csr-schemas",
+ "k256",
 ]
 
 [[package]]
@@ -687,7 +697,9 @@ dependencies = [
 name = "csr-job-lock"
 version = "0.1.0"
 dependencies = [
+ "blake2b-ref",
  "ckb-std",
+ "k256",
 ]
 
 [[package]]

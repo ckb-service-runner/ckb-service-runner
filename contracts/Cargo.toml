@@ -2,6 +2,7 @@
 members = [
     "csr-schemas",
     "csr-dual-lock",
+    "csr-config-type",
     "csr-registry",
     "csr-job-type",
     "csr-job-lock",

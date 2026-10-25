@@ -1,16 +1,36 @@
 use ckb_testtool::bytes::Bytes;
-use ckb_testtool::ckb_types::prelude::{Builder, Entity};
+use ckb_testtool::ckb_types::prelude::{Builder, Entity, Unpack};
 use csr_contract_tests::*;
 
-/// Loads all four binaries and verifies a trivial transaction using each of them
-/// (plus a signed spend of the system lock and a Type ID config cell as cell dep).
+/// Loads all five binaries and verifies a trivial transaction using each of them
+/// (plus a signed spend of the system lock and a `csr-config-type` config cell created by a transaction).
 #[test]
 fn harness_deploys_all_contracts() {
     let mut env = Env::new();
     let key = env.new_key();
     let monitor = env.new_key();
-    let (config_op, config_hash) = env.config_cell(&monitor.pubkey, 1_000, monitor.lock.clone());
-    assert_ne!(config_hash, [0u8; 32]);
+    for name in CONTRACT_NAMES {
+        assert!(!load_contract(name).is_empty(), "{name}");
+    }
+    assert_ne!(load_job_lock_variant(), load_contract("csr-job-lock"), "the job lock variant is byte-different");
+
+    // config type: create the monitor config cell (Type ID of output 0), then use it as a cell dep
+    let wallet = env.min_cell(1000 * CKB, monitor.lock.clone(), None, Bytes::new());
+    let input = env.input(&wallet, 0);
+    let config_id = type_id(&input, 0);
+    let config_type = env.config_type_script(&config_id);
+    let data = config_data(&monitor.pubkey, 1_000);
+    let cap = min_capacity(&monitor.lock, Some(&config_type), data.len());
+    let wallet_cap = min_capacity(&monitor.lock, None, 0) + 1000 * CKB;
+    let tx = tx_with(
+        vec![input],
+        vec![
+            (output(cap, monitor.lock.clone(), Some(config_type.clone())), data.clone()),
+            (output(wallet_cap - cap - 100_000, monitor.lock.clone(), None), Bytes::new()),
+        ],
+    );
+    env.verify_signed(tx, &[&monitor]).expect("config cell creation");
+    let config_op = env.cell(cap, monitor.lock.clone(), Some(config_type), data);
 
     // system lock: a signed key cell spent into a new key cell
     let input = env.min_cell(10 * CKB, key.lock.clone(), None, Bytes::new());
@@ -40,7 +60,7 @@ fn harness_deploys_all_contracts() {
 
     // registry: a valid creation (monitor-signed attestation, DAO deposit of the owner as the first cell dep,
     // config cell as dep, dual-lock output)
-    let reg_type = env.registry_type_script(&config_hash);
+    let reg_type = env.registry_type_script(&config_id);
     let dual = env.dual_lock_script(&owner, &key.lock_hash());
     let stake = env.stake(key.lock.clone());
     let fields = RegistryFields {
@@ -48,8 +68,10 @@ fn harness_deploys_all_contracts() {
         service_pubkey: key.pubkey,
         payout_lock_hash: [3u8; 32],
         network: 2,
-        prekeys: Vec::new(),
         stake: stake.clone(),
+        endpoint: b"https://203.0.113.7:8131".to_vec(),
+        prekeys: Vec::new(),
+        registry_type_hash: reg_type.calc_script_hash().unpack(),
     };
     let data = fields.signed_data(&monitor, 2_000);
     let wallet = env.min_cell(1000 * CKB, key.lock.clone(), None, Bytes::new());
