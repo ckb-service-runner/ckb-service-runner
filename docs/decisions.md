@@ -409,3 +409,8 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## Skeleton input guard (F-SEC-001)
+`Chain::inputs_capacity` now checks every skeleton input with `check_skeleton_input` (pure function over
+`SkeletonPolicy`) and fails the run before anything is signed if the input is a runner wallet cell, a dual lock
+cell naming the runner lock hash (either half), a job-lock cell, or a registry-typed cell.

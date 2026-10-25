@@ -81,6 +81,8 @@ deps, header deps, outputs with data and witnesses after its own: the run transa
 job | refund, skeleton outputs…]`, witnesses `[runner key signature, empty, empty, skeleton witnesses…]`.
 The skeleton must bring the capacity of its outputs (Σ outputs ≤ Σ of its live inputs; any surplus goes to
 the miner). It may not contain a job cell (the job lock allows exactly one).
+A skeleton input must not be a runner-owned cell: a cell with the runner wallet lock, a dual lock naming the
+runner lock hash, a job cell, or a registry cell. Such a skeleton is rejected before signing and the run fails.
 
 ## Result
 
