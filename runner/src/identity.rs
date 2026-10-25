@@ -47,8 +47,19 @@ fn create_key(path: &Path, valid: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32]
     Ok(key)
 }
 
+/// True when a key file's mode gives anything to group or others.
+pub fn key_mode_too_open(mode: u32) -> bool {
+    mode & 0o077 != 0
+}
+
 fn load_or_create(path: &Path, valid: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32], String> {
     if path.exists() {
+        if let Ok(m) = fs::metadata(path) {
+            if key_mode_too_open(m.permissions().mode()) {
+                tracing::warn!("{} had mode {:o}; restricting it to 0600", path.display(), m.permissions().mode() & 0o777);
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+            }
+        }
         let key = read_key(path)?;
         if !valid(&key) {
             return Err(format!("{} holds an invalid key", path.display()));

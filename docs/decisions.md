@@ -409,3 +409,12 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## Dashboard security, phase 1 (D25 B)
+
+- Wallet, registration, service and settings writes need a dashboard password; without one they answer 403 `password_required`. Read-only pages still work without a password on loopback.
+- `Host` is checked on every request (421) and `Origin` on writes (403); both are checked before authentication.
+- Login: 5 failures per client IP and 50 globally per 15 minutes give 429 with `Retry-After`; Argon2 runs under a 2-permit semaphore.
+- Sessions: separate pools (50 authenticated, 200 anonymous); a full pool evicts only its own oldest entry. The cookie gets `Secure` when `x-forwarded-proto: https`.
+- Old acceptance tests that wrote without a password (a1/p4, a2/p5, a8/p5, a8b/p5) now set a password and log in, and each has one assertion for 403 `password_required`. a2/p5 and the devnet tests could not be run here (no RISC-V service build / devnet).
+- `identity::key_mode_too_open` (fixes the mode to 0600 with a warning) and `wallet::sweep_warning` are in place; their wiring is phase 2.

@@ -179,7 +179,8 @@ pub async fn run(
         config_write: Mutex::new(()),
         wallet_tx: Default::default(),
         monitor_cache: Default::default(),
-        sessions: Mutex::new(Default::default()),
+        sessions: Default::default(),
+        login_limiter: Default::default(),
         config: RwLock::new(cfg),
     });
     tracing::info!(
@@ -372,7 +373,10 @@ pub async fn run(
     let app = web::router(state.clone());
     let mut srv_stop = stop_rx.clone();
     let mut server = tokio::spawn(async move {
-        axum::serve(listener, app)
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
             .with_graceful_shutdown(async move {
                 let _ = srv_stop.changed().await;
             })

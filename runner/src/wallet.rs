@@ -47,6 +47,17 @@ fn record_sweep(net_dir: &Path, tx_hash: &str, amount: u64) -> Result<(), String
         .map_err(|e| format!("cannot write {}: {e}", f.display()))
 }
 
+/// Warning when earnings pile up on the hot key and no sweep address is set.
+pub fn sweep_warning(sweep_address: Option<&str>, capacity_shannons: u64, threshold_ckb: u64) -> Option<String> {
+    if sweep_address.is_some() || capacity_shannons < threshold_ckb.saturating_mul(CKB) {
+        return None;
+    }
+    Some(format!(
+        "the runner wallet holds {} CKB and no sweep address is set; set one in the settings so earnings move off the hot key",
+        capacity_shannons / CKB
+    ))
+}
+
 /// `csr wallet status` / `GET /api/wallet`.
 pub async fn status(chain: &Chain, cfg: &Config, net_dir: &Path) -> Result<Value, String> {
     Ok(json!({

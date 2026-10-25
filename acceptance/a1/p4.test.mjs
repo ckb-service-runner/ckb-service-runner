@@ -54,11 +54,29 @@ async function firstEvent(url, name, headers = {}, timeoutMs = 8000) {
   }
 }
 
+const PW = 'correct horse battery';
+async function loggedIn(base) {
+  const s = await openSession(base);
+  const r = await fetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: s.cookie, 'x-csrf-token': s.csrf },
+    body: JSON.stringify({ password: PW }),
+  });
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  return { cookie: sessionCookie(r) || s.cookie, csrf: j.csrf_token || s.csrf };
+}
+
 describe('no password, loopback', () => {
   let env;
+  let envw; // same dashboard with a password: the writes work there
   before(async () => {
     env = await setup('p4-open');
     await startCsr([...env.args, 'run'], { healthUrl: `${env.base}/healthz` });
+    envw = await setup('p4-writes');
+    const sp = await runCsr([...envw.args, 'set-password', '--password-stdin'], { input: `${PW}\n` });
+    assert.equal(sp.code, 0, sp.stderr);
+    await startCsr([...envw.args, 'run'], { healthUrl: `${envw.base}/healthz` });
   });
 
   test('reads need no session', async () => {
@@ -74,6 +92,15 @@ describe('no password, loopback', () => {
     assert.equal((await putSettings(env.base, { logging: { level: 'warn' } }, { csrf: s.csrf })).status, 403);
   });
 
+  test('settings writes without a password are refused with password_required', async () => {
+    const s = await openSession(env.base);
+    const before = fs.readFileSync(env.configPath, 'utf8');
+    const r = await putSettings(env.base, { logging: { level: 'warn' } }, s);
+    assert.equal(r.status, 403, r.text);
+    assert.equal(r.json.error, 'password_required');
+    assert.equal(fs.readFileSync(env.configPath, 'utf8'), before);
+  });
+
   test('settings never expose the password hash', async () => {
     const r = await getJson(`${env.base}/api/settings`);
     assert.equal(r.status, 200);
@@ -85,20 +112,20 @@ describe('no password, loopback', () => {
   });
 
   test('valid change is saved atomically with a backup', async () => {
-    const s = await openSession(env.base);
-    const r = await putSettings(env.base, { logging: { level: 'debug' } }, s);
+    const s = await loggedIn(envw.base);
+    const r = await putSettings(envw.base, { logging: { level: 'debug' } }, s);
     assert.equal(r.status, 200, r.text);
     assert.equal(r.json.restart_required, false);
-    assert.match(fs.readFileSync(env.configPath, 'utf8'), /level\s*=\s*"debug"/);
-    assert.match(fs.readFileSync(`${env.configPath}.bak`, 'utf8'), /level\s*=\s*"info"/);
-    assert.equal((await getJson(`${env.base}/api/settings`)).json.logging.level, 'debug');
-    const v = await runCsr(['--data-root', env.dir, '--config', env.configPath, 'config', 'validate']);
+    assert.match(fs.readFileSync(envw.configPath, 'utf8'), /level\s*=\s*"debug"/);
+    assert.match(fs.readFileSync(`${envw.configPath}.bak`, 'utf8'), /level\s*=\s*"info"/);
+    assert.equal((await getJson(`${envw.base}/api/settings`, { cookie: s.cookie })).json.logging.level, 'debug');
+    const v = await runCsr(['--data-root', envw.dir, '--config', envw.configPath, 'config', 'validate']);
     assert.equal(v.code, 0, `saved config must stay valid: ${v.stderr}`);
   });
 
   test('invalid changes are rejected and the file is untouched', async () => {
-    const s = await openSession(env.base);
-    const before = fs.readFileSync(env.configPath, 'utf8');
+    const s = await loggedIn(envw.base);
+    const before = fs.readFileSync(envw.configPath, 'utf8');
     const bad = [
       { limits: { max_concurrent_jobs: 0 } },
       { node: { rpc_url: 'http://10.0.0.5:8114' } },
@@ -108,10 +135,10 @@ describe('no password, loopback', () => {
       { dashboard: { password_set: true } },
     ];
     for (const b of bad) {
-      const r = await putSettings(env.base, b, s);
+      const r = await putSettings(envw.base, b, s);
       assert.equal(r.status, 400, `accepted ${JSON.stringify(b)}`);
     }
-    assert.equal(fs.readFileSync(env.configPath, 'utf8'), before);
+    assert.equal(fs.readFileSync(envw.configPath, 'utf8'), before);
   });
 
   test('SSE sends a status event on connect', async () => {
@@ -121,8 +148,8 @@ describe('no password, loopback', () => {
   });
 
   test('network change requires a restart', async () => {
-    const s = await openSession(env.base);
-    const r = await putSettings(env.base, { network: 'mainnet' }, s);
+    const s = await loggedIn(envw.base);
+    const r = await putSettings(envw.base, { network: 'mainnet' }, s);
     assert.equal(r.status, 200, r.text);
     assert.equal(r.json.restart_required, true);
   });
