@@ -21,7 +21,7 @@ Availability values are fractions 0..1. Clients ignore unknown extra fields.
  "stake":{"status":"deposited","capacity_ckb":10000,"outpoint":"0x5a5a…5a5a:3"}}
 ```
 
-- `check_type`: `p2p_verified` or `challenge_only`.
+- `check_type`: `p2p_verified` (passed the daily full-node check; the node's identity is proven), `peer_connected` (the node is a peer of the monitor's node), `challenge_only` (older monitors) or `none`. An optional `identity_proven` boolean overrides the dashboard's inference from `check_type`.
 - `attestation.status`: `none`, `valid` or `expired`; `expiry` is a unix timestamp or `null`.
 - `stake` (optional; older monitors omit it, CSR then shows nothing): the registration's referenced Nervos DAO
   deposit (`spec/registry.md`, stake). `status` is `deposited` (live DAO deposit, enough CKB), `withdrawn`

@@ -77,8 +77,8 @@ towards the wall-time limit.
 `tx_skeleton_put` takes a molecule `Transaction` (CKB's own, as built by ckb-types / ckb-std). Empty (or
 never called) = the job needs no extra cells. CSR appends the skeleton's inputs (with their `since`), cell
 deps, header deps, outputs with data and witnesses after its own: the run transaction is inputs
-`[runner key cell, job cell, float, skeleton inputs…]`, outputs `[runner key cell, float + tip, recreated
-job | refund, skeleton outputs…]`, witnesses `[runner key signature, empty, empty, skeleton witnesses…]`.
+`[runner wallet cell, job cell, skeleton inputs…]`, outputs `[runner wallet cell + tip, recreated
+job | refund, skeleton outputs…]`, witnesses `[runner wallet signature, empty, skeleton witnesses…]`.
 The skeleton must bring the capacity of its outputs (Σ outputs ≤ Σ of its live inputs; any surplus goes to
 the miner). It may not contain a job cell (the job lock allows exactly one).
 

@@ -1,6 +1,6 @@
 # CSR dual lock (`csr-dual-lock`)
 
-Status: A7 (the float lock was removed, decision D-A7-1). Reference: CSR-SPEC-v0.2 §9/§10.
+Status: A7 (decision D-A7-1). Reference: CSR-SPEC-v0.2 §9/§10.
 
 ## 1. Authorisation by key cell
 
@@ -11,7 +11,7 @@ the signature check.
 
 * **Owner lock hash** – lock hash of the operator's wallet (any lock).
 * **Runner lock hash** – lock hash of `secp256k1_blake160_sighash_all` with `args = blake160(service pubkey)`.
-  CSR keeps a small **runner key cell** under this lock and spends/recreates it in each transaction that uses
+  CSR keeps a small **runner wallet cell** under this lock and spends/recreates it in each transaction that uses
   the runner path.
 
 Consequence: the lock only proves "someone who can unlock lock hash X agreed to this transaction"; it
@@ -30,7 +30,7 @@ it is not safe.
 | 5 | args length is not 64 |
 | 6 | neither key cell present |
 
-Worked example: a registry cell (`lock = dual-lock`) is spent with inputs `[registry cell, runner key cell]` →
+Worked example: a registry cell (`lock = dual-lock`) is spent with inputs `[registry cell, runner wallet cell]` →
 the lock passes, the registry type script enforces runner-path rules.
 
 Implementation note: the dual lock uses only `ckb_std::syscalls` (no `high_level`), like all CSR contracts, because

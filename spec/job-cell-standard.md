@@ -76,7 +76,7 @@ strict molecule `Job` (exact field count, no trailing bytes; error 6).
      Σ capacity(outputs with lock hash F) − Σ capacity(inputs with lock hash F) ≥ `tip_shannons`.
   3. *Registered runner* (F2): the registry cell dep's **lock** (a `csr-dual-lock`) must parse as a script with
      64-byte args (else 10); its runner lock hash R = `args[32..64]`. An input with lock hash R must exist – the
-     node's runner key cell, so the transaction is signed with the registered service key (else 15).
+     node's runner wallet cell, so the transaction is signed with the registered service key (else 15).
   4. *Live attestation* (F5): `config_type_hash` = the registry cell dep's **type script args** (32 bytes, else
      10). Exactly one cell dep with type hash `config_type_hash` exists – the monitor config/clock cell (else
      16; its data must be at least `monitor_pubkey (33) ‖ clock_ms (u64 LE)`, shorter data is also 16). The
@@ -92,14 +92,12 @@ strict molecule `Job` (exact field count, no trailing bytes; error 6).
   reported (a refund transaction never carries a registry dep, a run always does).
 
 Both capacity sums are **net** (outputs − inputs with that lock hash), so a cell of F or of the refund lock
-that is spent and recreated in the same transaction (e.g. the payout cell, or an anyone-can-pay refund cell)
+that is spent and recreated in the same transaction (e.g. the runner wallet cell, or a refund cell)
 counts only with the amount actually added.
 
-The **fee is paid from the job's capacity** (capped by `max_fee_shannons`); the payout cell receives at least the
-tip. The payout cell is a standard anyone-can-pay cell (lock `args` = 20 bytes, no minimum, no type, empty
-data), so a run transaction either adds the tip to the existing cell (inputs `[job, payout cell, runner key
-cell]`; the ACP lock needs no signature when the output has at least the input's capacity and the witness is
-empty) or creates a new cell with the same lock. CSR defines no slashing and no job collateral; applications
+The **fee is paid from the job's capacity** (capped by `max_fee_shannons`); the runner wallet receives at least
+the tip. The wallet cell is a plain `secp256k1_blake160_sighash_all` cell (no type, empty data) that the run
+transaction spends and recreates with the tip added (inputs `[runner wallet cell, job, …]`). CSR defines no slashing and no job collateral; applications
 that need a bond define it in their own contracts.
 
 Rule order (determines the reported code): job inputs (7), data (6), refund path, registry dep (14/10),
@@ -171,12 +169,12 @@ job lock's code (12) is reported.
 
 ## 5. Worked examples
 
-*OnDemand run, single.* Inputs `[job cell (since 0), payout cell, runner key cell]`, outputs `[float cell
-(+tip), runner key cell, refund cell (capacity − tip − fee)]`, cell deps `[registry cell, monitor config cell,
-code deps]`. The runner key cell (lock hash = the registry's runner lock hash) is signed with the service key.
+*OnDemand run, single.* Inputs `[runner wallet cell, job cell (since 0)]`, outputs `[runner wallet cell (+tip),
+refund cell (capacity − tip − fee)]`, cell deps `[registry cell, monitor config cell, code deps]`. The runner
+wallet cell (lock hash = the registry's runner lock hash) is signed with the service key.
 
-*Every(10) run.* Inputs `[job cell (since = relative 10 blocks), payout cell, runner key cell]`, outputs
-`[payout cell (+tip), runner key cell, job cell with `remaining_runs − 1` and capacity ≥ in − tip − max_fee]`.
+*Every(10) run.* Inputs `[runner wallet cell, job cell (since = relative 10 blocks)]`, outputs
+`[runner wallet cell (+tip), job cell with `remaining_runs − 1` and capacity ≥ in − tip − max_fee]`.
 
 *Last Every run.* As above with `remaining_runs == 1`: no recreated job cell, a refund cell instead.
 
@@ -192,8 +190,8 @@ after the security fixes (registered-runner and attestation-expiry checks):
 
 | transaction | cycles |
 |-------------|-------:|
-| OnDemand run, `csr-job-lock` alone (no job type; runner key cell and wallet are an always-success cell) | 51,406 |
-| OnDemand run, whole tx (job lock + job type + anyone-can-pay lock + system lock) | 1,779,894 |
+| OnDemand run, `csr-job-lock` alone (no job type; the runner wallet cell is an always-success cell) | 51,406 |
+| OnDemand run, whole tx (job lock + job type + system lock) | 1,779,894 |
 | Every run with recreation, whole tx | 1,780,935 |
 
 Before the fixes: 38,219 / 1,738,768 / 1,794,708. The extra checks cost ~13 k cycles (one more cell-dep scan,

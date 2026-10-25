@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Design idea or question
-    url: https://github.com/psawyerberlin/ckb-service-runner/discussions
+    url: https://github.com/ckb-service-runner/ckb-service-runner/discussions
     about: Start in Discussions. Agreed work becomes an issue.
   - name: Security vulnerability
-    url: https://github.com/psawyerberlin/ckb-service-runner/security/advisories/new
+    url: https://github.com/ckb-service-runner/ckb-service-runner/security/advisories/new
     about: Report privately, never in a public issue.
