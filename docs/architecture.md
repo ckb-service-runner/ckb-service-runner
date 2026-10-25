@@ -72,6 +72,10 @@ Services run in CKB-VM and only see a small set of host calls:
 | `kv_get` / `kv_put` / `kv_delete` | own storage namespace (R4) |
 | `delete_on_consume` | register deletion when a given cell is consumed |
 
+Job trigger `OnCellConsumed`: not a chain trigger. It is an `OnDemand` job whose payload starts with the
+`CSRW` watch header; the keeper checks the watched cells with `get_live_cell` on every new block and selects
+the job only after the cell was seen consumed (`spec/job-cell-standard.md`, section 2).
+
 Deliberately absent: outbound network, file system, processes, clock beyond
 block time. Cycle, memory, concurrency and storage limits come from config.
 

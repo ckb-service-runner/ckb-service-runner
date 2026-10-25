@@ -409,3 +409,8 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## D2 A – `OnCellConsumed` is watched by the runner
+- **Decision.** A job that should run when a cell is spent is an ordinary `OnDemand` job cell whose payload starts with the 41-byte watch header `"CSRW"` ‖ `01` ‖ out point (36 bytes). No contract change. The runner excludes it (`waiting_for_cell`) until it has seen the cell consumed, then runs it normally. The chain cannot check this, so a runner ignoring the convention could run it early; the standard says so.
+- **Watcher.** On every new block the keeper calls `get_live_cell` for the watched out points of the job cells it saw; `dead` is stored in `watched_cells (outpoint, dead_block)`. `live`, `unknown` and RPC errors mean "not yet". Rows no job cell watches any more are removed 1,000 blocks after the cell was found dead. The check lives in the keeper tick (the separate consumed-cell task of `fix-runner-delete-on-consume` is not in this code base).
+- **Details.** Headers on triggers other than `OnDemand` are ignored. The run's trigger label is `on-cell-consumed:0x<tx hash>:<index>`. The service gets the whole payload including the header.

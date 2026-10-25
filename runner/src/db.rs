@@ -142,6 +142,10 @@ impl Db {
                  reason TEXT,
                  seen_block INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS watched_cells (
+                 outpoint TEXT PRIMARY KEY,
+                 dead_block INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS job_runs (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  outpoint TEXT NOT NULL,
@@ -275,6 +279,59 @@ impl Db {
             .map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Watched cells seen consumed: `0x<tx hash>:<index>` to the block it was found dead.
+    pub fn watched_dead_blocks(&self) -> Result<std::collections::HashMap<String, u64>, String> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare("SELECT outpoint, dead_block FROM watched_cells")
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+
+    /// The watched cells seen consumed, as raw out points.
+    pub fn watched_dead(&self) -> Result<std::collections::HashSet<[u8; 36]>, String> {
+        Ok(self
+            .watched_dead_blocks()?
+            .keys()
+            .filter_map(|k| crate::jobs::outpoint_bytes(k))
+            .collect())
+    }
+
+    pub fn mark_watched_dead(&self, outpoint: &str, block: u64) -> Result<(), String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT OR IGNORE INTO watched_cells (outpoint, dead_block) VALUES (?1, ?2)",
+                params![outpoint, block as i64],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Removes rows no job cell watches any more that were found dead before `before_block`.
+    pub fn forget_watched(
+        &self,
+        keep: &std::collections::HashSet<String>,
+        before_block: u64,
+    ) -> Result<(), String> {
+        let stale: Vec<String> = self
+            .watched_dead_blocks()?
+            .into_iter()
+            .filter(|(k, b)| !keep.contains(k) && *b < before_block)
+            .map(|(k, _)| k)
+            .collect();
+        let c = self.conn.lock().unwrap();
+        for k in stale {
+            c.execute("DELETE FROM watched_cells WHERE outpoint = ?1", params![k])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     #[allow(dead_code)] // read by the jobs API

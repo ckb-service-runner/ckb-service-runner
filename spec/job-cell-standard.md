@@ -43,7 +43,18 @@ Details:
   own check of the `since` value; the "the condition really holds" half is CKB consensus.
 
 `OnCellConsumed` from the spec **cannot be proven on-chain** (a script cannot prove that a cell no longer
-exists), so it is an off-chain trigger only: the runner watches it and submits an `OnDemand` job.
+exists). It is an `OnDemand` job with a watch convention (decision D2 A): the payload starts with the 41-byte
+header `"CSRW"` ‖ version `01` ‖ the watched out point (tx hash ‖ index as u32 LE). The runner leaves such a job
+alone until it has seen the watched cell consumed, then runs it like any other job. On chain it is plain
+`OnDemand`, so the chain cannot check that the event happened: a runner that does not follow the convention
+could run the job earlier. The service receives the whole payload, including the header. Watch headers on
+other triggers are ignored.
+
+Example header for cell `0xaa…aa:1` (tx hash of 32 × `aa`, index 1):
+
+```
+43535257 01 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 01000000
+```
 
 ## 3. Rules
 

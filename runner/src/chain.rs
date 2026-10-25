@@ -1195,6 +1195,18 @@ impl Chain {
         Ok(Some((out.into(), data)))
     }
 
+    /// Does the node report the cell as `dead` (`live` and `unknown` are not)?
+    pub async fn is_dead(&self, outpoint: &str) -> Result<bool, String> {
+        let (h, i) = parse_out_point(outpoint)?;
+        let r = self
+            .call(
+                "get_live_cell",
+                json!([{"tx_hash": h, "index": format!("0x{i:x}")}, false]),
+            )
+            .await?;
+        Ok(r["status"] == "dead")
+    }
+
     pub async fn is_live(&self, outpoint: &str) -> Result<bool, String> {
         Ok(self.live_cell(outpoint).await?.is_some())
     }
