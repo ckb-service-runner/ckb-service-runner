@@ -159,6 +159,7 @@ impl Db {
                  submit_block INTEGER
              );
              CREATE INDEX IF NOT EXISTS job_runs_outpoint ON job_runs (outpoint);
+             CREATE INDEX IF NOT EXISTS job_runs_state ON job_runs (state);
              CREATE TABLE IF NOT EXISTS job_events (
                  run_id INTEGER NOT NULL,
                  t INTEGER NOT NULL,
@@ -395,13 +396,62 @@ impl Db {
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
+    /// Runs in any of `states`, oldest first.
     pub fn runs_in(&self, states: &[&str]) -> Result<Vec<JobRun>, String> {
-        Ok(self
-            .runs()?
-            .into_iter()
-            .rev()
-            .filter(|r| states.contains(&r.state.as_str()))
-            .collect())
+        if states.is_empty() {
+            return Ok(Vec::new());
+        }
+        let marks = vec!["?"; states.len()].join(", ");
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare(&format!(
+                "SELECT {RUN_COLS} FROM job_runs WHERE state IN ({marks}) ORDER BY id ASC"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(states.iter()), run_row)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Moves the runs of an interrupted batch (`Scheduled`, `Running`, `Completed`) to `Failed`.
+    pub fn abort_batch(&self, note: &str) -> Result<usize, String> {
+        let runs = self.runs_in(&["Scheduled", "Running", "Completed"])?;
+        for r in &runs {
+            self.set_run_state(r.id, "Failed", Some(note))?;
+        }
+        Ok(runs.len())
+    }
+
+    /// Deletes finished runs (and their events) last touched before `now - keep_seconds` whose
+    /// job cell is no longer listed. Settlements stay.
+    pub fn prune_runs(&self, now: i64, keep_seconds: i64) -> Result<usize, String> {
+        let c = self.conn.lock().unwrap();
+        let old = "SELECT id FROM job_runs
+             WHERE state IN ('Settled', 'Lost', 'Rejected', 'Failed', 'Expired')
+               AND outpoint NOT IN (SELECT outpoint FROM job_cells)
+               AND COALESCE((SELECT MAX(t) FROM job_events WHERE run_id = job_runs.id), 0) < ?1";
+        let cutoff = now.saturating_sub(keep_seconds);
+        c.execute(
+            &format!("DELETE FROM job_events WHERE run_id IN ({old})"),
+            params![cutoff],
+        )
+        .map_err(|e| e.to_string())?;
+        c.execute(&format!("DELETE FROM job_runs WHERE id IN ({old})"), params![cutoff])
+            .map_err(|e| e.to_string())
+    }
+
+    /// Which attempt this run is for its job cell (1 = first); `None` when it does not exist.
+    pub fn attempt_of(&self, id: i64) -> Result<Option<u32>, String> {
+        let c = self.conn.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM job_runs
+             WHERE outpoint = (SELECT outpoint FROM job_runs WHERE id = ?1) AND id <= ?1",
+            [id],
+            |r| r.get::<_, u32>(0),
+        )
+        .map(|n| Some(n).filter(|n| *n > 0))
+        .map_err(|e| e.to_string())
     }
 
     pub fn run(&self, id: i64) -> Result<Option<JobRun>, String> {

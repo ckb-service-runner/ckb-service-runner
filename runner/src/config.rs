@@ -396,6 +396,25 @@ impl Config {
             100,
         )?;
 
+        range("limits.min_free_ram_mb", l.min_free_ram_mb, 0, 1_000_000)?;
+        range("limits.min_free_disk_gb", l.min_free_disk_gb, 0, 100_000)?;
+        range("storage.total_quota_mb", self.storage.total_quota_mb, 1, 1_000_000)?;
+        range(
+            "storage.per_service_quota_mb",
+            self.storage.per_service_quota_mb,
+            1,
+            1_000_000,
+        )?;
+        for h in &self.runtime.allowed_services {
+            let ok = h.strip_prefix("0x").is_some_and(|x| {
+                x.len() == 64 && x.bytes().all(|b| b.is_ascii_hexdigit())
+            });
+            if !ok {
+                return Err(format!(
+                    "runtime.allowed_services entries must be 0x + 64 hex chars (a code hash), got \"{h}\""
+                ));
+            }
+        }
         if self.storage.per_service_quota_mb > self.storage.total_quota_mb {
             return Err("storage.per_service_quota_mb must be <= storage.total_quota_mb".into());
         }
@@ -413,6 +432,12 @@ impl PayoutCfg {
         if self.sweep_amount_ckb < 61 {
             return Err(format!(
                 "payout.sweep_amount_ckb must be at least 61 (a cell needs 61 CKB), got {}",
+                self.sweep_amount_ckb
+            ));
+        }
+        if self.sweep_amount_ckb > 100_000_000 {
+            return Err(format!(
+                "payout.sweep_amount_ckb must be at most 100000000, got {}",
                 self.sweep_amount_ckb
             ));
         }

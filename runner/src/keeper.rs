@@ -190,8 +190,19 @@ impl Keeper {
         // Without a registration paying into the runner wallet, or a wallet cell, nothing can be
         // settled: do not run.
         let ctx = self.chain.run_context().await?;
-        let executed = self.execute(st, cfg, batch, &tip).await?;
-        self.submit(st, ctx, executed, &data, tip.number).await?;
+        let sent = match self.execute(st, cfg, batch, &tip).await {
+            Ok(executed) => {
+                self.submit(st, ctx, executed, &data, tip.number).await
+            }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = sent {
+            // Open the batch gate again: the runs count as one attempt each.
+            if let Err(a) = st.db.abort_batch(&format!("batch aborted: {e}")) {
+                tracing::warn!("cannot abort the batch: {a}");
+            }
+            return Err(e);
+        }
         Ok(summary)
     }
 
@@ -600,6 +611,8 @@ pub fn run_detail(st: &AppState, id: i64) -> Result<Option<Value>, String> {
             .map(|e| json!({"t": e.t, "state": e.state, "note": e.note}))
             .collect(),
     );
+    v["attempt"] = json!(st.db.attempt_of(id)?);
+    v["max_attempts"] = json!(MAX_ATTEMPTS);
     v["logs"] = json!(r.logs);
     v["result_hex"] = json!(r.result_hex);
     v["error"] = json!(r.error);
@@ -663,3 +676,27 @@ mod tests {
         );
     }
 }
+
+/// Waiting runs whose job cell is gone; only when the cell list is complete.
+fn lost_runs(pending: &[JobRun], live: &HashSet<String>, complete: bool) -> Vec<i64> {
+    if !complete {
+        return Vec::new();
+    }
+    pending
+        .iter()
+        .filter(|r| !live.contains(&r.outpoint))
+        .map(|r| r.id)
+        .collect()
+}
+
+/// Blocks after which a pending runner wallet sweep is given up.
+pub const SWEEP_PENDING_AFTER_BLOCKS: u64 = 500;
+
+/// Whether a sweep sent at `sent_block` is given up at `tip`.
+pub fn sweep_given_up(sent_block: u64, tip: u64) -> bool {
+    tip.saturating_sub(sent_block) >= SWEEP_PENDING_AFTER_BLOCKS
+}
+
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-csr-keeper-robustness/keeper_robustness_tests.rs"]
+mod aiworker_keeper_robustness_tests;

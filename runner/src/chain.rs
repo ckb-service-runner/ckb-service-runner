@@ -607,7 +607,7 @@ impl Chain {
             let tip = hex_u64(&self.call("get_tip_header", json!([])).await?["number"]);
             let it = self.call("get_indexer_tip", json!([])).await?;
             if let (Some(tip), Some(idx)) = (tip, hex_u64(&it["block_number"])) {
-                if idx >= tip {
+                if indexer_ready(tip, idx) {
                     return Ok(());
                 }
             }
@@ -1751,5 +1751,21 @@ mod tests {
     fn wallet_cell_occupies_61_ckb() {
         let l = sighash_lock(&[0; 20]);
         assert_eq!(occupied(&l, None, 0), 61 * CKB);
+    }
+}
+
+/// The indexer is usable when it is at most `LAG_LIMIT` blocks behind the node tip (as in R2).
+pub fn indexer_ready(tip: u64, indexer_tip: u64) -> bool {
+    tip.saturating_sub(indexer_tip) <= crate::node::r2::LAG_LIMIT
+}
+
+/// The attestation may be used while its expiry lies after the chain clock.
+pub fn attestation_usable(expiry_ms: u64, clock_ms: u64) -> Result<(), String> {
+    if expiry_ms > clock_ms {
+        Ok(())
+    } else {
+        Err(format!(
+            "attestation expired (expiry {expiry_ms} ms, chain time {clock_ms} ms)"
+        ))
     }
 }

@@ -300,10 +300,18 @@ pub async fn run(
             let mut last_tip = None;
             let mut warned = false;
             let mut sweeper = Sweeper::default();
+            let mut last_prune: Option<Instant> = None;
             loop {
                 tokio::select! {
                     _ = tick.tick() => {},
                     _ = stop.changed() => return,
+                }
+                if last_prune.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                    last_prune = Some(Instant::now());
+                    match state.db.prune_runs(now(), 30 * 86400) {
+                        Ok(n) => tracing::debug!("pruned {n} old job run(s)"),
+                        Err(e) => tracing::warn!("cannot prune old job runs: {e}"),
+                    }
                 }
                 let cfg = state.config.read().unwrap().clone();
                 sweeper.step(&state, &cfg).await;
