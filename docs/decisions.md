@@ -409,3 +409,9 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## Sandbox storage, phase 1
+- Storage format v2 (per-service key and AAD); `migrate_v1` runs once at `csr run` start and logs the count. A file that opens with the v1 rules but whose name does not match its key is skipped.
+- `rules.bin` is deleted when its last rule goes; it counts in both quotas, `delete_on_consume` checks the quota on growth. 256 rules per service; a duplicate rule is always `Ok`.
+- `rule_outpoints` and `apply_consumed` were missing from the tree, so they are added here (`simulate_consumed` calls `apply_consumed`).
+- `limits.max_vm_memory_mb` must be 4; removed from the settings form. `data_cycles` (1 cycle per 4 bytes), `NODE_CALL_CYCLES` (100 000) and `MAX_DEBUG_SCAN` (1024) are defined but not yet charged (phase 2).

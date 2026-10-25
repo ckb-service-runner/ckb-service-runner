@@ -101,12 +101,15 @@ message.
 
 ## Storage
 
-Per service under `<data-root>/<network>/service_data/<code_hash without 0x>/`. Each entry is a
-file named by `HMAC-SHA256(storage.key, "csr-storage-name-v1" ‖ key)` holding
-`nonce(12) ‖ ChaCha20-Poly1305(secret flag ‖ key_len u16 LE ‖ key ‖ value)` (random nonce per
-write, file name as associated data, atomic temp-file + rename). Quotas
-(`storage.per_service_quota_mb`, `storage.total_quota_mb`) count plaintext key + value bytes.
-`delete_on_consume` rules are kept encrypted in `rules.bin`; `csr storage simulate-consumed
+Per service under `<data-root>/<network>/service_data/<code_hash without 0x>/`. Storage format
+version 2: the service key is `HMAC-SHA256(storage.key, "csr-storage-service-v2" ‖ code_hash hex)`; each
+entry is a file named `HMAC-SHA256(service key, "csr-storage-name-v2" ‖ key)` holding
+`nonce(12) ‖ ChaCha20-Poly1305(secret flag ‖ key_len u16 LE ‖ key ‖ value)` sealed with the service key
+(random nonce per write, AAD `"v2:" ‖ code_hash hex ‖ ":" ‖ file name`, atomic temp-file + rename), so an
+entry cannot be copied into another service. `csr run` migrates version 1 data at start. Quotas
+(`storage.per_service_quota_mb`, `storage.total_quota_mb`) count plaintext key + value bytes and the
+rules. `delete_on_consume` rules are kept encrypted in `rules.bin` (at most 256 per service; more
+return `SVC_QUOTA_EXCEEDED`; deleting a key drops its rules); `csr storage simulate-consumed
 --outpoint 0x<64 hex>:<index>` applies them and appends `time service outpoint` (never content) to
 `service_data/deletions.log`.
 

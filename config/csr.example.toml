@@ -26,7 +26,7 @@ min_ckb_per_mcycle = 0.0
 [limits]
 max_concurrent_jobs = 2             # 1..=64
 max_cycles_per_job = 70000000
-max_vm_memory_mb = 4                # 1..=64
+max_vm_memory_mb = 4                # fixed: only 4 is supported
 max_job_wall_seconds = 30           # 1..=3600
 pause_above_cpu_percent = 85        # 1..=100
 min_free_ram_mb = 1024

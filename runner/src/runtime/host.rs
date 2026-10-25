@@ -16,6 +16,18 @@ pub const MAX_DEBUG_LINES: usize = 64;
 pub const MAX_DEBUG_LINE_BYTES: usize = 1024;
 /// Cycles charged per syscall (CKB uses 500).
 const SYSCALL_CYCLES: u64 = 500;
+/// Cycles charged for a call that goes to the node (chain reads, cell queries).
+#[allow(dead_code)]
+pub const NODE_CALL_CYCLES: u64 = 100_000;
+/// Longest string the `debug` call (2177) scans for its terminating zero byte.
+#[allow(dead_code)]
+pub const MAX_DEBUG_SCAN: usize = 1024;
+
+/// Cycles charged for moving `bytes` of data through a host call (one cycle per 4 bytes).
+#[allow(dead_code)]
+pub fn data_cycles(bytes: u64) -> u64 {
+    bytes.div_ceil(4)
+}
 
 // Return codes of CKB syscalls.
 const SUCCESS: u64 = 0;
@@ -411,8 +423,10 @@ impl Host {
                     return Ok(SVC_INVALID_ARGUMENT);
                 };
                 let op: [u8; 36] = read_mem(m, a2, 36)?.try_into().expect("36 bytes");
-                store.delete_on_consume(&key, &op).map_err(storage_error)?;
-                SVC_OK
+                match store.delete_on_consume(&key, &op).map_err(storage_error)? {
+                    Put::Ok => SVC_OK,
+                    _ => SVC_QUOTA_EXCEEDED,
+                }
             }
             // sign(msg32, sig_out64)
             7020 => {

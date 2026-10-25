@@ -331,7 +331,6 @@
     ['runtime.min_ckb_per_mcycle', 'Min CKB per Mcycle', 'number'],
     ['limits.max_concurrent_jobs', 'Max concurrent jobs', 'int'],
     ['limits.max_cycles_per_job', 'Max cycles per job', 'int'],
-    ['limits.max_vm_memory_mb', 'Max VM memory (MB)', 'int'],
     ['limits.max_job_wall_seconds', 'Max job wall seconds', 'int'],
     ['limits.pause_above_cpu_percent', 'Pause above CPU %', 'int'],
     ['limits.min_free_ram_mb', 'Min free RAM (MB)', 'int'],
