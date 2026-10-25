@@ -111,6 +111,33 @@ pub async fn run(cfg: &Config, id: &Identity, stake: &str, out: &Path) -> Result
     }))
 }
 
+/// One explanation for every reply of `POST /v1/attest` (`spec/monitor-public-api.md`).
+pub fn explain_error(status: u16, err: &str, reason: Option<&str>) -> String {
+    let hint = match (err, reason) {
+        ("stake_in_use", _) => "this deposit already backs another registration; use another one",
+        ("stake_invalid", Some("spent")) => "the stake cell is already spent; use a live deposit",
+        ("stake_invalid", Some("not_found")) => "the stake cell was not found on chain",
+        ("stake_invalid", Some("not_dao")) => "the stake cell is not a Nervos DAO cell",
+        ("stake_invalid", Some("not_deposit")) => {
+            "the stake cell is a Nervos DAO cell but not a deposit"
+        }
+        ("stake_invalid", Some("too_small")) => "the deposit must be at least 10,000 CKB",
+        ("stake_invalid", _) => "the stake must be a live Nervos DAO deposit of at least 10,000 CKB",
+        ("stake_mismatch", _) => "the stake is not the stake of the registry cell",
+        ("not_eligible", _) => {
+            "the node needs successful checks in the last 24 hours; set [ranking] join = true and keep the node running"
+        }
+        ("wrong_network", _) => "the monitor serves a different network than this node",
+        ("bad_signature", _) => "the binding signature was not accepted; check the service key",
+        _ => "try again later",
+    };
+    let mut msg = format!("monitor replied {status} {err}").trim_end().to_string();
+    if let Some(r) = reason {
+        msg = format!("{msg}: {r}");
+    }
+    format!("{msg} ({hint})")
+}
+
 /// Requests and checks the monitor's attestation for this node and `stake`; returns it.
 pub async fn request(
     cfg: &Config,
@@ -118,19 +145,9 @@ pub async fn request(
     service_pubkey: &str,
     stake: &str,
 ) -> Result<Value, String> {
-    let defaults = crate::network::NetworkDefaults::for_network(&cfg.network);
-    let url = if cfg.monitor.url.is_empty() {
-        defaults.monitor_url
-    } else {
-        cfg.monitor.url.clone()
-    };
-    let base = url.trim_end_matches('/');
-    let pubkey = if cfg.monitor.pubkey.is_empty() {
-        defaults.monitor_pubkey
-    } else {
-        cfg.monitor.pubkey.clone()
-    };
-    let monitor = parse_pubkey(&pubkey).map_err(|e| format!("monitor key: {e}"))?;
+    let first = cfg.monitors().into_iter().next().ok_or("no monitor configured")?;
+    let base = first.url.trim_end_matches('/');
+    let monitor = parse_pubkey(&first.pubkey).map_err(|e| format!("monitor key: {e}"))?;
 
     let info = RpcClient::new(&cfg.node.rpc_url)
         .call("local_node_info", json!([]))
@@ -166,28 +183,8 @@ pub async fn request(
     let body: Value = resp.json().await.unwrap_or(Value::Null);
     if status.as_u16() != 200 {
         let err = body.get("error").and_then(Value::as_str).unwrap_or("");
-        if status.as_u16() == 403 && err == "not_eligible" {
-            return Err(
-                "monitor replied 403 not_eligible: the node needs successful checks in \
-                 the last 24 hours; set [ranking] join = true and keep the node running"
-                    .into(),
-            );
-        }
-        let mut msg = format!("monitor replied {} {err}", status.as_u16())
-            .trim_end()
-            .to_string();
-        if let Some(reason) = body.get("reason").and_then(Value::as_str) {
-            msg = format!("{msg}: {reason}");
-        }
-        match err {
-            "stake_invalid" => msg
-                .push_str(" (the stake must be a live Nervos DAO deposit of at least 10,000 CKB)"),
-            "stake_in_use" => {
-                msg.push_str(" (this deposit already backs another registration; use another one)")
-            }
-            _ => {}
-        }
-        return Err(msg);
+        let reason = body.get("reason").and_then(Value::as_str);
+        return Err(explain_error(status.as_u16(), err, reason));
     }
 
     check(

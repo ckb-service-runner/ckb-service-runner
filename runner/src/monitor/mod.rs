@@ -110,11 +110,7 @@ pub struct Cache {
 
 fn monitor_base(state: &AppState) -> String {
     let c = state.config.read().unwrap();
-    let url = if c.monitor.url.is_empty() {
-        crate::network::NetworkDefaults::for_network(&c.network).monitor_url
-    } else {
-        c.monitor.url.clone()
-    };
+    let url = c.monitors().into_iter().next().map(|m| m.url).unwrap_or_default();
     url.trim_end_matches('/').to_string()
 }
 
@@ -233,8 +229,10 @@ pub async fn network_json(state: &AppState) -> Value {
     let key_peer = state.peer_id.read().unwrap().clone();
     let cache = state.monitor_cache.lock().await;
     let ok_at = state.last_check_ok_at.load(Ordering::Relaxed);
+    let skew_at = state.clock_skew_at.load(Ordering::Relaxed);
     let ping = json!({
         "mode": mode,
+        "clock_skew_at": if skew_at > 0 { json!(skew_at) } else { Value::Null },
         "last_check_ok_at": if ok_at > 0 { json!(ok_at) } else { Value::Null },
     });
     // Cached data only counts if it belongs to the current monitor and node.

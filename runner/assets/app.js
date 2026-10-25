@@ -254,6 +254,7 @@
         dl(cw, [['Nodes worldwide', nw ? nw.nodes_total : null], ['Nodes reachable', nw ? nw.nodes_reachable : null],
           ['Updated', nw ? fmtTime(nw.updated_at) : null], ['Fetched', fmtTime(j.fetched_at)], ['Monitor', j.monitor_url]]);
         var ping = j.ping || {};
+        if (ping.clock_skew_at) cw.appendChild(el('p', 'msg err', 'Warning: a monitor challenge was outside the 60 s freshness window (last at ' + fmtTime(ping.clock_skew_at) + '). Check this machine\'s clock.'));
         if (n) {
           var a = n.attestation || {};
           dl(cr, [['Rank', n.rank + ' / ' + n.of], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
@@ -353,6 +354,13 @@
     root.appendChild(c);
     api('/api/settings').then(function (cfg) {
       var f = el('form'), inputs = [];
+      var ml = cfg.monitors || [];
+      if (ml.length) {
+        f.appendChild(el('p', '', 'Monitors (edit [[monitors]] in the config file):'));
+        var ul = el('ul');
+        ml.forEach(function (mo) { ul.appendChild(el('li', '', (mo.url || 'network default') + ' \u00b7 ' + (mo.pubkey || 'network default key'))); });
+        f.appendChild(ul);
+      }
       FIELDS.forEach(function (fd) {
         var l = el('label', '', fd[1]);
         if (fd[3]) l.appendChild(el('span', 'restart', ' (restart required)'));

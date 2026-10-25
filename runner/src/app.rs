@@ -30,6 +30,9 @@ pub struct AppState {
     pub resources: RwLock<Option<Resources>>,
     /// Unix seconds of the last successful ping answer, 0 = never.
     pub last_check_ok_at: AtomicI64,
+    /// Unix seconds of the last challenge refused as `clock_skew`, 0 = never.
+    pub clock_skew_at: AtomicI64,
+    pub clock_skew_warned_at: AtomicI64,
     /// Serialises writes of the config file.
     pub config_write: Mutex<()>,
     /// Serialises the transactions that spend the runner wallet (keeper, sweep, send, registration).
@@ -46,6 +49,19 @@ impl AppState {
         let mut m = self.ping_nonces.lock().unwrap();
         m.retain(|_, t| now - *t < crate::ping::protocol::REPLAY_WINDOW_SECS);
         m.insert(nonce.to_string(), now).is_none()
+    }
+
+    /// Records a challenge outside the freshness window; logs a warning at most every 10 minutes.
+    pub fn note_clock_skew(&self, now: i64) {
+        self.clock_skew_at.store(now, Ordering::Relaxed);
+        let last = self.clock_skew_warned_at.load(Ordering::Relaxed);
+        if last == 0 || now - last >= 600 {
+            self.clock_skew_warned_at.store(now, Ordering::Relaxed);
+            tracing::warn!(
+                "a monitor challenge is outside the {} s freshness window: check this machine's clock"
+                , crate::ping::protocol::FRESHNESS_SECS
+            );
+        }
     }
 
     pub fn release_ping_nonce(&self, nonce: &str) {

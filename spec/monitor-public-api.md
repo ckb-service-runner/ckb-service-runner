@@ -62,16 +62,26 @@ plus the rules a contract cannot check: the deposit is live, and no other regist
 
 200: the attestation `{"peer_id","service_pubkey","network","network_id","expiry_ms","signature"}`.
 
-Errors (`{"error": "<code>"}`, some with `"reason"`):
+Replies of `POST /v1/attest` (one table, from the monitor's code; the runner explains each with `explain_error`).
+Errors are `{"error": "<code>"}`, some with `"reason"`:
 
 | Status | `error` | `reason` | Meaning |
 |---|---|---|---|
 | 400 | `bad_request` | – | malformed body or field (also a malformed `stake`) |
+| 400 | `wrong_network` | – | `network` is not the network this monitor serves |
+| 401 | `bad_signature` | – | `binding_sig` does not verify for `peer_id`, `service_pubkey` and `network` |
 | 403 | `not_eligible` | – | the node has no successful checks in the last 24 hours |
-| 403 | `stake_invalid` | `not_found` | the stake cell is unknown or already spent |
-| 403 | `stake_invalid` | `not_dao_deposit` | not a Nervos DAO deposit (type script or data; a withdrawing cell is refused) |
+| 403 | `stake_invalid` | `spent` | the stake cell is already spent |
+| 403 | `stake_invalid` | `not_found` | the stake cell is unknown |
+| 403 | `stake_invalid` | `not_dao` | the cell is not a Nervos DAO cell |
+| 403 | `stake_invalid` | `not_deposit` | a Nervos DAO cell that is not a deposit (e.g. withdrawing) |
 | 403 | `stake_invalid` | `too_small` | capacity below `MIN_STAKE` (10,000 CKB) |
-| 403 | `stake_invalid` | `wrong_owner` | the deposit's lock is not the registration's owner lock (checked when the monitor knows the owner, e.g. on renewal) |
-| 409 | `stake_in_use` | – | another registration already references this deposit (the oldest registration wins) |
+| 403 | `stake_in_use` | – | another registration already references this deposit (the oldest registration wins) |
+| 403 | `stake_mismatch` | – | the stake is not the stake of the registry cell |
+| 429 | `rate_limited` | – | too many requests |
+| 503 | `chain_unavailable` | – | the monitor cannot read the chain; try again later |
+| 503 | `clock_stale` | – | the monitor's chain view is behind; try again later |
+| 503 | `unavailable` | – | the monitor is temporarily unavailable |
 
-Clients show `error` and `reason` as given and ignore unknown `reason` values.
+Clients show `error` and `reason` as given and ignore unknown `reason` values. With several monitors
+(`[[monitors]]`), the runner asks the first one.

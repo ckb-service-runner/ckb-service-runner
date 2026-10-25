@@ -18,6 +18,12 @@ ping_bind = "0.0.0.0:8131"
 url = ""                            # empty = network default
 pubkey = ""                         # empty = network default; 0x + 66 hex (compressed secp256k1)
 
+# Several monitors instead of [monitor] (setting both is an error). Challenges signed by any of
+# them are answered, the check-in goes to each, attestations are asked from the first.
+# [[monitors]]
+# url = "https://monitor.example"
+# pubkey = "0x02..."
+
 [runtime]
 enabled = false
 allowed_services = []

@@ -409,3 +409,17 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## Ping protocol v1.1 (runner)
+
+### D19 A: several monitors
+`[[monitors]]` (each with `url` and `pubkey`) replaces the single `[monitor]`, which still works as a one-entry list;
+both together are a config error. Default: the network's reference monitor. Inbound accepts a challenge signed by any
+configured monitor, the outbound check-in goes to each monitor independently, `csr register attest` and the dashboard's
+monitor client use the first entry. The dashboard shows the list; editing stays in the file.
+
+### v1.1 changes
+- Fresh check-in: `ts` and `checkin_sig` (`CSR-CHECKIN-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}`) so a copied binding cannot be replayed (F-XC-001). Monitors that do not know them ignore them.
+- A challenge with a height above the tip gets a signed answer with empty `block_hash_at_height`; a stale challenge gets 400 `clock_skew`, warned at most every 10 minutes and shown on the Network page (F-XC-004).
+- Rejections carry JSON `{"error": "<code>"}`.
+- One error table for `POST /v1/attest` in `spec/monitor-public-api.md`, explained by `attest::explain_error` (F-XC-003); `wrong_owner` is gone, `stake_in_use` is 403.
