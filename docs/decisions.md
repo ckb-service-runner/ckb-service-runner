@@ -415,3 +415,8 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - `rules.bin` is deleted when its last rule goes; it counts in both quotas, `delete_on_consume` checks the quota on growth. 256 rules per service; a duplicate rule is always `Ok`.
 - `rule_outpoints` and `apply_consumed` were missing from the tree, so they are added here (`simulate_consumed` calls `apply_consumed`).
 - `limits.max_vm_memory_mb` must be 4; removed from the settings form. `data_cycles` (1 cycle per 4 bytes), `NODE_CALL_CYCLES` (100 000) and `MAX_DEBUG_SCAN` (1024) are defined but not yet charged (phase 2).
+
+## Sandbox storage, phase 2
+- Host calls cost 500 + `data_cycles(bytes copied)` (+ `NODE_CALL_CYCLES` for `chain_read`/`cells_query`). The data charge sits in `write_partial` (bytes actually copied out) and `read_mem` (bytes read from VM memory), so every data-moving call is covered; `debug` is charged for the bytes kept. The extra charge uses `add_cycles`, so a job that runs out stops with the cycle-limit error. `debug` scans at most `MAX_DEBUG_SCAN` bytes.
+- Example services: see the check below.
+- Example services: all of `services/manifests` except the intentionally failing ones (`loop`, `memhog`, `badsyscall`, `bigresult`, `quotatest`) move only a few hundred bytes per call, so the extra charge is a few hundred cycles per job against the 70,000,000 default `max_cycles_per_job`; none needs a higher limit. Nothing was raised.

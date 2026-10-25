@@ -82,6 +82,10 @@ This interface is the main candidate for an RFC.
 - namespace per service code hash (and, for CRT, per switch cell)
 - directory outside the node's data dir; survives restarts and resyncs
 - atomic writes; encrypted at rest with a runner-held key
+- layout (storage format version 2): `<root>/<code_hash hex>/<HMAC(service key, name tag ‖ key)>.e`;
+  the service key is derived from the runner key and the code hash, and the service is part of the
+  AAD, so an entry cannot be moved to another service; version 1 data is migrated at `csr run` start
+- `delete_on_consume` rules live in `rules.bin` (max 256 per service) and count in the quota
 - per-service and total quotas; over quota returns an error
 - event-driven deletion runs even when the service is stopped; deletions are
   logged (time and cell, never content)

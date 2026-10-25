@@ -3,7 +3,12 @@
 Services are RISC-V programs run in CKB-VM (`ckb-vm` 0.24.15, ISA `IMC|B|MOP`, VM version 2 as for
 `hash_type = data2`). The host answers the standard CKB syscalls from a **virtual transaction** and
 adds the **service calls 7001–7099**. Syscall convention: number in `a7`, arguments in `a0..a5`,
-return value in `a0`. Every syscall costs 500 cycles.
+return value in `a0`.
+
+**Cycle cost.** Every syscall costs 500 cycles, plus 1 cycle per 4 bytes moved between the VM and the
+host (rounded up; the CKB load syscalls, `kv_get`, `kv_put` key plus value, results, `sign`, and the
+`chain_read` and `cells_query` answers), plus 100,000 cycles (`NODE_CALL_CYCLES`) per node call
+(`chain_read`, `cells_query`). The extra charge counts against the cycle limit like VM instructions.
 
 ## Virtual transaction
 
@@ -54,7 +59,7 @@ entry and the full data length on return; at most `size` bytes starting at `offs
 | 7050, 7051 | `random_bytes`, `prekey_decrypt` | reserved, return 2 |
 
 Other numbers in 7001–7099 return 2. Numbers outside CKB's set and 7001–7099 stop the run with
-status `unknown_syscall`. The CKB `debug` syscall output is collected (max 64 lines, 1 KB each).
+status `unknown_syscall`. The CKB `debug` syscall output is collected (max 64 lines, 1 KB each); `debug` scans at most 1024 bytes (`MAX_DEBUG_SCAN`) for the terminating zero, so a longer line is cut.
 
 ## Chain calls (A3c)
 
@@ -101,15 +106,15 @@ message.
 
 ## Storage
 
-Per service under `<data-root>/<network>/service_data/<code_hash without 0x>/`. Storage format
-version 2: the service key is `HMAC-SHA256(storage.key, "csr-storage-service-v2" ‖ code_hash hex)`; each
+Per service under `<data-root>/<network>/service_data/<code_hash without 0x>/`. Storage
+format version 2: the service key is `HMAC-SHA256(storage.key, "csr-storage-service-v2" ‖ code_hash hex)`; each
 entry is a file named `HMAC-SHA256(service key, "csr-storage-name-v2" ‖ key)` holding
 `nonce(12) ‖ ChaCha20-Poly1305(secret flag ‖ key_len u16 LE ‖ key ‖ value)` sealed with the service key
 (random nonce per write, AAD `"v2:" ‖ code_hash hex ‖ ":" ‖ file name`, atomic temp-file + rename), so an
 entry cannot be copied into another service. `csr run` migrates version 1 data at start. Quotas
 (`storage.per_service_quota_mb`, `storage.total_quota_mb`) count plaintext key + value bytes and the
-rules. `delete_on_consume` rules are kept encrypted in `rules.bin` (at most 256 per service; more
-return `SVC_QUOTA_EXCEEDED`; deleting a key drops its rules); `csr storage simulate-consumed
+rules. `delete_on_consume` rules are kept encrypted in `rules.bin` (at most 256 rules per service; more
+return `SVC_QUOTA_EXCEEDED`, as does a rule that no longer fits the quota; rules count in the quota; deleting a key drops its rules); `csr storage simulate-consumed
 --outpoint 0x<64 hex>:<index>` applies them and appends `time service outpoint` (never content) to
 `service_data/deletions.log`.
 
