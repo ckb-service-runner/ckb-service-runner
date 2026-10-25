@@ -190,7 +190,7 @@ async fn earnings(State(s): St) -> Response {
         Err(e) => return db_error(e),
     };
     let cfg = s.config.read().unwrap().clone();
-    if let Ok(c) = crate::chain::Chain::connect(&cfg, &s.service_pubkey).await {
+    if let Ok(c) = crate::chain::Chain::connect_wallet(&cfg, &s.service_pubkey).await {
         if let Ok(cap) = c.wallet_capacity().await {
             v["wallet"]["capacity_shannons"] = json!(cap);
         }

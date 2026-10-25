@@ -409,3 +409,13 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## csr-runner-fixes
+- **Restart flag (F-RUN-009):** `Config::needs_restart` also covers `ranking.join` and `ranking.ping_mode`; both settings are marked "restart required" on the settings page.
+- **Disk history (F-RUN-011):** `samples.disk_free_gb` (nullable; added by `ALTER TABLE` to older databases). The Resources page draws only samples that have a value.
+- **Service totals (F-RUN-012):** `Db::service_totals` joins `settlements` to `job_runs` on `run_id` and groups by `code_hash` as stored.
+- **Monitor key (F-RUN-013):** the mainnet file ships `monitor_url = ""` and `monitor_pubkey = ""`. While the effective key (config, else default) is unusable, the inbound listener answers 503 "no monitor key set", the outbound check-in does nothing, one warning is logged and `/api/network` carries `warning` (shown on the Network page).
+- **HTTP clients (F-RUN-014, F-SEC-017):** `network::http_client` (no proxy, no redirects); a 3xx answer is the error "unexpected redirect".
+- **Wallet without deployment (F-RUN-017):** `Chain::connect_wallet` fills the deployment fields with unused placeholders; only wallet functions may be used on such a chain. The CLI `csr wallet …`, the wallet routes, `/api/runner-cell`, the earnings balance and the sweeper use it. `mainnet_runtime_unlocked()` stays `false` (decision D5 B). The registry part of the wallet page says "the CSR scripts are not deployed on mainnet yet".
+- **Log rotation (F-RUN-018):** `logs::RotatingFile` replaces the start-up rename; `tail` continues with the end of `csr.log.1` when the current file is short.
+- **Pending transactions (F-SEC-015):** `wallet::wallet_busy`. This codebase did not store a pending sweep yet, so the sweeper writes its pending transaction hash to the settings key `sweep_pending` (empty = none, cleared at start-up because an earlier process's sweep is no longer followed). The dashboard actions answer 409 `{"error":"busy","detail"}`; there is no registry refresh action.

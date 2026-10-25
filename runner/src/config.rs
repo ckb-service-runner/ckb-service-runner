@@ -223,6 +223,16 @@ fn is_loopback_host(host: &str) -> bool {
 }
 
 impl Config {
+    /// True when `new` differs in a setting that only takes effect after a restart.
+    pub fn needs_restart(&self, new: &Config) -> bool {
+        self.network != new.network
+            || self.dashboard.bind != new.dashboard.bind
+            || self.node.rpc_url != new.node.rpc_url
+            || self.ranking.ping_bind != new.ranking.ping_bind
+            || self.ranking.join != new.ranking.join
+            || self.ranking.ping_mode != new.ranking.ping_mode
+    }
+
     /// Parses TOML text and validates it.
     pub fn parse(text: &str) -> Result<Config, String> {
         let cfg: Config = toml::from_str(text).map_err(|e| format!("invalid config: {e}"))?;
@@ -465,7 +475,11 @@ mod tests {
     fn network_defaults_parse() {
         for n in ["testnet", "mainnet"] {
             let d = crate::network::NetworkDefaults::for_network(n);
-            parse_pubkey(&d.monitor_pubkey).unwrap();
+            if n == "mainnet" {
+                assert!(d.monitor_pubkey.is_empty() && d.monitor_url.is_empty());
+            } else {
+                parse_pubkey(&d.monitor_pubkey).unwrap();
+            }
         }
     }
 

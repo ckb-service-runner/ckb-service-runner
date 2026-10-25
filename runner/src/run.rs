@@ -72,6 +72,15 @@ struct Sweeper {
 }
 
 impl Sweeper {
+    /// The pending sweep is also stored in the settings table, where the dashboard actions look for it.
+    fn set_pending(&mut self, state: &AppState, tx: Option<String>) {
+        let r = state.db.put_setting("sweep_pending", tx.as_deref().unwrap_or(""));
+        if let Err(e) = r {
+            tracing::warn!("cannot store the pending sweep: {e}");
+        }
+        self.pending = tx;
+    }
+
     async fn step(&mut self, state: &Arc<AppState>, cfg: &Config) {
         let due = self
             .checked
@@ -79,7 +88,7 @@ impl Sweeper {
         if self.pending.is_none() && (!due || cfg.payout.sweep_address().is_none()) {
             return;
         }
-        let chain = match crate::chain::Chain::connect(cfg, &state.service_pubkey).await {
+        let chain = match crate::chain::Chain::connect_wallet(cfg, &state.service_pubkey).await {
             Ok(c) => c.with_service_key(state.service_key),
             Err(e) => {
                 if !self.warned {
@@ -93,12 +102,12 @@ impl Sweeper {
             match chain.tx_status(tx).await {
                 Ok((s, _)) if s == "committed" => {
                     tracing::info!("runner wallet: sweep {tx} committed");
-                    self.pending = None;
+                    self.set_pending(state, None);
                 }
                 Ok((s, _)) if s == "pending" || s == "proposed" => return,
                 Ok((s, _)) => {
                     tracing::warn!("runner wallet: sweep {tx} was not committed ({s})");
-                    self.pending = None;
+                    self.set_pending(state, None);
                 }
                 Err(_) => return,
             }
@@ -119,7 +128,7 @@ impl Sweeper {
         let _wallet = state.wallet_tx.lock().await;
         match crate::wallet::sweep(&chain, cfg, &state.net_dir).await {
             Ok(v) if v["swept"] == true => {
-                self.pending = v["tx_hash"].as_str().map(str::to_string);
+                self.set_pending(state, v["tx_hash"].as_str().map(str::to_string));
             }
             Ok(_) => {}
             Err(e) => tracing::warn!("runner wallet sweep failed: {e}"),
@@ -272,6 +281,7 @@ pub async fn run(
                         cpu_percent: r.cpu.total_percent,
                         ram_free_mb: r.ram.free_mb,
                         tip_lag,
+                        disk_free_gb: Some(r.disk.free_gb),
                     };
                     if let Err(e) = state.db.add_sample(&sample) {
                         tracing::warn!("storing metric sample failed: {e}");
@@ -300,6 +310,8 @@ pub async fn run(
             let mut last_tip = None;
             let mut warned = false;
             let mut sweeper = Sweeper::default();
+            // A sweep from an earlier process is no longer followed.
+            let _ = state.db.put_setting("sweep_pending", "");
             loop {
                 tokio::select! {
                     _ = tick.tick() => {},
