@@ -409,3 +409,8 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## Attestation renewal (D3 A)
+- The runner renews the registry attestation itself (`csr register refresh`, "Renew now", and automatically 2 days before expiry on the chain clock of the config cell, checked every 30 minutes, retried after 30 minutes on failure). A refresh needs no stake dep and no consent; only a runner-owned cell is refreshed.
+- `wallet_busy`, `SWEEP_PENDING_AFTER_BLOCKS` and the dashboard password check did not exist in this codebase yet; `wallet::wallet_busy` (refresh pending or keeper submissions pending) and the constant (100 blocks) were added with this change. The dashboard route uses the `wallet_tx` lock and the `wallet_busy` check; the password check applies through the existing session/CSRF middleware.
+- The last renewal error is kept in the settings key `renewal_error` and returned by `GET /api/registry`.

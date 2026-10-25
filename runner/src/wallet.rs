@@ -7,6 +7,27 @@ use ckb_types::{bytes::Bytes, core::ScriptHashType, packed, prelude::*};
 use serde_json::{json, Value};
 use std::path::Path;
 
+/// Settings key of the refresh transaction that is not committed yet: `<tx hash>:<block at sending>`.
+pub const REFRESH_PENDING: &str = "refresh_pending";
+/// A pending runner transaction is given up after this many blocks.
+pub const SWEEP_PENDING_AFTER_BLOCKS: u64 = 100;
+
+/// Whether a registry refresh is not committed yet.
+pub fn refresh_pending(db: &crate::db::Db) -> bool {
+    db.get_setting(REFRESH_PENDING)
+        .map(|v| v.is_some_and(|s| !s.is_empty()))
+        .unwrap_or(true)
+}
+
+/// Whether a runner transaction (keeper submission or registry refresh) is still pending.
+pub fn wallet_busy(db: &crate::db::Db) -> bool {
+    refresh_pending(db)
+        || db
+            .runs_in(&[crate::keeper::SUBMITTING])
+            .map(|r| !r.is_empty())
+            .unwrap_or(true)
+}
+
 /// File in the network's data directory that remembers the last sweep.
 const LAST_SWEEP: &str = "last_sweep.json";
 

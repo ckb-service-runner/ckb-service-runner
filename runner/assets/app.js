@@ -163,7 +163,7 @@
   pages.overview = function (root) {
     var g = el('div', 'grid');
     var cs = card('Network'), cn = card('Node'), cr = card('Runtime'), cres = card('Resources');
-    var cf = card('Wallet'), ck = card('CSR monitor');
+    var cf = card('Wallet'), ck = card('CSR monitor'), cw = card('Attestation');
     [cs, cn, cr, cres, cf, ck].forEach(function (c) { g.appendChild(c); });
     root.appendChild(g);
     function paint() {
@@ -202,6 +202,21 @@
         var a = el('a', '', 'Wallet & registration'); a.href = '#/wallet'; cf.appendChild(a);
       }).catch(function () {});
     }
+    function expiryWarning() {
+      api('/api/registry').then(function (r) {
+        if (cw.parentNode) cw.parentNode.removeChild(cw);
+        var exp = r.attestation_expiry_ms;
+        if (!r.registered || !exp) return;
+        var left = exp - Date.now();
+        if (left > 2 * 86400000) return;
+        var t = left <= 0 ? 'The attestation has expired (' : 'The attestation expires within 2 days (';
+        cw.textContent = '';
+        cw.appendChild(el('h2', '', 'Attestation'));
+        cw.appendChild(el('p', 'msg err', t + new Date(exp).toLocaleString() + ').' + (r.renewal_error ? ' Last renewal error: ' + r.renewal_error : '')));
+        var wl = el('a', '', 'Wallet & registration'); wl.href = '#/wallet'; cw.appendChild(wl);
+        g.insertBefore(cw, g.firstChild);
+      }).catch(function () {});
+    }
     function res() {
       api('/api/resources').then(function (r) {
         while (cres.children.length > 1) cres.removeChild(cres.lastChild);
@@ -211,9 +226,10 @@
           ['Disk free', r.disk.free_gb + ' / ' + r.disk.total_gb + ' GB']]);
       }).catch(function () {});
     }
-    onStatus = paint; paint(); res(); payoutCard();
+    onStatus = paint; paint(); res(); payoutCard(); expiryWarning();
     timers.push(setInterval(payoutCard, 10000));
     timers.push(setInterval(res, 5000));
+    timers.push(setInterval(expiryWarning, 60000));
   };
 
   pages.network = function (root) {
@@ -488,6 +504,7 @@
     var sig = el('input'); sig.placeholder = 'Signature 0x…'; sig.size = 50; sig.setAttribute('aria-label', 'Signature');
     var reg = el('button', 'btn', 'Register'); reg.type = 'button';
     var rm = el('button', 'btn', 'Remove registration'); rm.type = 'button';
+    var renew = el('button', 'btn', 'Renew now'); renew.type = 'button';
     var ask = el('div', 'row'); ask.hidden = true;
     var yes = el('button', 'btn', 'Yes, remove'); yes.type = 'button';
     var no = el('button', 'btn', 'Cancel'); no.type = 'button';
@@ -507,6 +524,11 @@
         .then(function (j) { say((j.updated ? 'Registration updated: ' : 'Registered: ') + j.tx_hash); load(); })
         .catch(function (x) { say(x.message, true); });
     });
+    renew.addEventListener('click', function () {
+      api('/api/registry/refresh', { method: 'POST', body: {} })
+        .then(function (j) { say('Attestation renewed: ' + j.tx_hash); load(); })
+        .catch(function (x) { say(x.message, true); });
+    });
     rm.addEventListener('click', function () { ask.hidden = false; });
     no.addEventListener('click', function () { ask.hidden = true; });
     yes.addEventListener('click', function () {
@@ -516,7 +538,7 @@
         .catch(function (x) { say(x.message, true); });
     });
     var r1 = el('div', 'row'); [stake, getText].forEach(function (n) { r1.appendChild(n); });
-    var r2 = el('div', 'row'); [sig, reg, rm].forEach(function (n) { r2.appendChild(n); });
+    var r2 = el('div', 'row'); [sig, reg, renew, rm].forEach(function (n) { r2.appendChild(n); });
     [rinfo, r1, textBox, r2, ask].forEach(function (n) { cr.appendChild(n); });
     root.appendChild(c); root.appendChild(cr); root.appendChild(msg);
     function load() {
@@ -535,7 +557,8 @@
         var st = r[1].stake;
         dl(rinfo, [
           ['Registered', r[1].registered ? r[1].outpoint : 'no'],
-          ['Attestation expiry (ms)', r[1].attestation_expiry_ms],
+          ['Attestation expires', r[1].attestation_expiry_ms ? new Date(r[1].attestation_expiry_ms).toLocaleString() : '–'],
+          ['Last renewal error', r[1].renewal_error || '–'],
           ['Stake', st ? st.outpoint : '–'],
           ['Stake status', st ? st.status : '–'],
           ['Stake amount', st ? ckb(st.capacity_shannons) : '–'],
