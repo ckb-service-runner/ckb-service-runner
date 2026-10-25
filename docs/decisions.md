@@ -493,3 +493,39 @@ check (the consent text names these fields; F-CON-004). The runner path may chan
 - **Runner and `csr-dev` untouched in this phase.** `deploy-contracts` still deploys four contracts and the
   runner still writes v2 data; both follow in the next phases (the deployments need a new config cell with
   `csr-config-type`, so `--keep-config` cannot be reused for v3).
+
+### Contracts v3 Phase 2 – runner and devtools
+- **v2 and v3 deployments side by side.** `deployments/testnet.json` is still the v2 testnet deployment (the
+  testnet redeploy needs the testnet key and is not part of this phase). A deployments file is v3 when it has
+  `scripts.config_type`; then the config cell is looked up under `csr-config-type` (`data2`, args =
+  `config_cell.type_args`), the registry's args are the `config_id`, and the runner checks that
+  `config_cell.type_hash` and `registry_type_hash` follow from the scripts (a mismatch is a load error). Without
+  it (v2) the runner keeps the Type ID lookup and the v2 registry args so that existing v2 registrations keep
+  running jobs until the migration, but `register create` refuses: the runner writes v3 data only.
+- **No separate `register_refresh`.** This branch has no `csr-attestation-renewal` code; a refresh is a second
+  `register create` (new attestation, same or new deposit, current `ranking.public_endpoint`), which updates
+  the runner-owned cell on the owner path. The stake dep and consent are sent anyway (harmless on a refresh).
+- **Runner-owned = 32-byte args, 64-byte form still recognised.** New cells use `runner_lock_hash` alone;
+  `register create`/`remove` also accept a v3 cell whose args are `runner ‖ runner` and rewrite it to 32 bytes
+  on the next update (the owner path may change the lock).
+- **Monitor's v2 reply.** `attest::check` expects the v1 fields plus `stake` (`0x<tx>:<index>`) and
+  `registry_type_hash` (`0x` + 64 hex) and verifies the signature over `CSR-ATTEST-v2` with the *expected*
+  stake and registry type hash (the runner's own deployment), so a relabelled reply fails. A reply without
+  `stake` is reported as a v1 attestation. The request body is unchanged (the monitor knows its registry; no new
+  field is sent, to stay compatible with a strict request parser).
+- **Checks before broadcasting.** `register create` also verifies the 8-day cap against the on-chain clock and
+  recovers the attestation signature against the config cell's `monitor_pubkey`, so a wrong attestation is a
+  clear error instead of a script error from the node.
+- **`ranking.public_endpoint` validation** is a bit stricter than the contract: empty, or `http(s)://host[:port]`
+  with a host, without user info, path, query, fragment or trailing slash, at most 128 bytes.
+- **`build_run`** already had the layout `[wallet, job] → [wallet + tip, job | refund, skeleton…]`; it is now
+  explicit (`JOB_INDEX = 1`, unit test `run_output_sits_at_the_job_input_index`).
+- **`csr-dev`.** `Out.type_id` with a `type_` fills that script's args with the Type ID (used for the
+  `csr-config-type` config cell; the code cell is a dep of the creating transaction). `--keep-config` refuses a
+  v2 file and a config cell whose `csr-config-type` code hash differs from this build's binary (the registry
+  and the job lock embed it). `clock-update` uses `max(tip timestamp, current clock_ms)`. `attest` needs
+  `--stake` and takes `registry_type_hash` from the deployments file (refuses a v2 file); a unit test checks the
+  message against the shared vector. The A8 devnet acceptance scripts (`acceptance/a8/…`) still call the v1
+  `attest` and are obsolete for v3; the dashboard setup text keeps "about 700 CKB" (still enough for the
+  ~420 CKB v3 cell).
+

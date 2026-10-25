@@ -13,6 +13,7 @@ password_hash = ""
 join = true
 ping_mode = "inbound"               # inbound | outbound | both
 ping_bind = "0.0.0.0:8131"
+public_endpoint = ""                # e.g. "https://203.0.113.7:8131"; written into the registry cell (≤ 128 bytes)
 
 [monitor]
 url = ""                            # empty = network default
