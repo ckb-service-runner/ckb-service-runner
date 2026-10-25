@@ -53,16 +53,23 @@ pub fn sweep_warning(sweep_address: Option<&str>, capacity_shannons: u64, thresh
         return None;
     }
     Some(format!(
-        "the runner wallet holds {} CKB and no sweep address is set; set one in the settings so earnings move off the hot key",
+        "the runner wallet holds {} CKB and no sweep address is set: earnings stay on the runner's hot key. Set payout.sweep_address in the settings to sweep them to your own wallet",
         capacity_shannons / CKB
     ))
 }
 
 /// `csr wallet status` / `GET /api/wallet`.
 pub async fn status(chain: &Chain, cfg: &Config, net_dir: &Path) -> Result<Value, String> {
+    let capacity = chain.wallet_capacity().await?;
+    let sweep_warning = sweep_warning(
+        cfg.payout.sweep_address(),
+        capacity,
+        cfg.payout.sweep_threshold_ckb,
+    );
     Ok(json!({
         "address": chain.runner_address(),
-        "capacity_shannons": chain.wallet_capacity().await?,
+        "capacity_shannons": capacity,
+        "sweep_warning": sweep_warning,
         "sweep_address": cfg.payout.sweep_address(),
         "sweep_threshold_ckb": cfg.payout.sweep_threshold_ckb,
         "sweep_amount_ckb": cfg.payout.sweep_amount_ckb,

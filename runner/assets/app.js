@@ -216,6 +216,9 @@
         while (cf.children.length > 1) cf.removeChild(cf.lastChild);
         dl(cf, [['Balance', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
         var a = el('a', '', 'Wallet & registration'); a.href = '#/wallet'; cf.appendChild(a);
+        api('/api/wallet').then(function (w) {
+          if (w.sweep_warning) cf.insertBefore(el('p', 'msg err', w.sweep_warning), a);
+        }).catch(function () {});
       }).catch(function () {});
     }
     function res() {
@@ -476,6 +479,7 @@
       return b;
     }
     var c = card('Runner wallet');
+    var warn = el('p', 'msg err'); warn.style.display = 'none'; c.appendChild(warn);
     c.appendChild(el('p', '', 'Send about 700 CKB here from your wallet to start. The registration cell uses about 540 CKB, the rest pays small fees. Tips are added here.'));
     var info = el('div');
     var addr = el('div', 'addr-full'); addr.setAttribute('aria-label', 'Runner address');
@@ -541,6 +545,8 @@
     function load() {
       Promise.all([api('/api/wallet'), api('/api/registry'), api('/api/runner-cell')]).then(function (r) {
         var w = r[0], ls = w.last_sweep;
+        warn.textContent = w.sweep_warning || '';
+        warn.style.display = w.sweep_warning ? '' : 'none';
         addr.textContent = r[2].runner_address || w.address || '';
         info.textContent = '';
         dl(info, [
@@ -644,9 +650,14 @@
     var btns = el('div', 'row');
     var pa = el('a', 'btn', 'Wallet & registration'); pa.href = '#/wallet';
     btns.appendChild(pa);
-    [info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
+    var warn = el('p', 'msg err'); warn.style.display = 'none';
+    [warn, info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
     root.appendChild(c);
     function load() {
+      api('/api/wallet').then(function (w) {
+        warn.textContent = w.sweep_warning || '';
+        warn.style.display = w.sweep_warning ? '' : 'none';
+      }).catch(function () {});
       api('/api/earnings').then(function (e) {
         info.textContent = '';
         dl(info, [['Runner wallet', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid', ckb(e.fees_shannons)]]);

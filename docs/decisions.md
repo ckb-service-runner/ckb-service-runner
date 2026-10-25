@@ -418,3 +418,10 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - Sessions: separate pools (50 authenticated, 200 anonymous); a full pool evicts only its own oldest entry. The cookie gets `Secure` when `x-forwarded-proto: https`.
 - Old acceptance tests that wrote without a password (a1/p4, a2/p5, a8/p5, a8b/p5) now set a password and log in, and each has one assertion for 403 `password_required`. a2/p5 and the devnet tests could not be run here (no RISC-V service build / devnet).
 - `identity::key_mode_too_open` (fixes the mode to 0600 with a warning) and `wallet::sweep_warning` are in place; their wiring is phase 2.
+
+## Dashboard security, phase 2 (D25 B, D26 A, D28 B)
+
+- **D25 B:** a dashboard password is required only for writes (wallet, registration, service, settings); read-only pages work without one on loopback.
+- **D26 A:** the storage key stays on the same disk in `keys/`. A stolen disk or a clear backup is covered by full-disk encryption, as the install guide says; `keys/` is not backed up in clear.
+- **D28 B:** no automatic sweep is forced. The runner warns (log once per start, `sweep_warning` in `GET /api/wallet`, Overview and Earnings pages) when the hot key holds at least `payout.sweep_threshold_ckb` and `payout.sweep_address` is empty.
+- Files are private: `umask(0o077)` at process start, key files with group/other bits are set to 0600 with a warning, key buffers are zeroized, `LimitCORE=0` turns off core dumps.

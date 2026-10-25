@@ -381,6 +381,11 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 fn main() -> ExitCode {
+    // Every file the runner creates (data, database, logs, keys) is private to its user, whatever the
+    // caller's umask; this runs before anything is written.
+    unsafe {
+        libc::umask(0o077);
+    }
     let cli = Cli::parse();
     match &cli.command {
         Command::Version => {

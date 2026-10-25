@@ -232,7 +232,7 @@ pub fn http(port: u16, method: &str, path: &str, body: &str) -> Option<(u16, Str
     s.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
     write!(
         s,
-        "{method} {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
         body.len()
     )
     .ok()?;

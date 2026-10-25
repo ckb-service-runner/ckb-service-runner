@@ -7,6 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
+use zeroize::{Zeroize, Zeroizing};
 
 // The secret keys are used by the ping and service code in later phases.
 #[allow(dead_code)]
@@ -18,13 +19,17 @@ pub struct Identity {
 }
 
 fn read_key(path: &Path) -> Result<[u8; 32], String> {
-    let text =
-        fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let bytes = hex::decode(text.trim())
-        .map_err(|_| format!("{} does not hold 64 hex characters", path.display()))?;
-    bytes
-        .try_into()
-        .map_err(|_| format!("{} does not hold 64 hex characters", path.display()))
+    let text = Zeroizing::new(
+        fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
+    );
+    let bad = || format!("{} does not hold 64 hex characters", path.display());
+    let bytes = Zeroizing::new(hex::decode(text.trim()).map_err(|_| bad())?);
+    let mut key = [0u8; 32];
+    if bytes.len() != 32 {
+        return Err(bad());
+    }
+    key.copy_from_slice(&bytes);
+    Ok(key)
 }
 
 fn create_key(path: &Path, valid: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32], String> {
@@ -41,7 +46,8 @@ fn create_key(path: &Path, valid: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32]
         .mode(0o600)
         .open(path)
         .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-    f.write_all(format!("{}\n", hex::encode(key)).as_bytes())
+    let line = Zeroizing::new(format!("{}\n", hex::encode(key)));
+    f.write_all(line.as_bytes())
         .and_then(|_| f.sync_all())
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     Ok(key)
@@ -86,6 +92,12 @@ fn ckb_hash(data: &[u8]) -> [u8; 32] {
     out
 }
 
+impl Drop for Identity {
+    fn drop(&mut self) {
+        self.storage_key.zeroize();
+    }
+}
+
 impl Identity {
     /// `(runner_lock_args, runner_lock_hash)`: the sighash lock of `blake160(service_pubkey)`, hex with `0x`.
     pub fn runner_lock(&self) -> Result<(String, String), String> {
@@ -113,11 +125,13 @@ impl Identity {
         fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
             .map_err(|e| format!("cannot restrict {}: {e}", dir.display()))?;
-        let sk = load_or_create(&dir.join("service.key"), |k| {
+        let mut sk = load_or_create(&dir.join("service.key"), |k| {
             SecretKey::from_slice(k).is_ok()
         })?;
         let storage_key = load_or_create(&dir.join("storage.key"), |_| true)?;
-        let service_key = SecretKey::from_slice(&sk).map_err(|e| e.to_string())?;
+        let service_key = SecretKey::from_slice(&sk).map_err(|e| e.to_string());
+        sk.zeroize();
+        let service_key = service_key?;
         let public = PublicKey::from_secret_key(&Secp256k1::new(), &service_key);
         Ok(Identity {
             service_key,

@@ -69,6 +69,8 @@ struct Sweeper {
     /// The sweep transaction not committed yet.
     pending: Option<String>,
     warned: bool,
+    /// The "no sweep address" warning was checked for this start.
+    sweep_warned: bool,
 }
 
 impl Sweeper {
@@ -76,6 +78,20 @@ impl Sweeper {
         let due = self
             .checked
             .is_none_or(|t| t.elapsed() >= period(SWEEP_INTERVAL));
+        if !self.sweep_warned && cfg.payout.sweep_address().is_none() {
+            if let Ok(c) = crate::chain::Chain::connect(cfg, &state.service_pubkey).await {
+                if let Ok(cap) = c.wallet_capacity().await {
+                    self.sweep_warned = true;
+                    if let Some(w) = crate::wallet::sweep_warning(
+                        cfg.payout.sweep_address(),
+                        cap,
+                        cfg.payout.sweep_threshold_ckb,
+                    ) {
+                        tracing::warn!("{w}");
+                    }
+                }
+            }
+        }
         if self.pending.is_none() && (!due || cfg.payout.sweep_address().is_none()) {
             return;
         }

@@ -71,6 +71,20 @@ must set a password first:
 sudo -u csr csr --data-root /var/lib/csr set-password
 ```
 
+### Remote access
+
+A dashboard bound to a non-loopback address (`0.0.0.0:8130`) speaks plain HTTP: the password and the
+session cookie cross the network in clear. Use an SSH tunnel (preferred, see above), or put a TLS
+reverse proxy in front that sets `X-Forwarded-Proto: https` (the session cookie then gets `Secure`).
+A dashboard password is required for wallet, registration, service and settings changes; without one
+these writes are refused, and only the read-only pages work.
+
+## Stolen disk
+
+The storage key lives in `keys/` beside the data it protects, so it does not help against a stolen disk
+or a copied backup. Protect against that with full-disk encryption (for example LUKS). Do not back up
+`keys/` in clear; keep any backup of it encrypted and apart from the data.
+
 ## Ping port
 
 The ranking monitor pings your node on **8131/tcp** (`ranking.ping_bind`): open it in your firewall

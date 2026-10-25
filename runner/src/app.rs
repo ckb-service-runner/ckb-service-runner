@@ -13,6 +13,12 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
+impl Drop for AppState {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.storage_key);
+    }
+}
+
 pub struct AppState {
     pub config: RwLock<Config>,
     pub config_path: PathBuf,
