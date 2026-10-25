@@ -533,6 +533,14 @@ pub struct TipInfo {
     pub median_ms: u64,
 }
 
+/// The job cells read from the chain; `complete` is false when the list was cut off.
+pub struct JobCells {
+    pub jobs: Vec<RawJob>,
+    pub complete: bool,
+}
+
+static JOB_LIST_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// A live cell with job lock and job type, data not yet decoded.
 pub struct RawJob {
     pub outpoint: String,
@@ -631,10 +639,10 @@ impl Chain {
             }
             cursor = r["last_cursor"].clone();
             if page.len() < 0x400 || cursor.is_null() {
-                break;
+                return Ok(cells);
             }
         }
-        Ok(cells)
+        Err("get_cells: more than 20 pages of cells, the list would be incomplete".into())
     }
 
     /// Cells without type script and data under a lock.
@@ -835,7 +843,8 @@ impl Chain {
     }
 
     /// Live cells with this deployment's job lock, restricted to the job type.
-    pub async fn job_cells(&self) -> Result<Vec<RawJob>, String> {
+    /// Reads up to 200 pages; `complete` is false when the cursor had not ended by then.
+    pub async fn job_cells(&self) -> Result<JobCells, String> {
         self.wait_indexer().await?;
         let lock = Script::new_builder()
             .code_hash(self.job_lock.code_hash.pack())
@@ -849,7 +858,8 @@ impl Chain {
         });
         let mut out = Vec::new();
         let mut cursor = Value::Null;
-        for _ in 0..20 {
+        let mut complete = false;
+        for _ in 0..200 {
             let r = self
                 .call("get_cells", json!([key, "asc", "0x400", cursor]))
                 .await?;
@@ -879,10 +889,14 @@ impl Chain {
             }
             cursor = r["last_cursor"].clone();
             if page.len() < 0x400 || cursor.is_null() {
+                complete = true;
                 break;
             }
         }
-        Ok(out)
+        if !complete && !JOB_LIST_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!("job discovery: more than 200 pages of job cells, the list is incomplete");
+        }
+        Ok(JobCells { jobs: out, complete })
     }
 
     fn registry_type(&self) -> Script {
@@ -1224,7 +1238,8 @@ impl Chain {
                     self.runner_address()
                 )
             })?;
-        let (config, _) = self.config_cell().await?;
+        let (config, clock_ms) = self.config_cell().await?;
+        attestation_usable(reg.expiry_ms, clock_ms)?;
         Ok(RunContext {
             runner,
             deps: vec![

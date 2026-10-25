@@ -83,10 +83,19 @@ pub async fn sweep(chain: &Chain, cfg: &Config, net_dir: &Path) -> Result<Value,
     };
     let lock = lock_of(chain.network(), addr)?;
     let have = chain.wallet_capacity().await?;
-    if have < cfg.payout.sweep_threshold_ckb.saturating_mul(CKB) {
+    let threshold = cfg
+        .payout
+        .sweep_threshold_ckb
+        .checked_mul(CKB)
+        .ok_or("payout.sweep_threshold_ckb is too large")?;
+    if have < threshold {
         return Ok(none);
     }
-    let amount = cfg.payout.sweep_amount_ckb * CKB;
+    let amount = cfg
+        .payout
+        .sweep_amount_ckb
+        .checked_mul(CKB)
+        .ok_or("payout.sweep_amount_ckb is too large")?;
     let tx_hash = chain.wallet_send(lock, amount).await?;
     record_sweep(net_dir, &tx_hash, amount)?;
     tracing::info!(

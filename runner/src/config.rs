@@ -396,14 +396,14 @@ impl Config {
             100,
         )?;
 
-        range("limits.min_free_ram_mb", l.min_free_ram_mb, 0, 1_000_000)?;
+        range("limits.min_free_ram_mb", l.min_free_ram_mb, 0, 1_048_576)?;
         range("limits.min_free_disk_gb", l.min_free_disk_gb, 0, 100_000)?;
         range("storage.total_quota_mb", self.storage.total_quota_mb, 1, 1_000_000)?;
         range(
             "storage.per_service_quota_mb",
             self.storage.per_service_quota_mb,
             1,
-            1_000_000,
+            u64::MAX,
         )?;
         for h in &self.runtime.allowed_services {
             let ok = h.strip_prefix("0x").is_some_and(|x| {
@@ -435,9 +435,9 @@ impl PayoutCfg {
                 self.sweep_amount_ckb
             ));
         }
-        if self.sweep_amount_ckb > 100_000_000 {
+        if self.sweep_amount_ckb > 1_000_000_000 {
             return Err(format!(
-                "payout.sweep_amount_ckb must be at most 100000000, got {}",
+                "payout.sweep_amount_ckb must be at most 1000000000, got {}",
                 self.sweep_amount_ckb
             ));
         }
@@ -445,6 +445,12 @@ impl PayoutCfg {
             return Err(format!(
                 "payout.sweep_threshold_ckb must be at least payout.sweep_amount_ckb + 100 ({}), got {}",
                 self.sweep_amount_ckb.saturating_add(100),
+                self.sweep_threshold_ckb
+            ));
+        }
+        if self.sweep_threshold_ckb > 2_000_000_000 {
+            return Err(format!(
+                "payout.sweep_threshold_ckb must be at most 2000000000, got {}",
                 self.sweep_threshold_ckb
             ));
         }

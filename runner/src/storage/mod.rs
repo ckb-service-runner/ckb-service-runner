@@ -129,8 +129,8 @@ impl Store {
             root: root.to_path_buf(),
             code_hash: code_hash_hex.to_string(),
             key,
-            per_service_quota: per_service_quota_mb * 1024 * 1024,
-            total_quota: total_quota_mb * 1024 * 1024,
+            per_service_quota: per_service_quota_mb.saturating_mul(1024 * 1024),
+            total_quota: total_quota_mb.saturating_mul(1024 * 1024),
         }
     }
 

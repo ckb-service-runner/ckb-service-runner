@@ -68,10 +68,36 @@ struct Sweeper {
     checked: Option<Instant>,
     /// The sweep transaction not committed yet.
     pending: Option<String>,
+    /// The block at which the pending sweep was sent.
+    sent_block: u64,
     warned: bool,
 }
 
+const SWEEP_KEY: &str = "sweep_pending";
+
 impl Sweeper {
+    /// Loads a sweep that was pending when the runner stopped (`"<hash>:<block>"`).
+    fn load(db: &Db) -> Sweeper {
+        let mut s = Sweeper::default();
+        if let Ok(Some(v)) = db.get_setting(SWEEP_KEY) {
+            if let Some((h, b)) = v.rsplit_once(':') {
+                if let Ok(b) = b.parse::<u64>() {
+                    s.pending = Some(h.to_string());
+                    s.sent_block = b;
+                }
+            }
+        }
+        s
+    }
+
+    /// Ends the pending sweep (committed, failed or given up).
+    fn clear(&mut self, db: &Db) {
+        self.pending = None;
+        if let Err(e) = db.put_setting(SWEEP_KEY, "") {
+            tracing::warn!("cannot clear the pending sweep: {e}");
+        }
+    }
+
     async fn step(&mut self, state: &Arc<AppState>, cfg: &Config) {
         let due = self
             .checked
@@ -89,18 +115,33 @@ impl Sweeper {
                 return;
             }
         };
-        if let Some(tx) = &self.pending {
-            match chain.tx_status(tx).await {
+        if let Some(tx) = self.pending.clone() {
+            let tip = chain.tip_info().await.ok().map(|t| t.number);
+            match chain.tx_status(&tx).await {
                 Ok((s, _)) if s == "committed" => {
                     tracing::info!("runner wallet: sweep {tx} committed");
-                    self.pending = None;
+                    self.clear(&state.db);
                 }
-                Ok((s, _)) if s == "pending" || s == "proposed" => return,
+                Ok((s, _)) if s == "pending" || s == "proposed" => {
+                    if tip.is_some_and(|t| crate::keeper::sweep_given_up(self.sent_block, t)) {
+                        tracing::warn!("runner wallet: sweep {tx} is still {s}, giving it up");
+                        self.clear(&state.db);
+                    } else {
+                        return;
+                    }
+                }
                 Ok((s, _)) => {
                     tracing::warn!("runner wallet: sweep {tx} was not committed ({s})");
-                    self.pending = None;
+                    self.clear(&state.db);
                 }
-                Err(_) => return,
+                Err(_) => {
+                    if tip.is_some_and(|t| crate::keeper::sweep_given_up(self.sent_block, t)) {
+                        tracing::warn!("runner wallet: sweep {tx} cannot be followed, giving it up");
+                        self.clear(&state.db);
+                    } else {
+                        return;
+                    }
+                }
             }
         }
         if !due {
@@ -120,6 +161,13 @@ impl Sweeper {
         match crate::wallet::sweep(&chain, cfg, &state.net_dir).await {
             Ok(v) if v["swept"] == true => {
                 self.pending = v["tx_hash"].as_str().map(str::to_string);
+                if let Some(h) = &self.pending {
+                    self.sent_block = chain.tip_info().await.map(|t| t.number).unwrap_or(0);
+                    let value = format!("{h}:{}", self.sent_block);
+                    if let Err(e) = state.db.put_setting(SWEEP_KEY, &value) {
+                        tracing::warn!("cannot store the pending sweep: {e}");
+                    }
+                }
             }
             Ok(_) => {}
             Err(e) => tracing::warn!("runner wallet sweep failed: {e}"),
@@ -198,13 +246,16 @@ pub async fn run(
 
     let (stop_tx, stop_rx) = watch::channel(false);
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<String>(1);
+    // The background tasks; if one ends while no shutdown was requested, the process ends too.
+    let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+    let mut names: std::collections::HashMap<tokio::task::Id, &'static str> = Default::default();
 
     // R2 guard.
     {
         let state = state.clone();
         let mut stop = stop_rx.clone();
         let network = state.config.read().unwrap().network.clone();
-        tokio::spawn(async move {
+        let h = tasks.spawn(async move {
             let p = period(R2_INTERVAL);
             let mut tick = interval_at(TokioInstant::now() + p, p);
             tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -238,13 +289,14 @@ pub async fn run(
                 *state.node.write().unwrap() = polled;
             }
         });
+        names.insert(h.id(), "R2 guard");
     }
 
     // Resource refresh (every 5 s) and metric samples into SQLite.
     {
         let state = state.clone();
         let mut stop = stop_rx.clone();
-        tokio::spawn(async move {
+        let h = tasks.spawn(async move {
             let refresh = if fast_tick() {
                 Duration::from_secs(1)
             } else {
@@ -279,6 +331,7 @@ pub async fn run(
                 }
             }
         });
+        names.insert(h.id(), "resource sampler");
     }
 
     // Keeper: on every new block discover jobs (runtime on), run a batch and track settlements.
@@ -292,14 +345,14 @@ pub async fn run(
     {
         let state = state.clone();
         let mut stop = stop_rx.clone();
-        tokio::spawn(async move {
+        let h = tasks.spawn(async move {
             let p = period(DISCOVERY_INTERVAL);
             let mut tick = interval_at(TokioInstant::now() + Duration::from_millis(500), p);
             tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             let mut keeper: Option<crate::keeper::Keeper> = None;
             let mut last_tip = None;
             let mut warned = false;
-            let mut sweeper = Sweeper::default();
+            let mut sweeper = Sweeper::load(&state.db);
             let mut last_prune: Option<Instant> = None;
             loop {
                 tokio::select! {
@@ -316,7 +369,13 @@ pub async fn run(
                 let cfg = state.config.read().unwrap().clone();
                 sweeper.step(&state, &cfg).await;
                 // Never start keeper transactions while a sweep is pending: both spend the wallet.
+                // Submitted transactions are still followed.
                 if sweeper.pending.is_some() {
+                    if let Some(k) = keeper.as_mut() {
+                        if let Err(e) = k.follow(&state).await {
+                            tracing::warn!("job tracking: {e}");
+                        }
+                    }
                     continue;
                 }
                 let r2 = state.node.read().unwrap().report.state;
@@ -375,20 +434,25 @@ pub async fn run(
                 }
             }
         });
+        names.insert(h.id(), "keeper loop");
     }
 
     let app = web::router(state.clone());
     let mut srv_stop = stop_rx.clone();
-    let mut server = tokio::spawn(async move {
-        axum::serve(listener, app)
+    let h = tasks.spawn(async move {
+        if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 let _ = srv_stop.changed().await;
             })
             .await
+        {
+            tracing::error!("dashboard server failed: {e}");
+        }
     });
+    names.insert(h.id(), "dashboard server");
 
     // Ping port: only when ranking is joined and the mode includes inbound.
-    let ping_server = {
+    {
         let (join, mode, pbind) = {
             let c = state.config.read().unwrap();
             (
@@ -405,32 +469,70 @@ pub async fn run(
             let app = ping::inbound::router(ping::inbound::Responder::new(state.clone()))
                 .into_make_service_with_connect_info::<std::net::SocketAddr>();
             let mut st = stop_rx.clone();
-            Some(tokio::spawn(async move {
+            let h = tasks.spawn(async move {
                 let _ = axum::serve(l, app)
                     .with_graceful_shutdown(async move {
                         let _ = st.changed().await;
                     })
                     .await;
-            }))
-        } else {
-            None
+            });
+            names.insert(h.id(), "ping responder");
         }
-    };
+    }
 
-    tokio::spawn(ping::outbound::run(state.clone(), stop_rx.clone()));
+    let h = tasks.spawn(ping::outbound::run(state.clone(), stop_rx.clone()));
+    names.insert(h.id(), "outbound check-in");
 
     let result = tokio::select! {
+        biased;
         _ = shutdown_signal() => {
             tracing::info!("shutting down");
             Ok(())
         }
         Some(e) = fatal_rx.recv() => Err(e),
-        r = &mut server => Err(format!("dashboard server stopped: {r:?}")),
+        Some(ended) = tasks.join_next_with_id() => {
+            let id = match &ended {
+                Ok((id, _)) => *id,
+                Err(e) => e.id(),
+            };
+            let name = names.get(&id).copied().unwrap_or("a background task");
+            let how = match ended {
+                Ok(_) => "ended".to_string(),
+                Err(e) => format!("failed: {e}"),
+            };
+            tracing::error!("{name} {how} without a shutdown request, exiting");
+            Err(format!("{name} {how}"))
+        }
     };
     let _ = stop_tx.send(true);
-    let _ = tokio::time::timeout(Duration::from_secs(3), server).await;
-    if let Some(p) = ping_server {
-        let _ = tokio::time::timeout(Duration::from_secs(3), p).await;
-    }
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_sweep_survives_a_restart() {
+        let db = Db::open_memory();
+        assert!(Sweeper::load(&db).pending.is_none());
+        db.put_setting(SWEEP_KEY, "0xabc:1234").unwrap();
+        let mut s = Sweeper::load(&db);
+        assert_eq!(s.pending.as_deref(), Some("0xabc"));
+        assert_eq!(s.sent_block, 1234);
+        s.clear(&db);
+        assert!(s.pending.is_none());
+        assert!(Sweeper::load(&db).pending.is_none());
+    }
+
+    #[test]
+    fn garbage_sweep_setting_is_ignored() {
+        let db = Db::open_memory();
+        db.put_setting(SWEEP_KEY, "nonsense").unwrap();
+        assert!(Sweeper::load(&db).pending.is_none());
+    }
 }

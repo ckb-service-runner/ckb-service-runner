@@ -2,10 +2,12 @@
 //! settlement tracking (`docs/spec/CSR-SPEC-v0.2.md` §10.3).
 //!
 //! Lifecycle of a run (one per job cell outpoint):
-//! `Discovered → Queued → Scheduled → Running ⇄ Paused → Completed → Submitting → Settled | Lost`,
+//! `Discovered → Queued → Scheduled → Running → Completed → Submitting → Settled | Lost`,
 //! side exits `Failed` (execution or transaction building failed), `Rejected` (the node refused
 //! the transaction while the job cell is still live) and `Expired` (the job reached its expiry
-//! before it ran).
+//! before it ran). `Paused` is a hold on runs that have not started yet (`Queued`/`Scheduled`
+//! ⇄ `Paused`); a started run (`Running`) is never paused, it finishes within
+//! `max_job_wall_seconds`.
 
 use crate::app::AppState;
 use crate::chain::{Chain, RunJob};
@@ -156,7 +158,8 @@ impl Keeper {
         if !runtime_on {
             return Ok(format!("block {}: runtime not on", tip.number));
         }
-        let raws = self.chain.job_cells().await?;
+        let cells = self.chain.job_cells().await?;
+        let (raws, complete) = (cells.jobs, cells.complete);
         let data: HashMap<String, Vec<u8>> = raws
             .iter()
             .map(|r| (r.outpoint.clone(), r.data.clone()))
@@ -164,7 +167,7 @@ impl Keeper {
         let decoded: Vec<Job> = raws.iter().filter_map(jobs::decode).collect();
         let plan = jobs::select(cfg, &jobs::allowlist(&st.db, cfg)?, &tip, decoded);
         jobs::store(&st.db, &plan)?;
-        self.reconcile(st, &plan, &data)?;
+        self.reconcile(st, &plan, &data, complete)?;
         let summary = format!(
             "block {}: {} eligible job(s), {} excluded",
             tip.number,
@@ -206,6 +209,12 @@ impl Keeper {
         Ok(summary)
     }
 
+    /// While a runner wallet sweep is pending: follows submitted transactions only, starts no batch.
+    pub async fn follow(&mut self, st: &Arc<AppState>) -> Result<(), String> {
+        let tip = self.chain.tip_info().await?;
+        self.track(st, tip.number).await
+    }
+
     /// Creates runs for newly selected jobs and returns the next batch (best tip rate first).
     fn queue(&self, st: &AppState, plan: &Plan) -> Result<Vec<(JobRun, Job)>, String> {
         let cfg_cap = plan.capacity as usize;
@@ -242,6 +251,7 @@ impl Keeper {
         st: &AppState,
         plan: &Plan,
         live: &HashMap<String, Vec<u8>>,
+        complete: bool,
     ) -> Result<(), String> {
         let expired: HashSet<&str> = plan
             .excluded
@@ -249,11 +259,14 @@ impl Keeper {
             .filter(|(_, r)| *r == jobs::Exclusion::Expired)
             .map(|(j, _)| j.outpoint.as_str())
             .collect();
-        for r in st.db.runs_in(&PENDING)? {
-            if !live.contains_key(&r.outpoint) {
+        let pending = st.db.runs_in(&PENDING)?;
+        let keys: HashSet<String> = live.keys().cloned().collect();
+        let lost: HashSet<i64> = lost_runs(&pending, &keys, complete).into_iter().collect();
+        for r in pending {
+            if lost.contains(&r.id) {
                 st.db
                     .set_run_state(r.id, LOST, Some("the job cell was spent by someone else"))?;
-            } else if expired.contains(r.outpoint.as_str()) {
+            } else if live.contains_key(&r.outpoint) && expired.contains(r.outpoint.as_str()) {
                 st.db
                     .set_run_state(r.id, EXPIRED, Some("the job reached its expiry block"))?;
             }
@@ -678,7 +691,7 @@ mod tests {
 }
 
 /// Waiting runs whose job cell is gone; only when the cell list is complete.
-fn lost_runs(pending: &[JobRun], live: &HashSet<String>, complete: bool) -> Vec<i64> {
+pub fn lost_runs(pending: &[JobRun], live: &HashSet<String>, complete: bool) -> Vec<i64> {
     if !complete {
         return Vec::new();
     }
@@ -694,7 +707,7 @@ pub const SWEEP_PENDING_AFTER_BLOCKS: u64 = 500;
 
 /// Whether a sweep sent at `sent_block` is given up at `tip`.
 pub fn sweep_given_up(sent_block: u64, tip: u64) -> bool {
-    tip.saturating_sub(sent_block) >= SWEEP_PENDING_AFTER_BLOCKS
+    tip >= sent_block.saturating_add(SWEEP_PENDING_AFTER_BLOCKS)
 }
 
 #[cfg(test)]

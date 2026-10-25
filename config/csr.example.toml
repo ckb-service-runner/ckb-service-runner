@@ -20,7 +20,7 @@ pubkey = ""                         # empty = network default; 0x + 66 hex (comp
 
 [runtime]
 enabled = false
-allowed_services = []
+allowed_services = []               # code hashes: 0x + 64 hex characters each
 min_ckb_per_mcycle = 0.0
 
 [limits]
@@ -29,13 +29,13 @@ max_cycles_per_job = 70000000
 max_vm_memory_mb = 4                # 1..=64
 max_job_wall_seconds = 30           # 1..=3600
 pause_above_cpu_percent = 85        # 1..=100
-min_free_ram_mb = 1024
-min_free_disk_gb = 10
+min_free_ram_mb = 1024              # 0..=1048576
+min_free_disk_gb = 10               # 0..=100000
 
 [storage]
 path = "service_data"
-total_quota_mb = 256
-per_service_quota_mb = 64           # <= total_quota_mb
+total_quota_mb = 256                # 1..=1000000
+per_service_quota_mb = 64           # >= 1, <= total_quota_mb
 
 [logging]
 level = "info"                      # error | warn | info | debug | trace
@@ -44,5 +44,5 @@ level = "info"                      # error | warn | info | debug | trace
 # Tips go into the runner wallet (the runner address, `csr wallet status`). When it holds at least
 # sweep_threshold_ckb, the runner sends sweep_amount_ckb to sweep_address (your own wallet).
 sweep_address = ""                  # "" = no sweep; a full-format address (ckb1…/ckt1…) of this network
-sweep_threshold_ckb = 1500          # >= sweep_amount_ckb + 100
-sweep_amount_ckb = 1000             # >= 61
+sweep_threshold_ckb = 1500          # >= sweep_amount_ckb + 100, <= 2000000000
+sweep_amount_ckb = 1000             # 61..=1000000000
