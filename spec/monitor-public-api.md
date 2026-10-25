@@ -21,14 +21,19 @@ Availability values are fractions 0..1. Clients ignore unknown extra fields.
  "stake":{"status":"deposited","capacity_ckb":10000,"outpoint":"0x5a5a…5a5a:3"}}
 ```
 
-- `check_type`: `p2p_verified` or `challenge_only`.
+- `rank` is `null` for an unranked node (provisional, flagged, or known only from its registry cell); `of` is the
+  number of ranked nodes. `"provisional"` (boolean) is added; older monitors send none, CSR treats that as `false`.
+- Unranked example: `{"peer_id":"Qm…","rank":null,"of":42,"provisional":true,"availability":{"d7":null,"d30":null,"d365":null},"check_type":"none","attestation":{"status":"none","expiry":null},"last_check_at":0,"stake":{"status":"none","capacity_ckb":null,"outpoint":null}}`
+- `availability` values (`d7`, `d30`, `d365`) may be `null`.
+- `check_type`: `p2p_verified` or `challenge_only`; `none` for a node known only from its registry cell.
+- `stake` and `attestation` are always present, also for unranked nodes.
 - `attestation.status`: `none`, `valid` or `expired`; `expiry` is a unix timestamp or `null`.
 - `stake` (optional; older monitors omit it, CSR then shows nothing): the registration's referenced Nervos DAO
   deposit (`spec/registry.md`, stake). `status` is `deposited` (live DAO deposit, enough CKB), `withdrawn`
   (spent or in the withdrawing phase), `invalid` (not a deposit, too small or not owned by the registry owner),
   `duplicate` (an older registration references the same deposit) or `none` (no stake in the registry cell).
   `capacity_ckb` is a number or `null`; `outpoint` is `0x<64 hex>:<index>` or `null`.
-- 404 when the node is not ranked.
+- 404 `{"error": "unknown_node"}` is used only for an unknown peer.
 
 ## `GET /v1/locations`
 

@@ -409,3 +409,8 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## fix-runner-unranked-node
+- `NodeStats.rank`/`of` and the availability values are `Option`, `provisional` defaults to `false`, `last_check_at` defaults to 0; all fields are always serialized (`null` when missing) so the dashboard sees a stable shape.
+- An unparsable `/v1/nodes` reply is logged as a warning and becomes `node: None`; the `/v1/network` data is kept. Transport errors and non-404 statuses still fail the refresh.
+- Dashboard: `rank == null` shows "not ranked yet" (plus "(provisional)"); `null` availability shows "–"; stake and attestation are shown for unranked nodes. `spec/monitor-public-api.md` documents the unranked shape.

@@ -124,6 +124,10 @@
   }
 
   function fmtTime(t) { return t ? new Date(t * 1000).toLocaleString() : 'never'; }
+  function rankText(n) {
+    if (typeof n.rank !== 'number') return 'not ranked yet' + (n.provisional ? ' (provisional)' : '');
+    return n.rank + ' / ' + n.of + (n.provisional ? ' (provisional)' : '');
+  }
   function pct(v) { return typeof v === 'number' ? (v * 100).toFixed(2) + '%' : '–'; }
   function clear(c) { while (c.children.length > 1) c.removeChild(c.lastChild); }
   function stale(c, j) {
@@ -187,7 +191,7 @@
         ck.appendChild(rk);
         api('/api/network').then(function (j) {
           var n = j.node;
-          dl(rk, [['Rank', n ? n.rank + ' / ' + n.of : 'not ranked'], ['Availability 30 d', n ? pct(n.availability.d30) : '–']]);
+          dl(rk, [['Rank', n ? rankText(n) : 'not ranked'], ['Availability 30 d', n ? pct(n.availability.d30) : '–']]);
           if (j.stale) rk.appendChild(el('p', 'msg stale', 'stale'));
           var ol = el('a', '', 'Open CSR monitor'); ol.href = '#/network'; rk.appendChild(ol);
         }).catch(function () {});
@@ -256,7 +260,7 @@
         var ping = j.ping || {};
         if (n) {
           var a = n.attestation || {};
-          dl(cr, [['Rank', n.rank + ' / ' + n.of], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
+          dl(cr, [['Rank', rankText(n)], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
             ['Availability 365 d', pct(n.availability.d365)], ['Check type', checkType(n.check_type)],
             ['Attestation', a.status + (a.expiry ? ' (expires ' + fmtTime(a.expiry) + ')' : '')],
             ['Stake', n.stake ? n.stake.status + (n.stake.capacity_ckb != null ? ' (' + n.stake.capacity_ckb + ' CKB)' : '') : null],

@@ -66,9 +66,12 @@ fn parse_locations(v: &Value) -> Option<(Vec<Location>, u64)> {
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct Availability {
-    pub d7: f64,
-    pub d30: f64,
-    pub d365: f64,
+    #[serde(default)]
+    pub d7: Option<f64>,
+    #[serde(default)]
+    pub d30: Option<f64>,
+    #[serde(default)]
+    pub d365: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -80,11 +83,16 @@ pub struct Attestation {
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct NodeStats {
-    pub rank: u64,
-    pub of: u64,
+    /// `null` for an unranked (provisional, flagged or registry-only) node.
+    pub rank: Option<u64>,
+    /// The number of ranked nodes.
+    pub of: Option<u64>,
+    #[serde(default)]
+    pub provisional: bool,
     pub availability: Availability,
     pub check_type: String,
     pub attestation: Attestation,
+    #[serde(default)]
     pub last_check_at: i64,
     /// The monitor's view of the registration stake (any JSON); `null` if it sends none.
     #[serde(default)]
@@ -174,10 +182,13 @@ async fn fetch(
         None => None,
         Some(id) => match get(&http, &format!("{base}/v1/nodes/{}", encode_segment(id))).await? {
             None => None,
-            Some(v) => Some(
-                serde_json::from_value::<NodeStats>(v)
-                    .map_err(|e| format!("bad /v1/nodes reply: {e}"))?,
-            ),
+            Some(v) => match serde_json::from_value::<NodeStats>(v) {
+                Ok(n) => Some(n),
+                Err(e) => {
+                    tracing::warn!("ignoring unparsable /v1/nodes reply: {e}");
+                    None
+                }
+            },
         },
     };
     Ok((network, node))
@@ -263,6 +274,37 @@ pub async fn network_json(state: &AppState) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn null_rank_reply_parses_and_serializes_nulls() {
+        let n: NodeStats = serde_json::from_value(json!({
+            "peer_id": "Qm", "rank": null, "of": 42, "provisional": true,
+            "availability": {"d7": null, "d30": null, "d365": null},
+            "check_type": "none", "attestation": {"status": "none", "expiry": null},
+            "last_check_at": 5, "stake": {"status": "deposited"}
+        }))
+        .unwrap();
+        assert_eq!(n.rank, None);
+        assert_eq!(n.of, Some(42));
+        assert!(n.provisional);
+        let v = serde_json::to_value(&n).unwrap();
+        assert!(v["rank"].is_null());
+        assert!(v["availability"]["d30"].is_null());
+        assert_eq!(v["provisional"], json!(true));
+    }
+
+    #[test]
+    fn reply_without_provisional_is_not_provisional() {
+        let n: NodeStats = serde_json::from_value(json!({
+            "rank": 3, "of": 42, "availability": {"d7": 0.9, "d30": 0.8, "d365": 0.7},
+            "check_type": "p2p_verified", "attestation": {"status": "valid", "expiry": 9},
+            "last_check_at": 5
+        }))
+        .unwrap();
+        assert!(!n.provisional);
+        assert_eq!(n.rank, Some(3));
+        assert_eq!(n.availability.d30, Some(0.8));
+    }
 
     #[test]
     fn peer_id_is_url_encoded() {
