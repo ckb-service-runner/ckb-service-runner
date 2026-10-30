@@ -71,6 +71,9 @@ pub fn ckb_to_shannons(s: &str) -> Result<u64, String> {
         .ok_or_else(bad)
 }
 
+/// Longest attestation lifetime beyond the monitor clock the contracts accept (D24 A): 8 days.
+pub const MAX_ATTESTATION_LIFETIME_MS: u64 = 8 * 86_400_000;
+
 /// Minimum registration stake (`spec/registry.md`, stake rule 3): 10,000 CKB.
 pub const MIN_STAKE: u64 = 1_000_000_000_000;
 
@@ -195,11 +198,32 @@ struct Deployments {
     registry: Deployed,
     job_type: Deployed,
     job_lock: Deployed,
+    /// `csr-config-type` (contracts v3); `None` in a v2 deployment, whose config cell is a plain Type ID
+    /// cell and whose registry takes the config type hash as args.
+    config_type: Option<Deployed>,
     /// Type hash of the registry script of this deployment (args of the job lock).
     registry_type_hash: Vec<u8>,
-    /// Args of the Type ID type script of the monitor config cell.
+    /// Args of the config cell's type script (its Type ID, the `config_id`).
     config_type_args: Vec<u8>,
     config_type_hash: H256,
+}
+
+impl Deployments {
+    /// The type script of the monitor config cell.
+    fn config_type_script(&self) -> Script {
+        match &self.config_type {
+            Some(d) => d.script(&self.config_type_args),
+            None => type_id_script(&self.config_type_args),
+        }
+    }
+
+    /// Args of the registry type script: `config_id` since v3, the config type hash in v2.
+    fn registry_args(&self) -> Vec<u8> {
+        match self.config_type {
+            Some(_) => self.config_type_args.clone(),
+            None => self.config_type_hash.as_bytes().to_vec(),
+        }
+    }
 }
 
 fn load_deployed(v: &Value, name: &str, file: &str) -> Result<Deployed, String> {
@@ -259,13 +283,21 @@ fn parse_deployments(text: &str, source: &str) -> Result<Deployments, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| format!("{f} is not JSON: {e}"))?;
     let hex32 = |x: &Value, what: &str| -> Result<Vec<u8>, String> {
         hex::decode(x.as_str().unwrap_or("").trim_start_matches("0x"))
-            .map_err(|_| format!("{f}: bad {what}"))
+            .ok()
+            .filter(|b| b.len() == 32)
+            .ok_or_else(|| format!("{f}: bad {what}"))
     };
-    Ok(Deployments {
+    let config_type = if v["scripts"]["config_type"].is_null() {
+        None
+    } else {
+        Some(load_deployed(&v, "config_type", f)?)
+    };
+    let d = Deployments {
         dual: load_deployed(&v, "dual_lock", f)?,
         registry: load_deployed(&v, "registry", f)?,
         job_type: load_deployed(&v, "job_type", f)?,
         job_lock: load_deployed(&v, "job_lock", f)?,
+        config_type,
         registry_type_hash: hex32(&v["registry_type_hash"], "registry_type_hash")?,
         config_type_args: hex32(&v["config_cell"]["type_args"], "config_cell.type_args")?,
         config_type_hash: H256::from_slice(&hex32(
@@ -273,7 +305,31 @@ fn parse_deployments(text: &str, source: &str) -> Result<Deployments, String> {
             "config_cell.type_hash",
         )?)
         .map_err(|_| format!("{f}: bad config_cell.type_hash"))?,
-    })
+    };
+    // A v3 deployment is checked for consistency: the hashes follow from the scripts and the config id.
+    if d.config_type.is_some() {
+        if script_hash(&d.config_type_script()) != d.config_type_hash {
+            return Err(format!(
+                "{f}: config_cell.type_hash is not the hash of csr-config-type with config_cell.type_args"
+            ));
+        }
+        let registry = d.registry.script(&d.registry_args());
+        if script_hash(&registry).as_bytes() != d.registry_type_hash.as_slice() {
+            return Err(format!(
+                "{f}: registry_type_hash is not the hash of the registry script with config_cell.type_args"
+            ));
+        }
+    }
+    Ok(d)
+}
+
+/// Type hash of the configured registry deployment (`registry_type_hash` of `CSR-ATTEST-v2`).
+pub fn registry_type_hash(cfg: &Config) -> Result<[u8; 32], String> {
+    let d = load_deployments(cfg)?;
+    d.registry_type_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| "bad registry_type_hash".to_string())
 }
 
 fn type_id_script(args: &[u8]) -> Script {
@@ -327,13 +383,96 @@ fn mol_bytes(b: &[u8]) -> Vec<u8> {
     v
 }
 
-/// A monitor attestation as written by `csr-dev attest` (and the monitor).
+/// Registry cell data v3 (molecule `RegistryV3`, `contracts/schemas/csr.mol`, decision D20 A).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegistryV3 {
+    pub peer_id: String,
+    pub service_pubkey: [u8; 33],
+    pub payout_lock_hash: [u8; 32],
+    pub network: u8,
+    /// Out point of the stake deposit: `tx_hash (32) ‖ index (u32 LE)`.
+    pub stake: [u8; 36],
+    pub expiry_ms: u64,
+    /// `r ‖ s ‖ recid` by the monitor over `CSR-ATTEST-v2`.
+    pub attestation_sig: [u8; 65],
+    /// Empty or `https://host:port` / `http://host:port` (at most 128 bytes).
+    pub endpoint: String,
+    pub prekeys: Vec<u8>,
+}
+
+/// Number of fields of the molecule `RegistryV3` table.
+const REGISTRY_V3_FIELDS: usize = 10;
+
+/// The fields of a molecule table with exactly `n` fields (total size and offsets checked).
+fn mol_fields(d: &[u8], n: usize) -> Option<Vec<&[u8]>> {
+    let u32_at = |o: usize| -> Option<usize> {
+        Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?) as usize)
+    };
+    if u32_at(0)? != d.len() || u32_at(4)? != 4 + 4 * n {
+        return None;
+    }
+    let mut offsets = (0..n)
+        .map(|i| u32_at(4 + 4 * i))
+        .collect::<Option<Vec<_>>>()?;
+    offsets.push(d.len());
+    offsets
+        .windows(2)
+        .map(|w| (w[0] <= w[1]).then(|| d.get(w[0]..w[1])).flatten())
+        .collect()
+}
+
+/// The content of a molecule `Bytes` (length prefix checked).
+fn mol_bytes_of(f: &[u8]) -> Option<&[u8]> {
+    let n = u32::from_le_bytes(f.get(..4)?.try_into().ok()?) as usize;
+    (f.len() == 4 + n).then(|| &f[4..])
+}
+
+impl RegistryV3 {
+    pub fn encode(&self) -> Vec<u8> {
+        mol_table(&[
+            vec![3],
+            mol_bytes(self.peer_id.as_bytes()),
+            self.service_pubkey.to_vec(),
+            self.payout_lock_hash.to_vec(),
+            vec![self.network],
+            self.stake.to_vec(),
+            self.expiry_ms.to_le_bytes().to_vec(),
+            self.attestation_sig.to_vec(),
+            mol_bytes(self.endpoint.as_bytes()),
+            mol_bytes(&self.prekeys),
+        ])
+    }
+
+    /// Refuses anything but a complete 10-field table with `version = 3` and the schema's field sizes.
+    pub fn decode(data: &[u8]) -> Option<RegistryV3> {
+        let f = mol_fields(data, REGISTRY_V3_FIELDS)?;
+        if f[0] != [3] || f[4].len() != 1 {
+            return None;
+        }
+        Some(RegistryV3 {
+            peer_id: String::from_utf8(mol_bytes_of(f[1])?.to_vec()).ok()?,
+            service_pubkey: f[2].try_into().ok()?,
+            payout_lock_hash: f[3].try_into().ok()?,
+            network: f[4][0],
+            stake: f[5].try_into().ok()?,
+            expiry_ms: u64::from_le_bytes(f[6].try_into().ok()?),
+            attestation_sig: f[7].try_into().ok()?,
+            endpoint: String::from_utf8(mol_bytes_of(f[8])?.to_vec()).ok()?,
+            prekeys: mol_bytes_of(f[9])?.to_vec(),
+        })
+    }
+}
+
+/// A monitor attestation (`CSR-ATTEST-v2`) as written by `csr-dev attest` (and the monitor).
+#[derive(Debug)]
 pub struct Attestation {
     peer_id: Vec<u8>,
     pubkey: Vec<u8>,
     network: u8,
     expiry_ms: u64,
-    signature: Vec<u8>,
+    stake: [u8; 36],
+    registry_type_hash: [u8; 32],
+    signature: [u8; 65],
 }
 
 fn network_id(name: &str) -> Option<u8> {
@@ -365,6 +504,13 @@ impl Attestation {
             .as_str()
             .and_then(network_id)
             .ok_or("attestation: network must be mainnet, testnet or devnet")?;
+        let stake = v["stake"]
+            .as_str()
+            .and_then(crate::attest::stake_bytes)
+            .ok_or(
+            "attestation: stake missing (0x<tx hash>:<index>); a v1 attestation cannot be used, \
+                 the registry needs CSR-ATTEST-v2",
+        )?;
         Ok(Attestation {
             peer_id,
             pubkey: hex_field("service_pubkey", 33)?,
@@ -372,46 +518,64 @@ impl Attestation {
             expiry_ms: v["expiry_ms"]
                 .as_u64()
                 .ok_or("attestation: expiry_ms missing")?,
-            signature: hex_field("signature", 65)?,
+            stake,
+            registry_type_hash: hex_field("registry_type_hash", 32)?
+                .try_into()
+                .expect("32 bytes"),
+            signature: hex_field("signature", 65)?.try_into().expect("65 bytes"),
         })
     }
 
-    fn molecule(&self) -> Vec<u8> {
-        mol_table(&[
-            mol_bytes(&self.peer_id),
-            self.pubkey.clone(),
-            vec![self.network],
-            self.expiry_ms.to_le_bytes().to_vec(),
-            self.signature.clone(),
-        ])
-    }
-
-    /// Molecule `Registry` v2 data (`contracts/schemas/csr.mol`), prekeys empty.
-    fn registry_data(&self, payout_lock_hash: &H256, stake: &OutPoint) -> Vec<u8> {
-        mol_table(&[
-            mol_bytes(&self.peer_id),
-            self.pubkey.clone(),
-            payout_lock_hash.as_bytes().to_vec(),
-            vec![self.network],
-            self.molecule(),
-            mol_bytes(&[]),
-            stake.as_slice().to_vec(),
-        ])
+    /// Registry v3 data of this attestation, paying to `payout_lock_hash`, prekeys empty.
+    fn registry_v3(&self, payout_lock_hash: &H256, endpoint: &str) -> Result<RegistryV3, String> {
+        Ok(RegistryV3 {
+            peer_id: String::from_utf8(self.peer_id.clone())
+                .map_err(|_| "attestation: peer_id is not UTF-8".to_string())?,
+            service_pubkey: self.pubkey.as_slice().try_into().expect("33 bytes"),
+            payout_lock_hash: payout_lock_hash.0,
+            network: self.network,
+            stake: self.stake,
+            expiry_ms: self.expiry_ms,
+            attestation_sig: self.signature,
+            endpoint: endpoint.to_string(),
+            prekeys: Vec::new(),
+        })
     }
 }
 
-/// Decoded fields of a molecule `Registry`.
+/// Decoded fields of a registry cell (v3, or v1/v2 of cells written before the v3 migration).
 struct RegistryData {
     peer_id: String,
     service_pubkey: Vec<u8>,
     payout_lock_hash: Vec<u8>,
     expiry_ms: u64,
-    /// `stake` of registry v2; `None` for a 6-field (v1) cell.
+    /// `stake`; `None` for a 6-field (v1) cell.
     stake: Option<OutPoint>,
+    /// 1, 2 or 3.
+    version: u8,
+    /// The public endpoint of a v3 cell (empty before v3).
+    endpoint: String,
 }
 
-/// Parses a molecule `Registry` (6 fields, or 7 with the `stake` out point of registry v2).
+/// Parses registry cell data: `RegistryV3`, or the molecule `Registry` of v1 (6 fields) or v2 (7 fields,
+/// with the `stake` out point).
 fn parse_registry_data(d: &[u8]) -> Option<RegistryData> {
+    if let Some(r) = RegistryV3::decode(d) {
+        return Some(RegistryData {
+            peer_id: r.peer_id,
+            service_pubkey: r.service_pubkey.to_vec(),
+            payout_lock_hash: r.payout_lock_hash.to_vec(),
+            expiry_ms: r.expiry_ms,
+            stake: Some(OutPoint::from_slice(&r.stake).ok()?),
+            version: 3,
+            endpoint: r.endpoint,
+        });
+    }
+    parse_registry_v2(d)
+}
+
+/// Parses a molecule `Registry` v1/v2 (6 fields, or 7 with the `stake` out point of registry v2).
+fn parse_registry_v2(d: &[u8]) -> Option<RegistryData> {
     let u32_at = |o: usize| -> Option<usize> {
         Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?) as usize)
     };
@@ -447,7 +611,9 @@ fn parse_registry_data(d: &[u8]) -> Option<RegistryData> {
         service_pubkey: field(1)?.to_vec(),
         payout_lock_hash: field(2)?.to_vec(),
         expiry_ms: u64::from_le_bytes(expiry.try_into().ok()?),
+        version: if last == 6 { 2 } else { 1 },
         stake,
+        endpoint: String::new(),
     })
 }
 
@@ -459,19 +625,24 @@ pub fn renewal_due(expiry_ms: u64, clock_ms: u64) -> bool {
     clock_ms.saturating_add(RENEW_BEFORE_MS) >= expiry_ms
 }
 
-/// The registry data with only the attestation replaced.
+/// The registry data (Registry v3) with only the attestation replaced: same node, key, payout, stake,
+/// endpoint and prekeys; a later expiry and the new signature.
 pub fn refresh_registry_data(existing: &[u8], attestation: &Value) -> Result<Vec<u8>, String> {
-    let old = parse_registry_data(existing)
-        .ok_or("the registry cell data is malformed")?;
-    let stake = old
-        .stake
-        .ok_or("the registry cell is a v1 cell without a stake; register again with `csr register create`")?;
+    let old = RegistryV3::decode(existing).ok_or(
+        "the registry cell is not a Registry v3 cell; register again with `csr register create`",
+    )?;
     let att = Attestation::parse(attestation)?;
     if att.peer_id != old.peer_id.as_bytes() {
         return Err("the attestation is for a different peer ID than the registration".into());
     }
     if att.pubkey != old.service_pubkey {
         return Err("the attestation is for a different service key than the registration".into());
+    }
+    if att.network != old.network {
+        return Err("the attestation is for a different network than the registration".into());
+    }
+    if att.stake != old.stake {
+        return Err("the attestation names a different stake than the registration".into());
     }
     if att.expiry_ms <= old.expiry_ms {
         return Err(format!(
@@ -481,7 +652,9 @@ pub fn refresh_registry_data(existing: &[u8], attestation: &Value) -> Result<Vec
     }
     let payout = H256::from_slice(&old.payout_lock_hash)
         .map_err(|_| "the registry cell has a malformed payout lock hash".to_string())?;
-    Ok(att.registry_data(&payout, &stake))
+    let mut new = att.registry_v3(&payout, &old.endpoint)?;
+    new.prekeys = old.prekeys;
+    Ok(new.encode())
 }
 
 /// Signs the sighash group made of inputs `0..group` (runner wallet cells) with the service key. Witness 0
@@ -552,8 +725,14 @@ pub struct Chain {
     job_type: Deployed,
     job_lock: Deployed,
     registry_type_hash: Vec<u8>,
-    config_type_args: Vec<u8>,
-    config_type_hash: H256,
+    /// Args of the registry type script (`config_id` since v3).
+    registry_args: Vec<u8>,
+    /// Type script of the monitor config cell (`csr-config-type` since v3).
+    config_type: Script,
+    /// The deployment is contracts v3 (`csr-config-type`, Registry v3, `CSR-ATTEST-v2`).
+    v3: bool,
+    /// `ranking.public_endpoint`, written into the registry cell.
+    endpoint: String,
     runner_lock: Script,
     service_key: Option<secp256k1::SecretKey>,
     service_pubkey: Vec<u8>,
@@ -605,6 +784,7 @@ impl Chain {
             registry: none(),
             job_type: none(),
             job_lock: none(),
+            config_type: None,
             registry_type_hash: vec![],
             config_type_args: vec![],
             config_type_hash: H256::default(),
@@ -633,13 +813,15 @@ impl Chain {
         Ok(Chain {
             rpc,
             network: cfg.network.clone(),
+            config_type: dep.config_type_script(),
+            registry_args: dep.registry_args(),
+            v3: dep.config_type.is_some(),
+            endpoint: cfg.ranking.public_endpoint.clone(),
             dual: dep.dual,
             registry: dep.registry,
             job_type: dep.job_type,
             job_lock: dep.job_lock,
             registry_type_hash: dep.registry_type_hash,
-            config_type_args: dep.config_type_args,
-            config_type_hash: dep.config_type_hash,
             runner_lock: sighash_lock(&blake2b_256(&pk)[..20]),
             service_key: None,
             service_pubkey: pk,
@@ -965,15 +1147,15 @@ impl Chain {
         Script::new_builder()
             .code_hash(self.registry.code_hash.pack())
             .hash_type(packed::Byte::new(self.registry.hash_type as u8))
-            .args(Bytes::copy_from_slice(self.config_type_hash.as_bytes()).pack())
+            .args(Bytes::copy_from_slice(&self.registry_args).pack())
             .build()
     }
 
-    /// The monitor config cell (found by its Type ID type script) and its `clock_ms`.
+    /// The monitor config cell (found by its type script, `csr-config-type` since v3) and its `clock_ms`.
     async fn config_cell(&self) -> Result<(Cell, u64), String> {
         let cells = self
             .get_cells(json!({
-                "script": json::Script::from(type_id_script(&self.config_type_args)),
+                "script": json::Script::from(self.config_type.clone()),
                 "script_type": "type",
             }))
             .await?;
@@ -1038,6 +1220,8 @@ impl Chain {
                     "attestation_expiry_ms": r.expiry_ms,
                     "payout_lock_hash": hx(&r.payout_lock_hash),
                     "stake": stake,
+                    "registry_version": r.version,
+                    "endpoint": r.endpoint,
                 })
             }
             None => json!({
@@ -1047,16 +1231,32 @@ impl Chain {
                 "attestation_expiry_ms": null,
                 "payout_lock_hash": null,
                 "stake": null,
+                "registry_version": null,
+                "endpoint": null,
             }),
         })
     }
 
-    /// The registry lock owned by the runner wallet: dual lock `runner_lock_hash ‖ runner_lock_hash`.
+    /// The registry lock owned by the runner wallet: dual lock with the 32-byte args `runner_lock_hash`
+    /// (owner = runner, D20 A). A v2 deployment's dual lock only knows `runner ‖ runner`.
     fn runner_owned_lock(&self) -> Script {
         let h = self.runner_lock_hash();
         let mut args = h.as_bytes().to_vec();
-        args.extend_from_slice(h.as_bytes());
+        if !self.v3 {
+            args.extend_from_slice(h.as_bytes());
+        }
         self.dual.script(&args)
+    }
+
+    /// The cell's lock is a dual lock owned by the runner wallet (32-byte args, or `runner ‖ runner`).
+    fn is_runner_owned(&self, lock: &Script) -> bool {
+        let h = self.runner_lock_hash();
+        let args = lock.args().raw_data();
+        let owned = args.as_ref() == h.as_bytes()
+            || (args.len() == 64 && args[..32] == *h.as_bytes() && args[32..] == *h.as_bytes());
+        owned
+            && lock.code_hash().as_slice() == self.dual.code_hash.as_bytes()
+            && lock.hash_type() == packed::Byte::new(self.dual.hash_type as u8)
     }
 
     /// The stake as a live, valid deposit: `(out point, lock args of its sighash owner)`.
@@ -1112,6 +1312,14 @@ impl Chain {
                 polled.report.state.as_str()
             ));
         }
+        if !self.v3 {
+            return Err(
+                "this network's CSR deployment is still contracts v2; the runner registers only with \
+                 the v3 contracts (Registry v3, CSR-ATTEST-v2). Wait for the v3 redeployment and \
+                 update the runner (docs/install.md, \"Testnet migration to contracts v3\")"
+                    .into(),
+            );
+        }
         let att = Attestation::parse(attestation)?;
         if att.pubkey != self.service_pubkey {
             return Err("the attestation is for a different service key".into());
@@ -1122,11 +1330,50 @@ impl Chain {
                 self.network
             ));
         }
+        if att.registry_type_hash != self.registry_type_hash.as_slice() {
+            return Err(format!(
+                "the attestation is for another registry deployment (registry_type_hash {}, this \
+                 runner uses {})",
+                hx(att.registry_type_hash),
+                hx(&self.registry_type_hash)
+            ));
+        }
         let (config, clock) = self.config_cell().await?;
         if att.expiry_ms <= clock {
             return Err("the attestation has expired".into());
         }
+        if att.expiry_ms - clock > MAX_ATTESTATION_LIFETIME_MS {
+            return Err(
+                "the attestation lives more than 8 days beyond the monitor clock; the registry refuses it"
+                    .into(),
+            );
+        }
+        let msg = crate::attest::attestation_message_v2(
+            &att.peer_id,
+            &att.pubkey,
+            att.network,
+            att.expiry_ms,
+            &att.stake,
+            &att.registry_type_hash,
+        );
+        if crate::attest::recover(&msg, &att.signature)
+            .as_ref()
+            .map(|k| &k[..])
+            != Some(&config.data[..33])
+        {
+            return Err(
+                "the attestation is not signed by the monitor key of the config cell (CSR-ATTEST-v2)"
+                    .into(),
+            );
+        }
         let (stake_point, owner) = self.checked_stake(stake).await?;
+        if att.stake != stake_point.as_slice() {
+            return Err(format!(
+                "the attestation is for stake {}, this registration stakes {}",
+                out_point_str(&OutPoint::from_slice(&att.stake).expect("36 bytes")),
+                out_point_str(&stake_point)
+            ));
+        }
         // The consent: the text of this registration (the attestation's peer id), signed by the stake owner.
         let sig = crate::consent::parse_signature_hex(consent)
             .map_err(|e| format!("bad consent: {e}"))?;
@@ -1151,10 +1398,13 @@ impl Chain {
         let existing = self
             .registry_cell()
             .await?
-            .filter(|(c, _)| c.lock == lock)
+            .filter(|(c, _)| self.is_runner_owned(&c.lock))
             .map(|(c, _)| c);
         let type_ = self.registry_type();
-        let data = Bytes::from(att.registry_data(&self.runner_lock_hash(), &stake_point));
+        let data = Bytes::from(
+            att.registry_v3(&self.runner_lock_hash(), &self.endpoint)?
+                .encode(),
+        );
         let cap = occupied(&lock, Some(&type_), data.len());
         let registry = Out {
             lock,
@@ -1218,15 +1468,24 @@ impl Chain {
             .registry_cell()
             .await?
             .ok_or("this node is not registered")?;
-        let lock = self.runner_owned_lock();
-        if cell.lock != lock {
+        if !self.is_runner_owned(&cell.lock) {
             return Err(
                 "the registry cell is not owned by the runner wallet; only the owner's wallet can \
                  refresh it"
                     .into(),
             );
         }
+        // Keep the cell's own lock (32- or 64-byte dual-lock args).
+        let lock = cell.lock.clone();
         let att = Attestation::parse(attestation)?;
+        if att.registry_type_hash != self.registry_type_hash.as_slice() {
+            return Err(format!(
+                "the attestation is for another registry deployment (registry_type_hash {}, this \
+                 deployment {})",
+                hx(att.registry_type_hash),
+                hx(&self.registry_type_hash)
+            ));
+        }
         if Some(att.network) != network_id(&self.network) {
             return Err(format!(
                 "the attestation is for another network, this node is on {}",
@@ -1264,12 +1523,11 @@ impl Chain {
 
     /// Destroys the runner-owned registry cell; its capacity returns to the runner wallet.
     pub async fn register_remove(&self) -> Result<Value, String> {
-        let lock = self.runner_owned_lock();
         let (cell, _) = self
             .registry_cell()
             .await?
             .ok_or("this node is not registered")?;
-        if cell.lock != lock {
+        if !self.is_runner_owned(&cell.lock) {
             return Err(
                 "the registry cell is not owned by the runner wallet (an A7 registration); only its \
                  owner's wallet can remove it"
@@ -1449,8 +1707,9 @@ impl Chain {
 
     /// Builds and signs the run transaction of `job` on top of `ctx` (see `job-cell-standard.md`
     /// §5, `registry.md` §9): inputs `[runner wallet cell, job, skeleton inputs…]`, outputs `[runner
-    /// wallet cell + tip, recreated job | refund, skeleton outputs…]`. The fee comes from the job, so
-    /// the wallet grows by exactly the tip.
+    /// wallet cell + tip, recreated job | refund, skeleton outputs…]`. The recreated job or the refund
+    /// sits at the **same index** as the job input (`JOB_INDEX`, F-CON-003); the skeleton's inputs and
+    /// outputs follow it. The fee comes from the job, so the wallet grows by exactly the tip.
     pub fn build_run(&self, ctx: &RunContext, job: &RunJob) -> Result<BuiltRun, String> {
         let key = self
             .service_key
@@ -1497,6 +1756,7 @@ impl Chain {
             CellInput::new(ctx.runner.out_point.clone(), 0),
             CellInput::new(job_op, job.since),
         ];
+        debug_assert_eq!(inputs.len(), JOB_INDEX + 1);
         let mut deps = ctx.deps.clone();
         let mut header_deps = Vec::new();
         let mut witnesses = vec![
@@ -1539,6 +1799,8 @@ impl Chain {
             } else {
                 Bytes::from(data.clone())
             };
+            // Output JOB_INDEX (after the wallet output) is the job's: the job lock wants the recreated
+            // job or the refund at the index of the job input.
             let mut b = TransactionBuilder::default()
                 .cell_deps(deps.clone())
                 .header_deps(header_deps.clone())
@@ -1721,6 +1983,10 @@ impl Chain {
     }
 }
 
+/// Index of the job input in a run transaction, and of the recreated job or refund output (the job lock's
+/// same-index rule, F-CON-003): the runner wallet cell is input and output 0.
+pub const JOB_INDEX: usize = 1;
+
 /// Runner wallet cell and cell deps of run transactions; advanced after each submitted run so that
 /// runs of one batch chain on each other's outputs.
 #[derive(Clone)]
@@ -1845,27 +2111,76 @@ mod tests {
         assert!(ckb_to_shannons("").is_err());
     }
 
-    #[test]
-    fn registry_data_roundtrip() {
-        let att = Attestation::parse(&json!({
+    fn v2_attestation_json() -> Value {
+        json!({
             "peer_id": "QmPeer", "service_pubkey": format!("0x02{}", "11".repeat(32)),
             "network": "devnet", "expiry_ms": 12345, "signature": format!("0x{}", "22".repeat(65)),
-        }))
-        .unwrap();
-        let stake = out_point_from(&format!("0x{}", "5a".repeat(32)), 3).unwrap();
-        let data = att.registry_data(&H256::from_slice(&[7u8; 32]).unwrap(), &stake);
+            "stake": format!("0x{}:3", "5a".repeat(32)),
+            "registry_type_hash": format!("0x{}", "4e".repeat(32)),
+        })
+    }
+
+    #[test]
+    fn registry_data_roundtrip() {
+        let att = Attestation::parse(&v2_attestation_json()).unwrap();
+        let reg = att
+            .registry_v3(
+                &H256::from_slice(&[7u8; 32]).unwrap(),
+                "https://h.example:8131",
+            )
+            .unwrap();
+        let data = reg.encode();
+        assert_eq!(RegistryV3::decode(&data).unwrap(), reg);
         let r = parse_registry_data(&data).unwrap();
         assert_eq!(r.peer_id, "QmPeer");
         assert_eq!(r.service_pubkey.len(), 33);
         assert_eq!(r.payout_lock_hash, vec![7u8; 32]);
         assert_eq!(r.expiry_ms, 12345);
+        assert_eq!(r.version, 3);
+        assert_eq!(r.endpoint, "https://h.example:8131");
+        let stake = out_point_from(&format!("0x{}", "5a".repeat(32)), 3).unwrap();
         assert_eq!(r.stake.unwrap(), stake);
     }
 
     #[test]
+    fn registry_v3_decode_refusals() {
+        let att = Attestation::parse(&v2_attestation_json()).unwrap();
+        let data = att
+            .registry_v3(&H256::from_slice(&[7u8; 32]).unwrap(), "")
+            .unwrap()
+            .encode();
+        // trailing byte, wrong total size, a field count other than 10, a bad Bytes length
+        let mut longer = data.clone();
+        longer.push(0);
+        assert!(RegistryV3::decode(&longer).is_none());
+        let mut total = data.clone();
+        total[0] ^= 1;
+        assert!(RegistryV3::decode(&total).is_none());
+        let mut fields11 = data.clone();
+        fields11[4..8].copy_from_slice(&48u32.to_le_bytes());
+        assert!(RegistryV3::decode(&fields11).is_none());
+        let mut peer_len = data.clone();
+        peer_len[45] ^= 1;
+        assert!(RegistryV3::decode(&peer_len).is_none());
+        assert!(RegistryV3::decode(&[]).is_none());
+    }
+
+    #[test]
+    fn attestation_needs_stake_and_registry() {
+        for k in ["stake", "registry_type_hash"] {
+            let mut v = v2_attestation_json();
+            v.as_object_mut().unwrap().remove(k);
+            assert!(Attestation::parse(&v).unwrap_err().contains(k), "{k}");
+        }
+    }
+
+    #[test]
     fn registry_v2_vector() {
+        // Cells written before the v3 migration stay readable.
         let v = "7501000020000000540000007500000095000000960000004d0100005101000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27777777777777777777777777777777777777777777777777777777777777777701b7000000180000004c0000006d0000006e0000007600000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f270100505c18a301000004d5db9878eceb46d700d0c55677777b3b1d2a401773b24dae15789c071ef7d36794160555e176e0b1ca6b997892e7c9ce7320b2a2016e3102c46a495421ed5f01000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a03000000";
-        let r = parse_registry_data(&hex::decode(v).unwrap()).unwrap();
+        let data = hex::decode(v).unwrap();
+        assert!(RegistryV3::decode(&data).is_none());
+        let r = parse_registry_data(&data).unwrap();
         assert_eq!(
             r.peer_id,
             "QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB"
@@ -1873,18 +2188,157 @@ mod tests {
         assert_eq!(r.service_pubkey[0], 2);
         assert_eq!(r.payout_lock_hash, vec![0x77u8; 32]);
         assert_eq!(r.expiry_ms, 1_800_000_000_000);
+        assert_eq!(r.version, 2);
         let stake = r.stake.unwrap();
         assert_eq!(out_point_str(&stake), format!("0x{}:3", "5a".repeat(32)));
-        // The runner writes the same bytes.
-        let att = Attestation::parse(&json!({
-            "peer_id": "QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB",
-            "service_pubkey": "0x02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
-            "network": "testnet", "expiry_ms": 1_800_000_000_000u64,
-            "signature": "0x04d5db9878eceb46d700d0c55677777b3b1d2a401773b24dae15789c071ef7d36794160555e176e0b1ca6b997892e7c9ce7320b2a2016e3102c46a495421ed5f01",
-        }))
-        .unwrap();
-        let data = att.registry_data(&H256::from_slice(&[0x77u8; 32]).unwrap(), &stake);
-        assert_eq!(hex::encode(data), v);
+    }
+
+    /// A v3 deployments file: the testnet file plus `scripts.config_type`, hashes made consistent.
+    fn v3_deployments() -> Value {
+        let mut v: Value = serde_json::from_str(TESTNET_DEPLOYMENTS).unwrap();
+        let mut d3 = parse_deployments(&v.to_string(), "x").unwrap();
+        v["scripts"]["config_type"] = json!({
+            "code_hash": format!("0x{}", "c1".repeat(32)), "hash_type": "data2",
+            "tx_hash": format!("0x{}", "c2".repeat(32)), "index": 0,
+        });
+        d3.config_type = Some(load_deployed(&v, "config_type", "x").unwrap());
+        v["config_cell"]["type_hash"] = json!(hx(script_hash(&d3.config_type_script()).as_bytes()));
+        let reg = d3.registry.script(&d3.config_type_args);
+        v["registry_type_hash"] = json!(hx(script_hash(&reg).as_bytes()));
+        v
+    }
+
+    #[test]
+    fn v3_deployments_use_csr_config_type() {
+        let v = v3_deployments();
+        let d = parse_deployments(&v.to_string(), "x").unwrap();
+        let ct = d.config_type_script();
+        assert_eq!(ct.code_hash().as_slice(), [0xc1; 32]);
+        assert_eq!(
+            ct.hash_type(),
+            packed::Byte::new(ScriptHashType::Data2 as u8)
+        );
+        assert_eq!(d.registry_args(), d.config_type_args);
+        // the testnet file (contracts v2) still parses, with the Type ID config cell
+        let v2 = parse_deployments(TESTNET_DEPLOYMENTS, "t").unwrap();
+        assert!(v2.config_type.is_none());
+        assert_eq!(v2.registry_args(), v2.config_type_hash.as_bytes());
+        // inconsistent hashes are refused
+        let mut bad = v.clone();
+        bad["registry_type_hash"] = json!(format!("0x{}", "00".repeat(32)));
+        assert!(parse_deployments(&bad.to_string(), "x")
+            .err()
+            .unwrap()
+            .contains("registry_type_hash"));
+        let mut bad = v;
+        bad["config_cell"]["type_hash"] = json!(format!("0x{}", "00".repeat(32)));
+        assert!(parse_deployments(&bad.to_string(), "x")
+            .err()
+            .unwrap()
+            .contains("type_hash"));
+    }
+
+    fn test_chain() -> Chain {
+        let d = parse_deployments(&v3_deployments().to_string(), "x").unwrap();
+        let pk = vec![2u8; 33];
+        Chain {
+            rpc: RpcClient::new("http://127.0.0.1:1"),
+            network: "devnet".into(),
+            config_type: d.config_type_script(),
+            registry_args: d.registry_args(),
+            v3: true,
+            endpoint: String::new(),
+            dual: d.dual,
+            registry: d.registry,
+            job_type: d.job_type,
+            job_lock: d.job_lock,
+            registry_type_hash: d.registry_type_hash,
+            runner_lock: sighash_lock(&blake2b_256(&pk)[..20]),
+            service_key: Some(secp256k1::SecretKey::from_slice(&[3u8; 32]).unwrap()),
+            service_pubkey: pk,
+        }
+    }
+
+    #[test]
+    fn runner_owned_lock_has_32_byte_args() {
+        let c = test_chain();
+        let lock = c.runner_owned_lock();
+        assert_eq!(
+            lock.args().raw_data().as_ref(),
+            c.runner_lock_hash().as_bytes()
+        );
+        assert!(c.is_runner_owned(&lock));
+        let mut long = c.runner_lock_hash().as_bytes().to_vec();
+        long.extend_from_slice(c.runner_lock_hash().as_bytes());
+        assert!(c.is_runner_owned(&c.dual.script(&long)));
+        assert!(!c.is_runner_owned(&c.dual.script(&[1u8; 32])));
+        // 125 CKB less than v2 (373-byte data, 64-byte args) for the vector entry
+        let reg = c.registry_type();
+        let v2 = occupied(&c.dual.script(&long), Some(&reg), 373);
+        assert_eq!(v2 - occupied(&lock, Some(&reg), 280), 125 * CKB);
+    }
+
+    #[test]
+    fn run_output_sits_at_the_job_input_index() {
+        let c = test_chain();
+        let runner = Cell {
+            out_point: out_point_from(&format!("0x{}", "01".repeat(32)), 0).unwrap(),
+            capacity: 100 * CKB,
+            lock: c.runner_lock.clone(),
+            data: vec![],
+        };
+        let ctx = RunContext {
+            runner,
+            deps: vec![],
+        };
+        let sk_in = OutPoint::new_builder()
+            .tx_hash(packed::Byte32::from_slice(&[9u8; 32]).unwrap())
+            .build();
+        let sk_lock = sighash_lock(&[8u8; 20]);
+        let skeleton = TransactionBuilder::default()
+            .input(CellInput::new(sk_in.clone(), 0))
+            .output(
+                CellOutput::new_builder()
+                    .capacity(Pack::<packed::Uint64>::pack(&(70 * CKB)))
+                    .lock(sk_lock.clone())
+                    .build(),
+            )
+            .output_data(Bytes::new().pack())
+            .build()
+            .data();
+        let refund = sighash_lock(&[7u8; 20]);
+        let job_op = format!("0x{}:2", "02".repeat(32));
+        for (runs, recreated) in [(1u32, false), (3, true)] {
+            let job = RunJob {
+                outpoint: job_op.clone(),
+                service_code_hash: vec![5u8; 32],
+                capacity: 500 * CKB,
+                data: vec![0u8; 16],
+                since: 0,
+                tip_shannons: CKB,
+                max_fee_shannons: CKB,
+                remaining_runs: runs,
+                refund_lock: Some(refund.clone()),
+                skeleton: Some(skeleton.clone()),
+                skeleton_input_capacity: 80 * CKB,
+            };
+            let built = c.build_run(&ctx, &job).unwrap();
+            let tx = built.tx;
+            let input = tx.inputs().get(JOB_INDEX).unwrap();
+            assert_eq!(out_point_str(&input.previous_output()), job_op);
+            let out = tx.outputs().get(JOB_INDEX).unwrap();
+            if recreated {
+                assert_eq!(out.lock(), c.job_lock_script());
+                assert!(out.type_().to_opt().is_some());
+            } else {
+                assert_eq!(out.lock(), refund);
+            }
+            // the runner wallet first, the skeleton after the job
+            assert_eq!(tx.outputs().get(0).unwrap().lock(), c.runner_lock);
+            assert_eq!(tx.inputs().get(2).unwrap().previous_output(), sk_in);
+            assert_eq!(tx.outputs().get(2).unwrap().lock(), sk_lock);
+            assert_eq!(tx.outputs().len(), 3);
+        }
     }
 
     #[test]
@@ -2004,3 +2458,6 @@ pub fn attestation_usable(expiry_ms: u64, clock_ms: u64) -> Result<(), String> {
 #[cfg(test)]
 #[path = "../../acceptance/aiworker-csr-attestation-renewal/renewal_tests.rs"]
 mod aiworker_renewal_tests;
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-contracts-v3/registry_v3_tests.rs"]
+mod aiworker_registry_v3_tests;

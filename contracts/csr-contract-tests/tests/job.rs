@@ -6,6 +6,22 @@ use ckb_testtool::ckb_types::packed::{CellOutput, OutPoint, Script};
 use ckb_testtool::ckb_types::prelude::*;
 use csr_contract_tests::*;
 
+/// A molecule table of the given (already encoded) fields.
+fn mol_table(fields: &[&[u8]]) -> Vec<u8> {
+    let header = 4 * (fields.len() + 1);
+    let total = header + fields.iter().map(|f| f.len()).sum::<usize>();
+    let mut out = (total as u32).to_le_bytes().to_vec();
+    let mut off = header;
+    for f in fields {
+        out.extend_from_slice(&(off as u32).to_le_bytes());
+        off += f.len();
+    }
+    for f in fields {
+        out.extend_from_slice(f);
+    }
+    out
+}
+
 const CLOCK_MS: u64 = 1_760_000_000_000;
 const EXPIRY_MS: u64 = CLOCK_MS + 7 * 24 * 3600 * 1000;
 const TIP: u64 = 2 * CKB;
@@ -35,6 +51,9 @@ struct S {
     service: Key,
     /// The job's creator; its system lock is `refund_lock_hash`.
     user: Key,
+    monitor: Key,
+    /// Fields of the registry cell.
+    fields: RegistryFields,
     /// Live registry cell (cell dep of every run).
     registry: OutPoint,
     /// Monitor config cell (cell dep of every run; `clock_ms = CLOCK_MS`).
@@ -53,8 +72,8 @@ fn setup() -> S {
     let service = env.new_key();
     let monitor = env.new_key();
     let user = env.new_key();
-    let (config, config_hash) = env.config_cell(&monitor.pubkey, CLOCK_MS, monitor.lock.clone());
-    let reg_type = env.registry_type_script(&config_hash);
+    let (config, config_id) = env.config_cell(&monitor.pubkey, CLOCK_MS, monitor.lock.clone());
+    let reg_type = env.registry_type_script(&config_id);
     let dual = env.dual_lock_script(&owner.lock_hash(), &service.lock_hash());
     let payout = env.always_success_script(b"payout of the owner");
     let stake = env.stake(owner.lock.clone());
@@ -63,15 +82,17 @@ fn setup() -> S {
         service_pubkey: service.pubkey,
         payout_lock_hash: payout.calc_script_hash().unpack(),
         network: 2,
-        prekeys: Vec::new(),
         stake,
+        endpoint: Vec::new(),
+        prekeys: Vec::new(),
+        registry_type_hash: reg_type.calc_script_hash().unpack(),
     };
     let data = fields.signed_data(&monitor, EXPIRY_MS);
     let registry = env.min_cell(10 * CKB, dual, Some(reg_type.clone()), data);
     let reg_hash: [u8; 32] = reg_type.calc_script_hash().unpack();
     let job_lock = env.job_lock_script(&reg_hash);
     let job_type = env.job_type_script(&SERVICE_CODE_HASH);
-    S { env, service, user, registry, config, owner, reg_type, payout, job_lock, job_type }
+    S { env, service, user, monitor, fields, registry, config, owner, reg_type, payout, job_lock, job_type }
 }
 
 impl S {
@@ -122,18 +143,16 @@ impl S {
     }
 
     /// Run transaction of the registered runner: inputs `[job (since), payout cell, runner key cell]`, outputs
-    /// `[payout cell + tip_paid, runner key cell + key_gain] ++ outs`, cell deps: the registry cell and the config
-    /// cell.
+    /// `outs ++ [payout cell + tip_paid, runner key cell + key_gain]` (the refund / recreated job of `outs` first,
+    /// at the job input's index 0), cell deps: the registry cell and the config cell.
     fn run_tx(&mut self, job: &OutPoint, since: u64, tip_paid: u64, key_gain: u64, outs: Vec<(CellOutput, Bytes)>) -> TransactionView {
         let payout = self.payout.clone();
         let key_lock = self.service.lock.clone();
         let f = self.env.cell(PAYOUT, payout.clone(), None, Bytes::new());
         let k = self.env.cell(KEY_CELL, key_lock.clone(), None, Bytes::new());
-        let mut outputs = vec![
-            (output(PAYOUT + tip_paid, payout, None), Bytes::new()),
-            (output(KEY_CELL + key_gain, key_lock, None), Bytes::new()),
-        ];
-        outputs.extend(outs);
+        let mut outputs = outs;
+        outputs.push((output(PAYOUT + tip_paid, payout, None), Bytes::new()));
+        outputs.push((output(KEY_CELL + key_gain, key_lock, None), Bytes::new()));
         tx_with(vec![self.env.input(job, since), self.env.input(&f, 0), self.env.input(&k, 0)], outputs)
             .as_advanced_builder()
             .cell_dep(cell_dep(&self.registry))
@@ -322,8 +341,8 @@ fn job_lock_cycles_of_run() {
     let tx = tx_with(
         vec![s.env.input(&op, 0), s.env.input(&w, 0)],
         vec![
-            (output(200 * CKB, s.payout.clone(), None), Bytes::new()),
             s.refund_output(cap - 200 * CKB - MAX_FEE),
+            (output(200 * CKB, s.payout.clone(), None), Bytes::new()),
             (output(WALLET, anyone, None), Bytes::new()),
         ],
     )
@@ -386,20 +405,15 @@ fn job_run_with_fake_registry_dep_rejected() {
 }
 
 #[test]
-fn job_run_with_v1_registry_dep_rejected() {
-    // A registry cell dep with v1 data (6 fields, no stake): its payout lock hash is not read.
+fn job_run_with_v2_registry_dep_rejected() {
+    // A registry cell dep with v2 data (7 fields, nested attestation): its payout lock hash is not read.
     let mut s = setup();
-    let (reg_cell, reg_data) = s.env.ctx.get_cell(&s.registry).unwrap();
-    let u = |at: usize| u32::from_le_bytes(reg_data[at..at + 4].try_into().unwrap()) as usize;
-    // drop the last field (stake): 6 offsets, total shrinks by 4 (header) + 36 (stake)
-    let stake_at = u(4 + 4 * 6);
-    let mut v1 = Vec::new();
-    v1.extend_from_slice(&((stake_at - 4) as u32).to_le_bytes());
-    for i in 0..6 {
-        v1.extend_from_slice(&((u(4 + 4 * i) - 4) as u32).to_le_bytes());
-    }
-    v1.extend_from_slice(&reg_data[u(4)..stake_at]);
-    let old = s.env.ctx.create_cell(reg_cell, v1.into());
+    let (reg_cell, _) = s.env.ctx.get_cell(&s.registry).unwrap();
+    let f = &s.fields;
+    let peer_id = mol_bytes(&f.peer_id);
+    let att = mol_table(&[peer_id.as_slice(), &f.service_pubkey, &[f.network], &EXPIRY_MS.to_le_bytes(), &[0u8; 65]]);
+    let v2 = mol_table(&[peer_id.as_slice(), &f.service_pubkey, &f.payout_lock_hash, &[f.network], &att, mol_bytes(&[]).as_slice(), f.stake.as_slice()]);
+    let old = s.env.ctx.create_cell(reg_cell, v2.into());
     let j = s.job(Trigger::OnDemand, 1);
     let (op, cap) = s.live_job(&j);
     let refund = s.refund_output(cap - TIP - MAX_FEE);
@@ -488,10 +502,10 @@ fn job_run_with_forged_registry_rejected() {
 
 #[test]
 fn job_run_with_malformed_registry_lock_rejected() {
-    // A registry dep whose lock args are not 64 bytes.
+    // A registry dep whose lock args are neither 32 nor 64 bytes.
     let mut s = setup();
     let (cell, data) = s.env.ctx.get_cell(&s.registry).unwrap();
-    let short = s.env.always_success_script(&s.service.lock_hash());
+    let short = s.env.always_success_script(&[s.service.lock_hash().as_slice(), &[0]].concat());
     let bad = s.env.ctx.create_cell(cell.as_builder().lock(short).build(), data);
     let j = s.job(Trigger::OnDemand, 1);
     let (op, cap) = s.live_job(&j);
@@ -751,7 +765,7 @@ impl S {
     fn runner_wallet_registry(&mut self) -> OutPoint {
         let (cell, data) = self.env.ctx.get_cell(&self.registry).unwrap();
         let runner = self.service.lock_hash();
-        let data = csr_schemas::Registry::new_unchecked(data)
+        let data = csr_schemas::RegistryV3::new_unchecked(data)
             .as_builder()
             .payout_lock_hash(csr_schemas::Byte32::new_unchecked(Bytes::copy_from_slice(&runner)))
             .build()
@@ -761,7 +775,7 @@ impl S {
     }
 
     /// Settlement into the runner wallet: inputs `[job, runner wallet cell]`, outputs
-    /// `[runner wallet cell + wallet_gain, refund of `refund`]`.
+    /// `[refund of `refund`, runner wallet cell + wallet_gain]`.
     fn run_into_wallet(&mut self, wallet_gain: u64, refund: u64) -> Result<u64, CkbError> {
         let registry = self.runner_wallet_registry();
         let j = self.job(Trigger::OnDemand, 1);
@@ -769,7 +783,7 @@ impl S {
         let w = self.env.runner_wallet_cell(&self.service, WALLET);
         let tx = tx_with(
             vec![self.env.input(&op, 0), self.env.input(&w, 0)],
-            vec![(output(WALLET + wallet_gain, self.service.lock.clone(), None), Bytes::new()), self.refund_output(refund)],
+            vec![self.refund_output(refund), (output(WALLET + wallet_gain, self.service.lock.clone(), None), Bytes::new())],
         )
         .as_advanced_builder()
         .cell_dep(cell_dep(&registry))
@@ -797,4 +811,252 @@ fn job_tip_to_runner_wallet_paying_fee_rejected() {
     let j = s.job(Trigger::OnDemand, 1);
     let cap = s.required(&j);
     assert_lock_error(s.run_into_wallet(TIP - FEE, cap - TIP), 11);
+}
+
+// --- contracts v3: attestation cap, refund index (F-CON-003), argument and data checks (F-CON-008) -------
+
+#[test]
+fn job_lock_attestation_lifetime_over_cap_rejected() {
+    // A registry dep (placed directly, as no registry would accept it) whose valid monitor signature expires
+    // more than 8 days after the clock; exactly 8 days is accepted.
+    let mut s = setup();
+    for (lifetime, want) in [(8 * 86_400_000u64, None), (8 * 86_400_000 + 1, Some(18))] {
+        let (cell, _) = s.env.ctx.get_cell(&s.registry).unwrap();
+        let data = s.fields.signed_data(&s.monitor, CLOCK_MS + lifetime);
+        let reg = s.env.ctx.create_cell(cell, data);
+        let j = s.job(Trigger::OnDemand, 1);
+        let (op, cap) = s.live_job(&j);
+        let refund = s.refund_output(cap - TIP - MAX_FEE);
+        let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+        let tx = S::replace_dep(tx, &s.registry, Some(&reg));
+        let res = s.env.verify_signed(tx, &[&s.service]);
+        match want {
+            None => {
+                res.expect("8 days");
+            }
+            Some(code) => assert_lock_error(res, code),
+        }
+    }
+}
+
+#[test]
+fn job_lock_registry_signature_checked() {
+    // A registry dep (placed directly) whose attestation is signed by another key, or for another registry type.
+    let mut s = setup();
+    let impostor = s.env.new_key();
+    let mut other_type = s.fields.clone();
+    other_type.registry_type_hash = [0x4e; 32];
+    for data in [s.fields.signed_data(&impostor, EXPIRY_MS), other_type.signed_data(&s.monitor, EXPIRY_MS)] {
+        let (cell, _) = s.env.ctx.get_cell(&s.registry).unwrap();
+        let reg = s.env.ctx.create_cell(cell, data);
+        let j = s.job(Trigger::OnDemand, 1);
+        let (op, cap) = s.live_job(&j);
+        let refund = s.refund_output(cap - TIP - MAX_FEE);
+        let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+        let tx = S::replace_dep(tx, &s.registry, Some(&reg));
+        assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 10);
+    }
+}
+
+impl S {
+    /// Run with the job at input index 1: inputs `[payout cell, job (since), runner key cell]`, outputs
+    /// `[payout + tip] ++ outs ++ [runner key cell + key_gain]`.
+    fn run_at_index_1(&mut self, job: &OutPoint, since: u64, key_gain: u64, outs: Vec<(CellOutput, Bytes)>) -> Result<u64, CkbError> {
+        let payout = self.payout.clone();
+        let key_lock = self.service.lock.clone();
+        let f = self.env.cell(PAYOUT, payout.clone(), None, Bytes::new());
+        let k = self.env.cell(KEY_CELL, key_lock.clone(), None, Bytes::new());
+        let mut outputs = vec![(output(PAYOUT + TIP, payout, None), Bytes::new())];
+        outputs.extend(outs);
+        outputs.push((output(KEY_CELL + key_gain, key_lock, None), Bytes::new()));
+        let tx = tx_with(vec![self.env.input(&f, 0), self.env.input(job, since), self.env.input(&k, 0)], outputs)
+            .as_advanced_builder()
+            .cell_dep(cell_dep(&self.registry))
+            .cell_dep(cell_dep(&self.config))
+            .build();
+        let service = &self.service;
+        self.env.verify_signed(tx, &[service])
+    }
+}
+
+#[test]
+fn job_lock_refund_at_input_index_ok() {
+    let mut s = setup();
+    // job at input 0, refund at output 0 (run_tx)
+    s.run_single(Trigger::OnDemand, 0).expect("refund at index 0");
+    // job at input 1, refund at output 1
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    s.run_at_index_1(&op, 0, 0, vec![refund]).expect("refund at index 1");
+    // Every: the recreated job at the job input's index
+    let j = s.job(Trigger::Every(10), 3);
+    let (op, cap) = s.live_job(&j);
+    let next = s.job_output(cap - TIP - MAX_FEE, &j.next_run());
+    s.run_at_index_1(&op, since::rel_block(10), 0, vec![next]).expect("recreation at index 1");
+}
+
+#[test]
+fn job_lock_refund_at_other_index_rejected() {
+    let mut s = setup();
+    // job at input 0, refund at output 2 (after the payout and key cells)
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![]);
+    let tx = tx.as_advanced_builder().output(output(cap - TIP - MAX_FEE, s.user.lock.clone(), None)).output_data(Bytes::new().pack()).build();
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 19);
+    // the refund split: a dust part at the job's index, the rest elsewhere
+    let (op, cap) = s.live_job(&j);
+    let rest = cap - TIP - MAX_FEE - 61 * CKB;
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![s.refund_output(61 * CKB)]);
+    let tx = tx.as_advanced_builder().output(output(rest, s.user.lock.clone(), None)).output_data(Bytes::new().pack()).build();
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 19);
+    // Every: the recreated job at another index
+    let j = s.job(Trigger::Every(10), 3);
+    let (op, cap) = s.live_job(&j);
+    let next = s.job_output(cap - TIP - MAX_FEE, &j.next_run());
+    let tx = s.run_tx(&op, since::rel_block(10), TIP, 0, vec![]);
+    let tx = tx.as_advanced_builder().output(next.0).output_data(next.1.pack()).build();
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 19);
+}
+
+#[test]
+fn job_two_lock_versions_share_refund_rejected() {
+    // Two jobs of the same user, one under the job lock and one under a second, byte-different build of it
+    // (another code hash, so each sees one job input of its own code). One refund for both is rejected;
+    // a refund for each at its job's index is accepted.
+    let mut s = setup();
+    let variant = s.env.ctx.deploy_cell(load_job_lock_variant());
+    let reg_hash: [u8; 32] = s.reg_type.calc_script_hash().unpack();
+    let lock_b = s.env.script(&variant, Bytes::copy_from_slice(&reg_hash));
+    assert_ne!(lock_b.code_hash(), s.job_lock.code_hash());
+    let type_b = s.env.job_type_script(&[0x5f; 32]);
+    let j = s.job(Trigger::OnDemand, 1);
+    let rest = s.required(&j) - TIP - MAX_FEE;
+    for shared in [true, false] {
+        let (a, cap_a) = s.live_job(&j);
+        let cap_b = j.required_capacity(&lock_b, &type_b);
+        let b = s.env.cell(cap_b, lock_b.clone(), Some(type_b.clone()), j.data());
+        assert_eq!(cap_a - TIP - MAX_FEE, rest);
+        let payout = s.payout.clone();
+        let f = s.env.cell(PAYOUT, payout.clone(), None, Bytes::new());
+        let k = s.env.cell(KEY_CELL, s.service.lock.clone(), None, Bytes::new());
+        let mut outputs = Vec::new();
+        if shared {
+            // output 0 refunds both jobs; output 1 is the payout cell
+            outputs.push(s.refund_output(2 * rest));
+        } else {
+            outputs.push(s.refund_output(rest));
+            outputs.push(s.refund_output(cap_b - TIP - MAX_FEE));
+        }
+        outputs.push((output(PAYOUT + 2 * TIP, payout, None), Bytes::new()));
+        outputs.push((output(KEY_CELL - (cap_b - cap_a), s.service.lock.clone(), None), Bytes::new()));
+        let tx = tx_with(vec![s.env.input(&a, 0), s.env.input(&b, 0), s.env.input(&f, 0), s.env.input(&k, 0)], outputs)
+            .as_advanced_builder()
+            .cell_dep(cell_dep(&s.registry))
+            .cell_dep(cell_dep(&s.config))
+            .build();
+        let res = s.env.verify_signed(tx, &[&s.service]);
+        if shared {
+            assert_script_error(res, "Inputs[1].Lock", 19);
+        } else {
+            res.expect("one refund per job, each at its job's index");
+        }
+    }
+}
+
+#[test]
+fn job_lock_args_length_rejected() {
+    let mut s = setup();
+    for len in [31usize, 33] {
+        let op = s.env.job_lock.clone();
+        let lock = s.env.script(&op, Bytes::from(vec![1u8; len]));
+        let j = s.job(Trigger::OnDemand, 1);
+        let cap = j.required_capacity(&lock, &s.job_type);
+        let job = s.env.cell(cap, lock, Some(s.job_type.clone()), j.data());
+        let refund = s.refund_output(cap - TIP - MAX_FEE);
+        assert_lock_error(s.run(&job, 0, TIP, 0, vec![refund]), 5);
+    }
+}
+
+#[test]
+fn job_lock_bad_job_data_rejected() {
+    // A job-lock cell without the job type (so its data was never checked) and data that is no `Job`.
+    let mut s = setup();
+    let data = Bytes::from_static(b"not a job");
+    let cap = min_capacity(&s.job_lock, None, data.len()) + 10 * CKB;
+    let job = s.env.cell(cap, s.job_lock.clone(), None, data);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    assert_lock_error(s.run(&job, 0, TIP, 0, vec![refund]), 6);
+    // a truncated job
+    let j = s.job(Trigger::OnDemand, 1);
+    let d = j.data();
+    let job = s.env.cell(cap, s.job_lock.clone(), None, d.slice(0..d.len() - 1));
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    assert_lock_error(s.run(&job, 0, TIP, 0, vec![refund]), 6);
+}
+
+#[test]
+fn job_lock_short_config_data_rejected() {
+    let mut s = setup();
+    let (cell, data) = s.env.ctx.get_cell(&s.config).unwrap();
+    let short = s.env.ctx.create_cell(cell, data.slice(0..40));
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+    let tx = S::replace_dep(tx, &s.config, Some(&short));
+    assert_lock_error(s.env.verify_signed(tx, &[&s.service]), 16);
+}
+
+#[test]
+fn job_registry_dep_short_args_ok() {
+    // The registry dep is runner-owned with 32-byte dual-lock args (owner = runner).
+    let mut s = setup();
+    let (cell, data) = s.env.ctx.get_cell(&s.registry).unwrap();
+    let short = s.env.dual_lock_script_short(&s.service.lock_hash());
+    let reg = s.env.ctx.create_cell(cell.as_builder().lock(short).build(), data);
+    let j = s.job(Trigger::OnDemand, 1);
+    let (op, cap) = s.live_job(&j);
+    let refund = s.refund_output(cap - TIP - MAX_FEE);
+    let tx = s.run_tx(&op, 0, TIP, 0, vec![refund]);
+    let tx = S::replace_dep(tx, &s.registry, Some(&reg));
+    s.env.verify_signed(tx, &[&s.service]).expect("32-byte registry lock args");
+}
+
+#[test]
+fn job_type_args_length_rejected() {
+    let mut s = setup();
+    let op = s.env.job_type.clone();
+    let job_type = s.env.script(&op, Bytes::from(vec![0x5e; 31]));
+    let j = s.job(Trigger::OnDemand, 1);
+    let cap = j.required_capacity(&s.job_lock, &job_type);
+    let wallet = s.env.cell(WALLET, s.user.lock.clone(), None, Bytes::new());
+    let tx = tx_with(
+        vec![s.env.input(&wallet, 0)],
+        vec![
+            (output(cap, s.job_lock.clone(), Some(job_type)), j.data()),
+            (output(WALLET - cap - FEE, s.user.lock.clone(), None), Bytes::new()),
+        ],
+    );
+    assert_script_error(s.env.verify_signed(tx, &[&s.user]), "Outputs[0].Type", 5);
+}
+
+#[test]
+fn job_type_two_new_jobs_one_group_rejected() {
+    // F-CON-007: one job input or output per service group in a transaction; two new jobs of one service
+    // must be created in separate transactions.
+    let mut s = setup();
+    let j = s.job(Trigger::OnDemand, 1);
+    let cap = s.required(&j);
+    let wallet = s.env.cell(WALLET, s.user.lock.clone(), None, Bytes::new());
+    let tx = tx_with(
+        vec![s.env.input(&wallet, 0)],
+        vec![
+            s.job_output(cap, &j),
+            s.job_output(cap, &j),
+            (output(WALLET - 2 * cap - FEE, s.user.lock.clone(), None), Bytes::new()),
+        ],
+    );
+    assert_script_error(s.env.verify_signed(tx, &[&s.user]), "Outputs[0].Type", 9);
 }

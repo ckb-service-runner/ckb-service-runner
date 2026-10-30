@@ -1,10 +1,14 @@
-//! `csr-job-lock`, args = `registry_type_hash (32)`. See `spec/job-cell-standard.md`.
+//! `csr-job-lock`, args = `registry_type_hash (32)`; the registry cell dep holds `RegistryV3`.
+//! See `spec/job-cell-standard.md`.
 #![no_std]
 #![no_main]
 
 #[path = "../../csr-registry/src/mol.rs"]
 #[allow(dead_code)]
 mod mol;
+#[path = "../../csr-registry/src/attest.rs"]
+#[allow(dead_code)]
+mod attest;
 #[path = "../../csr-job-type/src/job.rs"]
 #[allow(dead_code)]
 mod job;
@@ -14,8 +18,11 @@ mod util;
 
 use ckb_std::ckb_constants::{CellField, InputField, Source};
 use ckb_std::syscalls;
+use attest::{AttestError, RegistryV3};
 use job::{Job, Trigger};
 use util::*;
+
+include!(concat!(env!("OUT_DIR"), "/code_hashes.rs"));
 
 ckb_std::entry!(program_entry);
 ckb_std::default_alloc!();
@@ -33,6 +40,10 @@ const ERR_NO_PATH: i8 = 14;
 const ERR_NOT_REGISTERED_RUNNER: i8 = 15;
 const ERR_CONFIG_DEP: i8 = 16;
 const ERR_ATTESTATION_EXPIRED: i8 = 17;
+/// `expiry_ms − clock_ms` of the registry's attestation is over 8 days (decision D24 A).
+const ERR_LIFETIME_CAP: i8 = 18;
+/// The refund (last run) or the recreated job cell (`Every`) is not at the job input's index (F-CON-003).
+const ERR_OUTPUT_INDEX: i8 = 19;
 
 /// `since` flags (top byte): bit 7 relative, bits 5–6 metric (0 block, 1 epoch, 2 timestamp).
 const SINCE_ABS_BLOCK: u64 = 0x00;
@@ -106,45 +117,31 @@ fn registry_dep(registry_type_hash: &[u8]) -> Result<Option<usize>, i8> {
     Ok(found)
 }
 
-/// `payout_lock_hash` (field 2) of `molecule(Registry)` (7 fields; a v1 table is rejected).
-fn payout_lock_hash(registry: &[u8]) -> Option<[u8; 32]> {
-    let [_, _, payout, _, _, _, _] = mol::table::<7>(registry)?;
-    Some(*mol::fixed::<32>(payout)?)
-}
-
-/// `attestation.expiry_ms` (field 4, sub-field 3) of `molecule(Registry)`.
-fn attestation_expiry(registry: &[u8]) -> Option<u64> {
-    let [_, _, _, _, attestation, _, _] = mol::table::<7>(registry)?;
-    let [_, _, _, expiry, _] = mol::table::<5>(attestation)?;
-    Some(u64::from_le_bytes(*mol::fixed::<8>(expiry)?))
-}
-
-/// Run path rule 3: an input with the registry cell's runner lock hash (its dual lock's `args[32..64]`),
-/// i.e. the registered node's runner key cell, proves that the registered node makes the transaction.
+/// Run path rule 3: an input with the registry cell's runner lock hash (its dual lock's runner hash: the last
+/// 32 bytes of args of 64 or 32 bytes), i.e. the registered node's runner key cell, proves that the registered
+/// node makes the transaction.
 fn check_registered_runner(dep: usize) -> Result<(), i8> {
     let lock = cell_lock(dep, Source::CellDep)?;
     let (_, _, args) = mol::script(&lock).ok_or(ERR_REGISTRY_DEP)?;
-    if args.len() != 64 {
-        return Err(ERR_REGISTRY_DEP);
-    }
-    if input_with_lock_hash(&args[32..64])? {
+    let (_, runner) = attest::dual_lock_hashes(args).ok_or(ERR_REGISTRY_DEP)?;
+    if input_with_lock_hash(runner)? {
         Ok(())
     } else {
         Err(ERR_NOT_REGISTERED_RUNNER)
     }
 }
 
-/// Run path rule 4: exactly one cell dep with the registry's `config_type_hash` (its type script args), and
-/// the registry's `attestation.expiry_ms > clock_ms` of that config cell. The signature is not re-verified.
-fn check_attestation_live(dep: usize, registry: &[u8]) -> Result<(), i8> {
+/// Run path rule 4: exactly one config cell dep (`csr-config-type` with the registry's type script args), and
+/// the registry's attestation is valid by it: signed by `monitor_pubkey` over `CSR-ATTEST-v2` with this
+/// registry deployment (`registry_type_hash`), `expiry_ms > clock_ms` and `expiry_ms − clock_ms ≤ 8 days`.
+fn check_attestation(dep: usize, registry: &RegistryV3, registry_type_hash: &[u8; 32]) -> Result<(), i8> {
     let reg_type = cell_type(dep, Source::CellDep)?.ok_or(ERR_REGISTRY_DEP)?;
-    let (_, _, config_type_hash) = mol::script(&reg_type).ok_or(ERR_REGISTRY_DEP)?;
-    if config_type_hash.len() != 32 {
-        return Err(ERR_REGISTRY_DEP);
-    }
+    let (_, _, config_id) = mol::script(&reg_type).ok_or(ERR_REGISTRY_DEP)?;
+    let config_id: &[u8; 32] = config_id.try_into().map_err(|_| ERR_REGISTRY_DEP)?;
+    let config_type_hash = attest::config_type_hash(&CONFIG_TYPE_CODE_HASH, config_id);
     let mut config = None;
     for_each_hash(Source::CellDep, CellField::TypeHash, |i, h| {
-        if h.map_or(false, |h| h[..] == *config_type_hash) {
+        if h.map_or(false, |h| *h == config_type_hash) {
             if config.is_some() {
                 return Err(ERR_CONFIG_DEP);
             }
@@ -154,13 +151,27 @@ fn check_attestation_live(dep: usize, registry: &[u8]) -> Result<(), i8> {
     })?;
     let config = cell_data(config.ok_or(ERR_CONFIG_DEP)?, Source::CellDep)?;
     // config data: monitor_pubkey (33) ‖ clock_ms (u64 LE) ‖ reserved
-    let clock_ms = u64::from_le_bytes(config.get(33..41).ok_or(ERR_CONFIG_DEP)?.try_into().unwrap());
-    let expiry_ms = attestation_expiry(registry).ok_or(ERR_REGISTRY_DEP)?;
-    if expiry_ms > clock_ms {
-        Ok(())
-    } else {
-        Err(ERR_ATTESTATION_EXPIRED)
-    }
+    let (monitor_pubkey, clock_ms) = attest::config_fields(&config).ok_or(ERR_CONFIG_DEP)?;
+    attest::check_attestation(registry, registry_type_hash, monitor_pubkey, clock_ms).map_err(|e| match e {
+        AttestError::Signature => ERR_REGISTRY_DEP,
+        AttestError::Expired => ERR_ATTESTATION_EXPIRED,
+        AttestError::LifetimeOverCap => ERR_LIFETIME_CAP,
+    })
+}
+
+/// Index of the job input in `Source::Input` (the only input with this script's lock hash).
+fn job_input_index() -> Result<usize, i8> {
+    let mut own = [0u8; 32];
+    syscalls::load_script_hash(&mut own, 0).map_err(sys)?;
+    let mut found = None;
+    for_each_hash(Source::Input, CellField::LockHash, |i, h| {
+        if h.map_or(false, |h| *h == own) {
+            found = Some(i);
+            return Ok(false);
+        }
+        Ok(true)
+    })?;
+    found.ok_or(ERR_JOB_INPUTS)
 }
 
 /// Σ outputs − Σ inputs (capacity) of cells with lock hash `h`, ≥ `need`.
@@ -170,8 +181,9 @@ fn net_inflow_at_least(h: &[u8], need: u128) -> Result<bool, i8> {
     Ok(out >= inp + need)
 }
 
-/// Run path rule 5, `remaining_runs > 1`: exactly one recreated job cell with runs − 1 and enough capacity.
-fn check_recreated(lock: &[u8], job: &Job, in_data: &[u8], min_cap: u64) -> Result<(), i8> {
+/// Run path rule 5, `remaining_runs > 1`: exactly one recreated job cell, at output index `at` (the job
+/// input's index), with runs − 1 and enough capacity.
+fn check_recreated(lock: &[u8], job: &Job, in_data: &[u8], min_cap: u64, at: usize) -> Result<(), i8> {
     let in_type = cell_type(0, Source::GroupInput)?;
     let mut found = None;
     for i in 0.. {
@@ -188,6 +200,9 @@ fn check_recreated(lock: &[u8], job: &Job, in_data: &[u8], min_cap: u64) -> Resu
         }
     }
     let i = found.ok_or(ERR_RECREATE)?;
+    if i != at {
+        return Err(ERR_OUTPUT_INDEX);
+    }
     let out_data = cell_data(i, Source::Output)?;
     let out = job::parse(&out_data).ok_or(ERR_RECREATE)?;
     if !job::is_next_run(in_data, job.remaining_runs, &out_data, out.remaining_runs) {
@@ -205,7 +220,7 @@ fn run() -> Result<(), i8> {
     if args.len() != 32 {
         return Err(ERR_ARGS_LEN);
     }
-    let registry_type_hash = args;
+    let registry_type_hash: &[u8; 32] = args.try_into().map_err(|_| ERR_ARGS_LEN)?;
 
     // One job input per transaction: no other input is locked by this code (any args, any data hash type).
     let mut job_inputs = 0;
@@ -222,6 +237,10 @@ fn run() -> Result<(), i8> {
     }
     if job_inputs != 1 {
         return Err(ERR_JOB_INPUTS);
+    }
+    // Never true; keeps the (test-only) build variant constant in the binary.
+    if core::hint::black_box(BUILD_VARIANT.as_bytes()).first() == Some(&0xff) {
+        return Err(ERR_ARGS_LEN);
     }
 
     let in_data = cell_data(0, Source::GroupInput)?;
@@ -243,26 +262,37 @@ fn run() -> Result<(), i8> {
     check_trigger(job.trigger, since)?;
 
     // 2. tip to the registered payout cell
-    let registry = cell_data(dep, Source::CellDep)?;
-    let payout = payout_lock_hash(&registry).ok_or(ERR_REGISTRY_DEP)?;
-    if !net_inflow_at_least(&payout, job.tip_shannons as u128)? {
+    let registry_data = cell_data(dep, Source::CellDep)?;
+    let registry = attest::parse_v3(&registry_data).ok_or(ERR_REGISTRY_DEP)?;
+    if !net_inflow_at_least(registry.payout_lock_hash, job.tip_shannons as u128)? {
         return Err(ERR_TIP);
     }
 
     // 3. made by the registered node (its runner key cell is an input)
     check_registered_runner(dep)?;
 
-    // 4. the registry's attestation has not expired by the monitor clock
-    check_attestation_live(dep, &registry)?;
+    // 4. the registry's attestation is valid by the monitor config (signature, expiry, 8-day cap)
+    check_attestation(dep, &registry, registry_type_hash)?;
 
     // 5. no siphoning: the job keeps (or refunds) everything but tip and fee
     let in_cap = capacity(0, Source::GroupInput).map_err(sys)?;
     let min_cap = in_cap.saturating_sub(job.tip_shannons).saturating_sub(job.max_fee_shannons);
+    //    at the job input's index, so that jobs of two job-lock versions cannot share one output (F-CON-003)
+    let at = job_input_index()?;
     if job.remaining_runs > 1 {
-        check_recreated(&script, &job, &in_data, min_cap)
-    } else if net_inflow_at_least(&job.refund_lock_hash, min_cap as u128)? {
-        Ok(())
-    } else {
-        Err(ERR_REFUND)
+        return check_recreated(&script, &job, &in_data, min_cap, at);
     }
+    if !net_inflow_at_least(&job.refund_lock_hash, min_cap as u128)? {
+        return Err(ERR_REFUND);
+    }
+    let mut lock_hash = [0u8; 32];
+    match syscalls::load_cell_by_field(&mut lock_hash, 0, at, Source::Output, CellField::LockHash) {
+        Ok(_) if lock_hash == job.refund_lock_hash => {}
+        Ok(_) | Err(ckb_std::error::SysError::IndexOutOfBound) => return Err(ERR_OUTPUT_INDEX),
+        Err(e) => return Err(sys(e)),
+    }
+    if capacity(at, Source::Output).map_err(sys)? < min_cap {
+        return Err(ERR_OUTPUT_INDEX);
+    }
+    Ok(())
 }

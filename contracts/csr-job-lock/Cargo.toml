@@ -8,3 +8,8 @@ publish = false
 # no `ckb-types` feature and no `csr-schemas` (the `bytes` crate emits atomic instructions that ckb-vm rejects);
 # the molecule data is parsed by hand (csr-registry/src/mol.rs, csr-job-type/src/job.rs).
 ckb-std = { version = "=1.1.0", default-features = false, features = ["allocator", "dummy-atomic"] }
+blake2b-ref = "0.3"
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+
+[build-dependencies]
+blake2b-ref = "0.3"

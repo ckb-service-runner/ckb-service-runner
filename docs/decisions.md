@@ -518,3 +518,122 @@ monitor client use the first entry. The dashboard shows the list; editing stays 
 - **`csr --version`.** The installer needs it, so clap's version flag is enabled (`csr version` stays).
 - **Rollback.** Manual: `install -m 0755 /usr/local/bin/csr.prev /usr/local/bin/csr && systemctl restart csr` (docs/install.md). The verify step refuses downgrades, so a rollback never goes through the updater.
 - **Release.** `scripts/release.sh <version>` builds, writes `dist/csr-<v>-<arch>-linux`, the tarball and `SHA256SUMS`, and prints the offline signing command; it reads no key. Steps and key handling: `docs/release.md`.
+## Contracts v3 – one redeploy before mainnet (D20–D24)
+
+All contract decisions in one redeploy, so operators register again only once (findings F-CON-002 to
+F-CON-008). Specs: `spec/registry.md`, `spec/job-cell-standard.md`, `spec/dual-lock.md`.
+
+### D20 A: Registry v3
+`RegistryV3 { version = 3, peer_id, service_pubkey, payout_lock_hash, network, stake, expiry_ms,
+attestation_sig, endpoint, prekeys }`. The node ID is stored once (no nested attestation copy), and an optional
+public `endpoint` (empty or `http(s)://…`, UTF-8, ≤ 128 bytes) lets the monitor call a runner directly
+(F-MON-014). `csr-dual-lock` (and the registry's lock check, and the job lock's runner check) accept 32-byte
+args for a runner-owned cell (owner = runner) besides `owner ‖ runner`. Data 280 instead of 373 bytes for the
+vector entry; with the short args about 125 CKB less per registration. v1/v2 data is error 7 (registry) / 10
+(job lock); `Registry` v2 is gone from `csr.mol` and the contracts (the runner keeps its own v2 parser until the
+testnet migration).
+
+### D21 A: `CSR-ATTEST-v2`
+The monitor signs `blake2b("CSR-ATTEST-v2" ‖ AttestationBodyV2)` with `stake` and `registry_type_hash` (the
+registry's own type script hash; the job lock's args). The registry and the job lock both verify it, so an
+attestation cannot be used with another deposit or another registry deployment (F-CON-002 on chain, F-CON-005).
+A v1 signature fails (10). Error 11 (copy mismatch) is unused since the signature covers the cell's own fields.
+
+### D22 C: stake checked at creation and on changes only
+No stake check on a refresh or a run. A withdrawn deposit keeps earning until its attestation expires: at most
+7 days as the monitor issues them, 8 days by the cap of D24. Stated in `spec/registry.md` §4.1 and
+`spec/job-cell-standard.md` §3.
+
+### D23 A: identity changes need the stake owner's consent
+On the owner path a change of `peer_id`, `network` or `service_pubkey` runs the stake rules and the consent
+check (the consent text names these fields; F-CON-004). The runner path may change `expiry_ms`,
+`attestation_sig`, `endpoint` and `prekeys` only.
+
+### D24 A: lifetime cap and `csr-config-type`
+`expiry_ms − clock_ms ≤ 8 days` in `csr-registry` (error 24) and `csr-job-lock` (error 18). The new type script
+`csr-config-type` on the monitor config cell (args = Type ID, 32 bytes) keeps Type ID uniqueness
+(`ckb_std::type_id`), requires ≥ 41 bytes of data, lets `clock_ms` only grow or stay, never lets
+`monitor_pubkey` change and refuses destruction (errors 5–10, `spec/registry.md` §1; F-CON-006).
+
+### Contracts v3 Phase 1 – contracts
+- **Registry args = `config_id`, config found by computed type hash.** "Found by the type hash of
+  `csr-config-type` with the configured args": the registry's type args are now the config cell's
+  `csr-config-type` args (its Type ID), and `csr-registry` / `csr-job-lock` compute the config type hash from
+  the embedded `csr-config-type` code hash (`build.rs`, like the dual lock's), hash type `data2`, and these
+  args. So a registry deployment can only ever use a config cell governed by the real `csr-config-type`;
+  `config_type_hash` as an opaque arg (v2) could name any Type ID cell.
+- **`csr-config-type` uses hash type `data2`.** `ckb_std::type_id` needs the `type-id` feature, which pulls
+  `ckb-types` and the `bytes` crate; its atomics compile to RISC-V A instructions. `-C target-feature=-a` (the
+  ckb-std README's alternative) no longer compiles with the current LLVM ("Cannot select AtomicLoadAdd"), and
+  ckb-vm 0.24 has the A extension in VM version 2. So the contract is built normally and referenced with
+  `data2`; the registry and the job lock accept only `data2` for it. The other contracts keep avoiding
+  `ckb-types`.
+- **Shared code `csr-registry/src/attest.rs`** (RegistryV3 parser, v2 message, recovery, cap, config type hash,
+  dual-lock args) is used by the registry, the job lock (`#[path]`) and the contract tests, like `consent.rs`.
+- **`registry_v3_data_matches_vector` "inside the contract".** The vector's `registry_type_hash` (`0x4e…4e`) can
+  be no real script hash, so the vector's own signature cannot pass the VM's `load_script_hash`. The test (1)
+  builds both data forms with the test builder and compares them byte for byte, (2) runs the contract's own
+  `attest.rs` (parser, message, recovery, check) on the vector bytes – the signature recovers to the vector's
+  monitor key – and (3) registers, in the VM, the vector entry signed by the vector's monitor secret under the
+  test deployment's registry type hash.
+- **Job lock checks the attestation signature** (step 4 of the task): registry v3 dep, signature over
+  `CSR-ATTEST-v2` with its own args as `registry_type_hash` (failure → 10, the "registry dep invalid" code; no
+  new code), expiry (17), cap (18). Cost: one more recovery, ~9.6M cycles per settlement instead of ~1.7M.
+- **Same index (F-CON-003, error 19).** The job input's index *i* is the index of the only input with the job
+  lock's own lock hash. Recreation: the existing "exactly one" check (12) runs first, then the index (19).
+  Refund: the net inflow check (13) runs first, then output *i* must have the refund lock and on its own at
+  least the remainder (19) – a dust refund at *i* with the rest elsewhere would otherwise still let two jobs
+  share. The runner's settlement layout `[runner wallet, job] → [wallet + tip, job | refund]` already puts the
+  job's output at the job's index (1).
+- **Second job-lock build for the tests.** `scripts/build-contracts.sh` builds `csr-job-lock` a second time with
+  `CSR_JOB_LOCK_VARIANT=test-variant` (an embedded constant kept in the binary with `black_box`) into
+  `contracts/build/test/csr-job-lock-variant` (never deployed); `job_two_lock_versions_share_refund_rejected`
+  deploys it next to the normal build.
+- **Contract tests build the contracts if missing.** `csr-contract-tests/build.rs` runs
+  `scripts/build-contracts.sh` (into `contracts/build/cargo-target`, outer cargo variables removed) only when a
+  binary under `contracts/build/` is missing, so the suite also runs on a fresh checkout; the binaries are
+  byte-identical to a direct script run. The script honours `CARGO_TARGET_DIR`.
+- **Error mapping of the adapted v2 tests.** Attestations for another key, peer id or network, and the copied
+  attestation of F1 now fail with 10 (signature) instead of 11 / 17. The owner's service-key rotation now needs
+  the stake dep (D23 A; consent by the owner's own input).
+- **F-CON-007** is documented, not changed: one job input or output per service group per transaction
+  (`csr-job-type` error 9); batching jobs of one service in one transaction is not supported.
+- **Runner and `csr-dev` untouched in this phase.** `deploy-contracts` still deploys four contracts and the
+  runner still writes v2 data; both follow in the next phases (the deployments need a new config cell with
+  `csr-config-type`, so `--keep-config` cannot be reused for v3).
+
+### Contracts v3 Phase 2 – runner and devtools
+- **v2 and v3 deployments side by side.** `deployments/testnet.json` is still the v2 testnet deployment (the
+  testnet redeploy needs the testnet key and is not part of this phase). A deployments file is v3 when it has
+  `scripts.config_type`; then the config cell is looked up under `csr-config-type` (`data2`, args =
+  `config_cell.type_args`), the registry's args are the `config_id`, and the runner checks that
+  `config_cell.type_hash` and `registry_type_hash` follow from the scripts (a mismatch is a load error). Without
+  it (v2) the runner keeps the Type ID lookup and the v2 registry args so that existing v2 registrations keep
+  running jobs until the migration, but `register create` refuses: the runner writes v3 data only.
+- **No separate `register_refresh`.** This branch has no `csr-attestation-renewal` code; a refresh is a second
+  `register create` (new attestation, same or new deposit, current `ranking.public_endpoint`), which updates
+  the runner-owned cell on the owner path. The stake dep and consent are sent anyway (harmless on a refresh).
+- **Runner-owned = 32-byte args, 64-byte form still recognised.** New cells use `runner_lock_hash` alone;
+  `register create`/`remove` also accept a v3 cell whose args are `runner ‖ runner` and rewrite it to 32 bytes
+  on the next update (the owner path may change the lock).
+- **Monitor's v2 reply.** `attest::check` expects the v1 fields plus `stake` (`0x<tx>:<index>`) and
+  `registry_type_hash` (`0x` + 64 hex) and verifies the signature over `CSR-ATTEST-v2` with the *expected*
+  stake and registry type hash (the runner's own deployment), so a relabelled reply fails. A reply without
+  `stake` is reported as a v1 attestation. The request body is unchanged (the monitor knows its registry; no new
+  field is sent, to stay compatible with a strict request parser).
+- **Checks before broadcasting.** `register create` also verifies the 8-day cap against the on-chain clock and
+  recovers the attestation signature against the config cell's `monitor_pubkey`, so a wrong attestation is a
+  clear error instead of a script error from the node.
+- **`ranking.public_endpoint` validation** is a bit stricter than the contract: empty, or `http(s)://host[:port]`
+  with a host, without user info, path, query, fragment or trailing slash, at most 128 bytes.
+- **`build_run`** already had the layout `[wallet, job] → [wallet + tip, job | refund, skeleton…]`; it is now
+  explicit (`JOB_INDEX = 1`, unit test `run_output_sits_at_the_job_input_index`).
+- **`csr-dev`.** `Out.type_id` with a `type_` fills that script's args with the Type ID (used for the
+  `csr-config-type` config cell; the code cell is a dep of the creating transaction). `--keep-config` refuses a
+  v2 file and a config cell whose `csr-config-type` code hash differs from this build's binary (the registry
+  and the job lock embed it). `clock-update` uses `max(tip timestamp, current clock_ms)`. `attest` needs
+  `--stake` and takes `registry_type_hash` from the deployments file (refuses a v2 file); a unit test checks the
+  message against the shared vector. The A8 devnet acceptance scripts (`acceptance/a8/…`) still call the v1
+  `attest` and are obsolete for v3; the dashboard setup text keeps "about 700 CKB" (still enough for the
+  ~420 CKB v3 cell).
+

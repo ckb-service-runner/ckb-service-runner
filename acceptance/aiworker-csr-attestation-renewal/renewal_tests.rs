@@ -1,5 +1,6 @@
 // Acceptance tests for csr-attestation-renewal, written by the spec author.
 // Included from runner/src/chain.rs with #[cfg(test)] #[path = ...] mod aiworker_renewal_tests;
+// Integration (Oct 2026): adapted to Registry v3 and CSR-ATTEST-v2 from contracts-v3.
 use super::*;
 use serde_json::json;
 
@@ -9,13 +10,19 @@ fn att(peer: &str, pubkey: &str, expiry: u64) -> Value {
     json!({
         "peer_id": peer, "service_pubkey": pubkey, "network": "testnet",
         "expiry_ms": expiry, "signature": format!("0x{}", "22".repeat(65)),
+        "stake": format!("0x{}:3", "5a".repeat(32)),
+        "registry_type_hash": format!("0x{}", "4e".repeat(32)),
     })
 }
 
 fn existing() -> (Vec<u8>, OutPoint) {
     let stake = out_point_from(&format!("0x{}", "5a".repeat(32)), 3).unwrap();
     let a = Attestation::parse(&att("QmPeerA", PK, 1_000)).unwrap();
-    (a.registry_data(&H256::from_slice(&[0x77u8; 32]).unwrap(), &stake), stake)
+    let data = a
+        .registry_v3(&H256::from_slice(&[0x77u8; 32]).unwrap(), "https://203.0.113.7:8131")
+        .unwrap()
+        .encode();
+    (data, stake)
 }
 
 #[test]
@@ -28,6 +35,10 @@ fn refresh_replaces_only_the_attestation() {
     assert_eq!(r.payout_lock_hash, vec![0x77u8; 32]);
     assert_eq!(r.stake.unwrap(), stake);
     assert_eq!(new.len(), old.len(), "same layout, same capacity");
+    assert_eq!(RegistryV3::decode(&new).unwrap().endpoint, "https://203.0.113.7:8131");
+    let mut other_stake = att("QmPeerA", PK, 9_000);
+    other_stake["stake"] = json!(format!("0x{}:3", "5b".repeat(32)));
+    assert!(refresh_registry_data(&old, &other_stake).is_err(), "the stake must stay the same");
 }
 
 #[test]

@@ -1,8 +1,9 @@
-//! Test harness for the CSR contracts: deploys the four binaries, the system
-//! secp256k1-blake160 lock and a Type ID config cell, creates Nervos DAO deposit cells (stakes),
+//! Test harness for the CSR contracts: deploys the five binaries, the system
+//! secp256k1-blake160 lock and a `csr-config-type` config cell, creates Nervos DAO deposit cells (stakes),
 //! and builds/signs transactions.
 //!
-//! Contract binaries come from `contracts/build/release/` (run `scripts/build-contracts.sh`).
+//! Contract binaries come from `contracts/build/release/` (run `scripts/build-contracts.sh`); the test-only
+//! job lock variant from `contracts/build/test/`.
 
 use ckb_testtool::bytes::Bytes;
 use ckb_testtool::ckb_crypto::secp::{Generator, Privkey};
@@ -17,6 +18,11 @@ use std::path::PathBuf;
 /// The contract's own consent text, digest and signature parsing (`csr-registry`), so the vectors test its code.
 #[path = "../../csr-registry/src/consent.rs"]
 pub mod consent;
+/// The contracts' molecule readers and their registry v3 parser / attestation check (`csr-registry`).
+#[path = "../../csr-registry/src/mol.rs"]
+pub mod mol;
+#[path = "../../csr-registry/src/attest.rs"]
+pub mod attest;
 
 pub const MAX_CYCLES: u64 = 70_000_000;
 pub const CKB: u64 = 100_000_000;
@@ -29,8 +35,9 @@ pub const DAO_TYPE_CODE_HASH: [u8; 32] = [
     0x76, 0xc9, 0x26, 0xf3, 0x78, 0xd3, 0xf8, 0x1c, 0xf3, 0xe7, 0xe1, 0x3f, 0x2e,
 ];
 
-pub const CONTRACT_NAMES: [&str; 4] = [
+pub const CONTRACT_NAMES: [&str; 5] = [
     "csr-dual-lock",
+    "csr-config-type",
     "csr-registry",
     "csr-job-type",
     "csr-job-lock",
@@ -39,6 +46,14 @@ pub const CONTRACT_NAMES: [&str; 4] = [
 /// Path of a built contract binary.
 pub fn contract_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../build/release").join(name)
+}
+
+/// The test-only, byte-different build of `csr-job-lock` (another embedded constant; `scripts/build-contracts.sh`).
+pub fn load_job_lock_variant() -> Bytes {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../build/test/csr-job-lock-variant");
+    std::fs::read(&p)
+        .unwrap_or_else(|e| panic!("cannot read {} ({e}); run scripts/build-contracts.sh", p.display()))
+        .into()
 }
 
 pub fn load_contract(name: &str) -> Bytes {
@@ -79,6 +94,7 @@ impl Key {
 pub struct Env {
     pub ctx: Context,
     pub dual_lock: OutPoint,
+    pub config_type: OutPoint,
     pub registry: OutPoint,
     pub job_type: OutPoint,
     pub job_lock: OutPoint,
@@ -94,6 +110,7 @@ impl Env {
     pub fn new() -> Self {
         let mut ctx = Context::new_with_deterministic_rng();
         let dual_lock = ctx.deploy_cell(load_contract("csr-dual-lock"));
+        let config_type = ctx.deploy_cell(load_contract("csr-config-type"));
         let registry = ctx.deploy_cell(load_contract("csr-registry"));
         let job_type = ctx.deploy_cell(load_contract("csr-job-type"));
         let job_lock = ctx.deploy_cell(load_contract("csr-job-lock"));
@@ -102,7 +119,7 @@ impl Env {
             std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/secp256k1_data")).expect("secp data").into(),
         );
         let always_success = ctx.deploy_cell(ckb_testtool::builtin::ALWAYS_SUCCESS.clone());
-        Env { ctx, dual_lock, registry, job_type, job_lock, secp, secp_data, always_success, seed: 1 }
+        Env { ctx, dual_lock, config_type, registry, job_type, job_lock, secp, secp_data, always_success, seed: 1 }
     }
 
     /// Script referencing a deployed binary by data hash (hash type data1).
@@ -133,9 +150,23 @@ impl Env {
         self.script(&op, args.into())
     }
 
-    pub fn registry_type_script(&mut self, config_type_hash: &[u8; 32]) -> Script {
+    /// Dual lock with 32-byte args (runner-owned: owner = runner = `hash`).
+    pub fn dual_lock_script_short(&mut self, hash: &[u8; 32]) -> Script {
+        let op = self.dual_lock.clone();
+        self.script(&op, Bytes::copy_from_slice(hash))
+    }
+
+    /// `csr-config-type` with `args = id`, hash type data2 (`spec/registry.md` §1).
+    pub fn config_type_script(&mut self, id: &[u8; 32]) -> Script {
+        self.ctx
+            .build_script_with_hash_type(&self.config_type, ScriptHashType::Data2, Bytes::copy_from_slice(id))
+            .expect("deployed")
+    }
+
+    /// `csr-registry` with `args = config_id` (the config cell's `csr-config-type` args).
+    pub fn registry_type_script(&mut self, config_id: &[u8; 32]) -> Script {
         let op = self.registry.clone();
-        self.script(&op, Bytes::copy_from_slice(config_type_hash))
+        self.script(&op, Bytes::copy_from_slice(config_id))
     }
 
     pub fn job_type_script(&mut self, service_code_hash: &[u8; 32]) -> Script {
@@ -178,20 +209,36 @@ impl Env {
         self.min_cell(0, lock, None, data)
     }
 
-    /// Creates the monitor config cell (Type ID type script, data = pubkey ‖ clock_ms ‖ reserved).
-    /// Returns (out point, type script hash = `config_type_hash`).
+    /// A fresh 32-byte id (e.g. the Type ID args of a config cell placed directly into the context).
+    pub fn fresh_id(&mut self) -> [u8; 32] {
+        self.seed += 1;
+        blake2b_256(format!("csr test id {}", self.seed))
+    }
+
+    /// Creates the monitor config cell (`csr-config-type` type script with a fresh id, data = pubkey ‖ clock_ms)
+    /// directly in the context. Returns (out point, `config_id` = the type script args = the registry args).
     pub fn config_cell(&mut self, monitor_pubkey: &[u8; 33], clock_ms: u64, monitor_lock: Script) -> (OutPoint, [u8; 32]) {
-        let type_id = ckb_testtool::context::random_type_id_script();
-        let hash: [u8; 32] = type_id.calc_script_hash().unpack();
+        let id = self.fresh_id();
+        let type_ = self.config_type_script(&id);
         let data = config_data(monitor_pubkey, clock_ms);
-        let op = self.min_cell(0, monitor_lock, Some(type_id), data);
-        (op, hash)
+        let op = self.min_cell(0, monitor_lock, Some(type_), data);
+        (op, id)
+    }
+
+    /// A key from a 32-byte secret (e.g. the monitor of the shared vector).
+    pub fn key_from_secret(&mut self, secret: &[u8; 32]) -> Key {
+        let privkey = Privkey::from_slice(secret);
+        let compressed: [u8; 33] = privkey.pubkey().expect("pubkey").serialize().try_into().expect("compressed pubkey");
+        let secp = self.secp.clone();
+        let lock = self.script(&secp, Bytes::copy_from_slice(&blake160(&compressed)));
+        Key { privkey, pubkey: compressed, lock }
     }
 
     /// Registry creation (`spec/registry.md` §6): inputs `[wallet cell of wallet, runner key cell of runner_key]`,
     /// outputs `[registry cell (minimal capacity), change, runner key cell]`, cell deps `[stake, config cell]`.
-    /// The stake is the out point in `data` (its last 36 bytes); if no cell exists there yet, a deposit of
-    /// `MIN_STAKE` owned by `wallet` is created at it. The config cell is added if given.
+    /// The stake is the out point in `data` (field `stake`; none if `data` is no 10-field table); if no cell
+    /// exists there yet, a deposit of `MIN_STAKE` owned by `wallet` is created at it. The config cell is added
+    /// if given.
     /// Rule 6 requires the runner key cell; pass `None` only to test its absence. Sign with both keys.
     pub fn registry_create_tx(
         &mut self,
@@ -206,9 +253,11 @@ impl Env {
         const KEY_CELL: u64 = 100 * CKB;
         const FEE: u64 = 100_000;
         let stake = registry_stake(&data);
-        if self.ctx.get_cell(&stake).is_none() {
-            let out = output(MIN_STAKE, wallet.lock.clone(), Some(dao_type_script()));
-            self.ctx.create_cell_with_out_point(stake.clone(), out, deposit_data());
+        if let Some(stake) = &stake {
+            if self.ctx.get_cell(stake).is_none() {
+                let out = output(MIN_STAKE, wallet.lock.clone(), Some(dao_type_script()));
+                self.ctx.create_cell_with_out_point(stake.clone(), out, deposit_data());
+            }
         }
         let w = self.min_cell(WALLET, wallet.lock.clone(), None, Bytes::new());
         let wallet_cap = min_capacity(&wallet.lock, None, 0) + WALLET;
@@ -223,7 +272,10 @@ impl Env {
             inputs.push(self.input(&kc, 0));
             outputs.push((output(KEY_CELL, k.lock.clone(), None), Bytes::new()));
         }
-        let tx = tx_with(inputs, outputs).as_advanced_builder().cell_dep(cell_dep(&stake)).build();
+        let mut tx = tx_with(inputs, outputs);
+        if let Some(stake) = &stake {
+            tx = tx.as_advanced_builder().cell_dep(cell_dep(stake)).build();
+        }
         match config {
             Some(c) => tx.as_advanced_builder().cell_dep(cell_dep(c)).build(),
             None => tx,
@@ -236,12 +288,13 @@ impl Env {
     }
 
     /// Registration owned by the runner (`spec/registry.md` "Runner wallet"): inputs `[runner wallet cell]`,
-    /// outputs `[registry cell (minimal capacity, dual lock runner ‖ runner), wallet change]`, cell deps
+    /// outputs `[registry cell (minimal capacity, dual lock `reg_lock`), wallet change]`, cell deps
     /// `[stake of the data, config cell]`, and `consent` (if any) in `WitnessArgs.output_type` of witness 0.
     /// The stake deposit must exist. Sign with the runner key only.
     pub fn registry_create_runner_owned_tx(
         &mut self,
         runner: &Key,
+        reg_lock: Script,
         reg_type: Script,
         data: Bytes,
         config: &OutPoint,
@@ -249,8 +302,7 @@ impl Env {
     ) -> TransactionView {
         const WALLET: u64 = 1000 * CKB;
         const FEE: u64 = 100_000;
-        let stake = registry_stake(&data);
-        let reg_lock = self.dual_lock_script(&runner.lock_hash(), &runner.lock_hash());
+        let stake = registry_stake(&data).expect("registry v3 data");
         let w = self.runner_wallet_cell(runner, WALLET);
         let reg_cap = min_capacity(&reg_lock, Some(&reg_type), data.len());
         let tx = tx_with(
@@ -294,6 +346,16 @@ impl Env {
     }
 }
 
+/// Type ID of a cell created at output `index` of a transaction whose first input is `first_input`.
+pub fn type_id(first_input: &CellInput, index: u64) -> [u8; 32] {
+    let mut h = new_blake2b();
+    h.update(first_input.as_slice());
+    h.update(&index.to_le_bytes());
+    let mut out = [0u8; 32];
+    h.finalize(&mut out);
+    out
+}
+
 /// The Nervos DAO type script (hash type `type`, empty args).
 pub fn dao_type_script() -> Script {
     Script::new_builder().code_hash(DAO_TYPE_CODE_HASH.pack()).hash_type(ScriptHashType::Type).build()
@@ -304,9 +366,13 @@ pub fn deposit_data() -> Bytes {
     Bytes::from(vec![0u8; 8])
 }
 
-/// `stake` out point of `molecule(Registry)` data (its last field, 36 bytes).
-pub fn registry_stake(data: &[u8]) -> OutPoint {
-    OutPoint::from_slice(&data[data.len() - 36..]).expect("registry data ends with the stake out point")
+/// `stake` out point of `molecule(RegistryV3)` data (field 5); `None` if the data is no 10-field table.
+pub fn registry_stake(data: &[u8]) -> Option<OutPoint> {
+    let u = |at: usize| Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?) as usize);
+    if u(4)? != 44 {
+        return None;
+    }
+    OutPoint::from_slice(data.get(u(24)?..u(28)?)?).ok()
 }
 
 /// `tx` with the cell dep on `op` removed.
@@ -456,36 +522,47 @@ pub fn tx_with(inputs: Vec<CellInput>, outputs: Vec<(CellOutput, Bytes)>) -> Tra
 // --- registry -----------------------------------------------------------------------------------
 
 /// Domain separator of the monitor attestation (`spec/registry.md` §3).
-pub const ATTEST_DOMAIN: &[u8] = b"CSR-ATTEST-v1";
+pub const ATTEST_DOMAIN: &[u8] = b"CSR-ATTEST-v2";
 
-fn mol_bytes(b: &[u8]) -> csr_schemas::Bytes {
+pub fn mol_bytes(b: &[u8]) -> csr_schemas::Bytes {
     let mut v = Vec::with_capacity(4 + b.len());
     v.extend_from_slice(&(b.len() as u32).to_le_bytes());
     v.extend_from_slice(b);
     csr_schemas::Bytes::new_unchecked(v.into())
 }
 
-/// Fields signed by the monitor.
+/// Fields signed by the monitor (`AttestationBodyV2`).
 #[derive(Clone, Debug)]
 pub struct AttestationFields {
     pub peer_id: Vec<u8>,
     pub service_pubkey: [u8; 33],
     pub network: u8,
     pub expiry_ms: u64,
+    pub stake: OutPoint,
+    pub registry_type_hash: [u8; 32],
+}
+
+/// A signed attestation as stored in the registry cell: `expiry_ms` and `attestation_sig`.
+#[derive(Clone, Debug)]
+pub struct Attestation {
+    pub expiry_ms: u64,
+    pub signature: [u8; 65],
 }
 
 impl AttestationFields {
-    /// `molecule(AttestationBody)`.
-    pub fn body(&self) -> csr_schemas::AttestationBody {
-        csr_schemas::AttestationBody::new_builder()
+    /// `molecule(AttestationBodyV2)`.
+    pub fn body(&self) -> csr_schemas::AttestationBodyV2 {
+        csr_schemas::AttestationBodyV2::new_builder()
             .peer_id(mol_bytes(&self.peer_id))
             .service_pubkey(csr_schemas::Byte33::new_unchecked(Bytes::copy_from_slice(&self.service_pubkey)))
             .network(packed::Byte::new(self.network))
-            .expiry_ms(csr_schemas::Uint64::new_unchecked(Bytes::copy_from_slice(&self.expiry_ms.to_le_bytes())))
+            .expiry_ms(mol_u64(self.expiry_ms))
+            .stake(csr_schemas::OutPoint::new_unchecked(self.stake.as_bytes()))
+            .registry_type_hash(csr_schemas::Byte32::new_unchecked(Bytes::copy_from_slice(&self.registry_type_hash)))
             .build()
     }
 
-    /// blake2b-256("CSR-ATTEST-v1" ‖ molecule(AttestationBody)).
+    /// blake2b-256("CSR-ATTEST-v2" ‖ molecule(AttestationBodyV2)).
     pub fn message(&self) -> [u8; 32] {
         let mut h = new_blake2b();
         h.update(ATTEST_DOMAIN);
@@ -496,45 +573,48 @@ impl AttestationFields {
     }
 
     /// Signs the attestation with `monitor` (65 byte recoverable signature `r ‖ s ‖ recid`).
-    pub fn sign(&self, monitor: &Key) -> csr_schemas::Attestation {
-        let sig: [u8; 65] =
-            monitor.privkey.sign_recoverable(&self.message().into()).expect("sign").serialize().try_into().unwrap();
-        self.with_signature(sig)
+    pub fn sign(&self, monitor: &Key) -> Attestation {
+        Attestation { expiry_ms: self.expiry_ms, signature: sign_digest(monitor, &self.message()) }
     }
 
-    pub fn with_signature(&self, sig: [u8; 65]) -> csr_schemas::Attestation {
-        csr_schemas::Attestation::new_builder()
-            .peer_id(mol_bytes(&self.peer_id))
-            .service_pubkey(csr_schemas::Byte33::new_unchecked(Bytes::copy_from_slice(&self.service_pubkey)))
-            .network(packed::Byte::new(self.network))
-            .expiry_ms(csr_schemas::Uint64::new_unchecked(Bytes::copy_from_slice(&self.expiry_ms.to_le_bytes())))
-            .signature(csr_schemas::Signature::new_unchecked(Bytes::copy_from_slice(&sig)))
-            .build()
+    pub fn with_signature(&self, signature: [u8; 65]) -> Attestation {
+        Attestation { expiry_ms: self.expiry_ms, signature }
     }
 }
 
-/// Registry cell data (`molecule(Registry)`).
+/// Registry cell data (`molecule(RegistryV3)`) without the attestation, plus the registry type hash the
+/// attestation is signed for (not stored in the data).
 #[derive(Clone, Debug)]
 pub struct RegistryFields {
     pub peer_id: Vec<u8>,
     pub service_pubkey: [u8; 33],
     pub payout_lock_hash: [u8; 32],
     pub network: u8,
-    pub prekeys: Vec<u8>,
     /// Out point of the owner's DAO deposit.
     pub stake: OutPoint,
+    pub endpoint: Vec<u8>,
+    pub prekeys: Vec<u8>,
+    /// Hash of the registry cell's type script (signed in the attestation).
+    pub registry_type_hash: [u8; 32],
 }
 
 impl RegistryFields {
-    pub fn data(&self, attestation: &csr_schemas::Attestation) -> Bytes {
-        csr_schemas::Registry::new_builder()
+    pub fn data(&self, attestation: &Attestation) -> Bytes {
+        self.data_with_version(3, attestation)
+    }
+
+    pub fn data_with_version(&self, version: u8, attestation: &Attestation) -> Bytes {
+        csr_schemas::RegistryV3::new_builder()
+            .version(packed::Byte::new(version))
             .peer_id(mol_bytes(&self.peer_id))
             .service_pubkey(csr_schemas::Byte33::new_unchecked(Bytes::copy_from_slice(&self.service_pubkey)))
             .payout_lock_hash(csr_schemas::Byte32::new_unchecked(Bytes::copy_from_slice(&self.payout_lock_hash)))
             .network(packed::Byte::new(self.network))
-            .attestation(attestation.clone())
-            .prekeys(mol_bytes(&self.prekeys))
             .stake(csr_schemas::OutPoint::new_unchecked(self.stake.as_bytes()))
+            .expiry_ms(mol_u64(attestation.expiry_ms))
+            .attestation_sig(csr_schemas::Signature::new_unchecked(Bytes::copy_from_slice(&attestation.signature)))
+            .endpoint(mol_bytes(&self.endpoint))
+            .prekeys(mol_bytes(&self.prekeys))
             .build()
             .as_bytes()
     }
@@ -546,6 +626,8 @@ impl RegistryFields {
             service_pubkey: self.service_pubkey,
             network: self.network,
             expiry_ms,
+            stake: self.stake.clone(),
+            registry_type_hash: self.registry_type_hash,
         }
     }
 
@@ -587,7 +669,7 @@ pub fn dep_group_dep(op: &OutPoint) -> packed::CellDep {
 
 // --- job ----------------------------------------------------------------------------------------
 
-fn mol_u64(v: u64) -> csr_schemas::Uint64 {
+pub fn mol_u64(v: u64) -> csr_schemas::Uint64 {
     csr_schemas::Uint64::new_unchecked(Bytes::copy_from_slice(&v.to_le_bytes()))
 }
 

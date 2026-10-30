@@ -1,3 +1,5 @@
+//! `csr-dual-lock`, args = `owner_lock_hash (32) ‖ runner_lock_hash (32)` or `lock_hash (32)` (owner = runner).
+//! Unlocks if an input carries one of the two lock hashes. See `spec/dual-lock.md`.
 #![no_std]
 #![no_main]
 
@@ -49,10 +51,12 @@ fn run() -> Result<(), i8> {
         Err(e) => return Err(sys(e)),
     };
     let args = script_args(script).ok_or(ERR_ARGS_LEN)?;
-    if args.len() != 64 {
-        return Err(ERR_ARGS_LEN);
-    }
-    let (owner, runner) = args.split_at(32);
+    // `owner ‖ runner` (64 bytes), or 32 bytes for a runner-owned cell (owner = runner)
+    let (owner, runner) = match args.len() {
+        32 => (args, args),
+        64 => args.split_at(32),
+        _ => return Err(ERR_ARGS_LEN),
+    };
     let mut hash = [0u8; 32];
     for i in 0.. {
         match syscalls::load_cell_by_field(&mut hash, 0, i, Source::Input, CellField::LockHash) {
