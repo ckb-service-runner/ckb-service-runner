@@ -382,7 +382,9 @@ impl Config {
             1,
             u64::MAX,
         )?;
-        range("limits.max_vm_memory_mb", l.max_vm_memory_mb.into(), 1, 64)?;
+        if l.max_vm_memory_mb != 4 {
+            return Err("limits.max_vm_memory_mb must be 4 (only 4 MiB is supported)".into());
+        }
         range(
             "limits.max_job_wall_seconds",
             l.max_job_wall_seconds.into(),
@@ -522,7 +524,7 @@ mod tests {
         assert!(Config::parse("[logging]\nlevel = \"loud\"").is_err());
         assert!(Config::parse("[node]\nnode_type = \"light\"").is_err());
         assert!(Config::parse("[limits]\nmax_concurrent_jobs = 0").is_err());
-        assert!(Config::parse("[limits]\nmax_vm_memory_mb = 65").is_err());
+        assert!(Config::parse("[limits]\nmax_vm_memory_mb = 8").is_err());
         assert!(Config::parse("[limits]\nmax_job_wall_seconds = 3601").is_err());
         assert!(Config::parse("[limits]\npause_above_cpu_percent = 101").is_err());
         assert!(Config::parse("[limits]\nmax_cycles_per_job = 0").is_err());

@@ -16,6 +16,15 @@ pub const MAX_DEBUG_LINES: usize = 64;
 pub const MAX_DEBUG_LINE_BYTES: usize = 1024;
 /// Cycles charged per syscall (CKB uses 500).
 const SYSCALL_CYCLES: u64 = 500;
+/// Extra cycles for a call that makes a node RPC (chain_read, cells_query).
+pub const NODE_CALL_CYCLES: u64 = 100_000;
+/// The debug call (2177) reads at most this many bytes looking for the terminating zero.
+pub const MAX_DEBUG_SCAN: usize = 1024;
+
+/// Cycles for moving `bytes` between the VM and the host: one cycle per 4 bytes, rounded up.
+pub fn data_cycles(bytes: usize) -> u64 {
+    (bytes as u64).div_ceil(4)
+}
 
 // Return codes of CKB syscalls.
 const SUCCESS: u64 = 0;
@@ -132,6 +141,7 @@ fn write_partial<Mac: SupportMachine>(
     let full = data.len() as u64;
     let start = offset.min(full) as usize;
     let n = (cap as usize).min(data.len() - start);
+    m.add_cycles(data_cycles(n))?;
     if n > 0 {
         m.memory_mut().store_bytes(addr, &data[start..start + n])?;
     }
@@ -160,6 +170,7 @@ fn read_mem<Mac: SupportMachine>(m: &mut Mac, addr: u64, len: u64) -> Result<Vec
     if len == 0 {
         return Ok(Vec::new());
     }
+    m.add_cycles(data_cycles(usize::try_from(len).unwrap_or(usize::MAX)))?;
     Ok(m.memory_mut().load_bytes(addr, len)?.to_vec())
 }
 
@@ -292,6 +303,7 @@ impl Host {
                     if off > data.len() || size > data.len() - off || size as u64 > a1 {
                         return Ok(SVC_INVALID_ARGUMENT);
                     }
+                    m.add_cycles(data_cycles(size))?;
                     m.memory_mut().store_bytes(a0, &data[off..off + size])?;
                     SUCCESS
                 }
@@ -307,6 +319,9 @@ impl Host {
                 let mut bytes = Vec::new();
                 let mut p = a0;
                 loop {
+                    if p - a0 >= MAX_DEBUG_SCAN as u64 {
+                        break;
+                    }
                     let b = m.memory_mut().load8(&Mac::REG::from_u64(p))?.to_u8();
                     if b == 0 {
                         break;
@@ -316,6 +331,7 @@ impl Host {
                     }
                     p += 1;
                 }
+                m.add_cycles(data_cycles(bytes.len()))?;
                 if st.debug.len() < MAX_DEBUG_LINES {
                     st.debug.push(String::from_utf8_lossy(&bytes).into_owned());
                 }
@@ -333,6 +349,7 @@ impl Host {
                 for v in st.block_info {
                     d.extend_from_slice(&v.to_le_bytes());
                 }
+                m.add_cycles(data_cycles(d.len()))?;
                 m.memory_mut().store_bytes(a0, &d)?;
                 SVC_OK
             }
@@ -411,8 +428,11 @@ impl Host {
                     return Ok(SVC_INVALID_ARGUMENT);
                 };
                 let op: [u8; 36] = read_mem(m, a2, 36)?.try_into().expect("36 bytes");
-                store.delete_on_consume(&key, &op).map_err(storage_error)?;
-                SVC_OK
+                match store.delete_on_consume(&key, &op).map_err(storage_error)? {
+                    Put::Ok => SVC_OK,
+                    Put::QuotaExceeded => SVC_QUOTA_EXCEEDED,
+                    _ => SVC_QUOTA_EXCEEDED,
+                }
             }
             // sign(msg32, sig_out64)
             7020 => {
@@ -426,6 +446,7 @@ impl Host {
                 h.update(&msg);
                 let digest = secp256k1::Message::from_digest(h.finalize().into());
                 let sig = secp256k1::Secp256k1::signing_only().sign_ecdsa(&digest, key);
+                m.add_cycles(data_cycles(64))?;
                 m.memory_mut().store_bytes(a1, &sig.serialize_compact())?;
                 SVC_OK
             }
@@ -439,6 +460,7 @@ impl Host {
                     2 | 3 => 32,
                     _ => return Ok(SVC_INVALID_ARGUMENT),
                 };
+                m.add_cycles(NODE_CALL_CYCLES)?;
                 let key = read_mem(m, a1, key_len)?;
                 match chain.read(a0, &key).map_err(chain_error)? {
                     Some(d) => {
@@ -456,6 +478,7 @@ impl Host {
                 if a1 == 0 || a1 > 4096 || a2 > 1 {
                     return Ok(SVC_INVALID_ARGUMENT);
                 }
+                m.add_cycles(NODE_CALL_CYCLES)?;
                 let script = read_mem(m, a0, a1)?;
                 match chain.query(&script, a2).map_err(chain_error)? {
                     Some(ops) => {

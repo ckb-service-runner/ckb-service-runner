@@ -304,6 +304,15 @@ pub async fn run(
         );
     }
 
+    // Storage format version 2: convert old entries before anything reads or deletes them.
+    {
+        let root = crate::service::storage_root(&state.config.read().unwrap(), &data_root);
+        let key = state.storage_key;
+        let n = crate::storage::migrate_v1(&root, &key)
+            .map_err(|e| format!("storage migration failed: {e}"))?;
+        tracing::info!("storage: migrated {n} version 1 entries");
+    }
+
     let (stop_tx, stop_rx) = watch::channel(false);
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<String>(1);
     // The background tasks; if one ends while no shutdown was requested, the process ends too.

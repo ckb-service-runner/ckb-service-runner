@@ -445,3 +445,13 @@ cell naming the runner lock hash (either half), a job-lock cell, or a registry-t
 - **D26 A:** the storage key stays on the same disk in `keys/`. A stolen disk or a clear backup is covered by full-disk encryption, as the install guide says; `keys/` is not backed up in clear.
 - **D28 B:** no automatic sweep is forced. The runner warns (log once per start, `sweep_warning` in `GET /api/wallet`, Overview and Earnings pages) when the hot key holds at least `payout.sweep_threshold_ckb` and `payout.sweep_address` is empty.
 - Files are private: `umask(0o077)` at process start, key files with group/other bits are set to 0600 with a warning, key buffers are zeroized, `LimitCORE=0` turns off core dumps.
+## Sandbox storage, phase 1
+- Storage format v2 (per-service key and AAD); `migrate_v1` runs once at `csr run` start and logs the count. A file that opens with the v1 rules but whose name does not match its key is skipped.
+- `rules.bin` is deleted when its last rule goes; it counts in both quotas, `delete_on_consume` checks the quota on growth. 256 rules per service; a duplicate rule is always `Ok`.
+- `rule_outpoints` and `apply_consumed` were missing from the tree, so they are added here (`simulate_consumed` calls `apply_consumed`).
+- `limits.max_vm_memory_mb` must be 4; removed from the settings form. `data_cycles` (1 cycle per 4 bytes), `NODE_CALL_CYCLES` (100 000) and `MAX_DEBUG_SCAN` (1024) are defined but not yet charged (phase 2).
+
+## Sandbox storage, phase 2
+- Host calls cost 500 + `data_cycles(bytes copied)` (+ `NODE_CALL_CYCLES` for `chain_read`/`cells_query`). The data charge sits in `write_partial` (bytes actually copied out) and `read_mem` (bytes read from VM memory), so every data-moving call is covered; `debug` is charged for the bytes kept. The extra charge uses `add_cycles`, so a job that runs out stops with the cycle-limit error. `debug` scans at most `MAX_DEBUG_SCAN` bytes.
+- Example services: see the check below.
+- Example services: all of `services/manifests` except the intentionally failing ones (`loop`, `memhog`, `badsyscall`, `bigresult`, `quotatest`) move only a few hundred bytes per call, so the extra charge is a few hundred cycles per job against the 70,000,000 default `max_cycles_per_job`; none needs a higher limit. Nothing was raised.
