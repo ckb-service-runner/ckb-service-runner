@@ -1,9 +1,8 @@
 # Changelog
 
-## 0.1.0
-- First Phase 1 release: release profile, `scripts/package.sh` (tarball + SHA256SUMS), `config/csr.service`, `docs/install.md`, greyed-out runtime toggle on mainnet; `docs/milestones/A4.md`.
-
-## Unreleased
+## 0.2.0
+- First signed release: `RELEASE_PUBKEY` is set (ed25519, private key offline), so the dashboard "Update" and `csr update stage` accept releases signed with it; `docs/release.md`.
+- Audit fixes, Oct 2026 (PR #1): the AIWorker branches before contracts v3 (skeleton guard, delete-on-consume, keeper robustness, dashboard security, sandbox storage v2, runner fixes, attestation renewal, check-in v1.1, node identity, cell-consumed trigger, update check) and the integration fixes; a spent cell counts as consumed when the node answers `unknown`; devnet manual checks `scripts/manual-checks.sh`.
 - csr-update-check phase 1 (D5 B): update check and verified staging. `csr update check|stage|verify`, `GET /api/update`, `POST /api/update/install` (needs a dashboard password), daily background check with a notice and "Check for update"/"Update" on the Overview; ed25519-signed `SHA256SUMS` checked against `RELEASE_PUBKEY` (all zeros in this build: every update is refused); root installer `config/csr-update.path`, `config/csr-update.service`, `scripts/install-update.sh` (verify by the installed binary, `csr.prev` rollback); `scripts/release.sh`, `docs/release.md`; `csr --version`.
 - A8b phase 1: `csr-dev attest` no longer has a devnet faucet (`--faucet-ckb`, the transfer, the `faucet` JSON key and the stderr line are gone); the A8 tests that needed it are replaced by `acceptance/a8b/p3`–`p5` with 700 CKB; setup figures in the docs corrected (about 700 CKB to send, registry cell about 540 CKB). See `docs/milestones/A8b.md`.
 - A8b phase 2: dashboard – setup text (700/540 CKB), runner address shown in full without a Copy button, Copy of the text to sign works over plain http (execCommand fallback), project logo (header, login, favicon), PNG served as `image/png`.
@@ -49,3 +48,6 @@
 - Outbound check-in (`ping_mode` outbound/both): `/v1/checkin` → validated challenge → `/v1/answer`, every 10 min (2 s with fast tick), `last_check_ok_at` on acceptance.
 - Rust mock monitor and ping-flow integration tests; README, `docs/milestones/A1.md`, open questions. **Milestone A1 complete.**
 - A3b Phase 3: `csr runner-cell status`, `csr float prepare-*|status`, `csr tx submit`, matching HTTP routes and a dashboard Float page.
+
+## 0.1.0
+- First Phase 1 release: release profile, `scripts/package.sh` (tarball + SHA256SUMS), `config/csr.service`, `docs/install.md`, greyed-out runtime toggle on mainnet; `docs/milestones/A4.md`.
