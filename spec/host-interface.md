@@ -117,7 +117,7 @@ entry cannot be copied into another service. `csr run` migrates version 1 data a
 (`storage.per_service_quota_mb`, `storage.total_quota_mb`) count plaintext key + value bytes and the
 rules. `delete_on_consume` rules are kept encrypted in `rules.bin` (at most 256 rules per service; more
 return `SVC_QUOTA_EXCEEDED`, as does a rule that no longer fits the quota; rules count in the quota; deleting a key drops its rules); `csr run` checks the out points of all rules with `get_live_cell` on every new block and deletes the
-entries of consumed (`dead`) cells, also for disabled services; node errors keep the rules. `csr storage simulate-consumed
+entries of consumed cells (`dead`, or `unknown` with a committed creating transaction), also for disabled services; node errors keep the rules. `csr storage simulate-consumed
 --outpoint 0x<64 hex>:<index>` stays as a manual tool that applies them. Deletions are appended as `time service outpoint` (never content) to
 `service_data/deletions.log`.
 

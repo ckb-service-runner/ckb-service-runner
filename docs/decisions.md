@@ -419,7 +419,7 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 `SkeletonPolicy`) and fails the run before anything is signed if the input is a runner wallet cell, a dual lock
 cell naming the runner lock hash (either half), a job-lock cell, or a registry-typed cell.
 ## F-RUN-001 – delete_on_consume in csr run
-- A background task (own `RpcClient`, checks every 2 s, acts when the tip number changes) asks `get_live_cell` for every rule out point; only status `dead` counts as consumed. `live`, `unknown`, RPC errors and missing methods keep the rules. It runs regardless of the runtime state.
+- A background task (own `RpcClient`, checks every 2 s, acts when the tip number changes) asks `get_live_cell` for every rule out point. A cell counts as consumed when the node answers `dead`, or `unknown` while the transaction that created it is committed and has that output (a current CKB node answers `unknown` for spent cells; integration fix, Oct 2026). `live`, cells of unknown or uncommitted transactions, RPC errors and missing methods keep the rules. It runs regardless of the runtime state.
 - Deletion log lines go to the tracing log and are appended to `deletions.log` in the storage root, like the CLI does.
 ## Keeper robustness – phase 2
 - **Retry rules unchanged (D14 A):** three attempts per job cell, 30 blocks for an unknown transaction, 500 for a pending one and for a pending sweep.
@@ -502,7 +502,7 @@ monitor client use the first entry. The dashboard shows the list; editing stays 
 - Changing `node.p2p_key_file` in the dashboard settings requires a restart (the key is read at start only).
 ## D2 A – `OnCellConsumed` is watched by the runner
 - **Decision.** A job that should run when a cell is spent is an ordinary `OnDemand` job cell whose payload starts with the 41-byte watch header `"CSRW"` ‖ `01` ‖ out point (36 bytes). No contract change. The runner excludes it (`waiting_for_cell`) until it has seen the cell consumed, then runs it normally. The chain cannot check this, so a runner ignoring the convention could run it early; the standard says so.
-- **Watcher.** On every new block the keeper calls `get_live_cell` for the watched out points of the job cells it saw; `dead` is stored in `watched_cells (outpoint, dead_block)`. `live`, `unknown` and RPC errors mean "not yet". Rows no job cell watches any more are removed 1,000 blocks after the cell was found dead. The check lives in the keeper tick (the separate consumed-cell task of `fix-runner-delete-on-consume` is not in this code base).
+- **Watcher.** On every new block the keeper checks the watched out points of the job cells it saw with the same rule (`chain::cell_consumed`: `dead`, or `unknown` with a committed creating transaction that has the output); consumed ones are stored in `watched_cells (outpoint, dead_block)`. Live cells, cells of unknown transactions and RPC errors mean "not yet". Rows no job cell watches any more are removed 1,000 blocks after the cell was found dead. The check lives in the keeper tick (the separate consumed-cell task of `fix-runner-delete-on-consume` is not in this code base).
 - **Details.** Headers on triggers other than `OnDemand` are ignored. The run's trigger label is `on-cell-consumed:0x<tx hash>:<index>`. The service gets the whole payload including the header.
 ## csr-update-check – the mainnet gate is switched on by a release (D5 B)
 

@@ -197,8 +197,8 @@ impl Sweeper {
     }
 }
 
-/// One check of the `delete_on_consume` rules: out points reported `dead` by the node are consumed;
-/// `live`, `unknown`, RPC errors and missing methods keep the rules.
+/// One check of the `delete_on_consume` rules: consumed out points (`chain::cell_consumed`) are applied;
+/// live cells, cells of unknown transactions, RPC errors and missing methods keep the rules.
 async fn watch_consumed(client: &RpcClient, root: &Path, key: &[u8; 32]) -> Result<(), String> {
     let ops = crate::storage::rule_outpoints(root, key)?;
     if ops.is_empty() {
@@ -206,13 +206,10 @@ async fn watch_consumed(client: &RpcClient, root: &Path, key: &[u8; 32]) -> Resu
     }
     let mut answers = std::collections::HashMap::new();
     for op in ops {
-        let params = serde_json::json!([
-            {"tx_hash": format!("0x{}", hex::encode(&op[..32])),
-             "index": format!("0x{:x}", u32::from_le_bytes(op[32..].try_into().unwrap()))},
-            false
-        ]);
-        let answer = match client.call("get_live_cell", params).await {
-            Ok(r) => Ok(r["status"] != "dead"),
+        let tx_hash = format!("0x{}", hex::encode(&op[..32]));
+        let index = u32::from_le_bytes(op[32..].try_into().unwrap());
+        let answer = match crate::chain::cell_consumed(client, &tx_hash, index).await {
+            Ok(consumed) => Ok(!consumed),
             Err(_) => Err("get_live_cell failed".to_string()),
         };
         answers.insert(op, answer);

@@ -8,3 +8,4 @@ contracts/build/
 .devnet/
 deployments/devnet.json
 dist/
+manual-checks.log

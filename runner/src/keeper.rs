@@ -216,8 +216,8 @@ impl Keeper {
         self.track(st, tip.number).await
     }
 
-    /// Checks the cells watched by the job cells seen (`get_live_cell` per out point); the ones
-    /// found `dead` are remembered. `live`, `unknown` and RPC errors mean "not yet". Returns the
+    /// Checks the cells watched by the job cells seen (`chain::cell_consumed` per out point); the
+    /// consumed ones are remembered. Live cells and RPC errors mean "not yet". Returns the
     /// known consumed out points.
     async fn watch(&self, st: &AppState, seen: &[Job], tip: u64) -> Result<HashSet<[u8; 36]>, String> {
         let watched: HashSet<[u8; 36]> = seen
