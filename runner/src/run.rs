@@ -337,6 +337,8 @@ pub async fn run(
         node: RwLock::new(first),
         resources: RwLock::new(Some(monitor.sample())),
         last_check_ok_at: AtomicI64::new(0),
+        clock_skew_at: AtomicI64::new(0),
+        clock_skew_warned_at: AtomicI64::new(0),
         config_write: Mutex::new(()),
         wallet_tx: Default::default(),
         monitor_cache: Default::default(),

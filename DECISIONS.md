@@ -10,3 +10,9 @@ See docs/decisions.md, "Sandbox storage, phase 1".
 - The runner renews the registry attestation itself (`csr register refresh`, "Renew now", and automatically 2 days before expiry on the chain clock of the config cell, checked every 30 minutes, retried after 30 minutes on failure). A refresh needs no stake dep and no consent; only a runner-owned cell is refreshed.
 - `wallet_busy`, `SWEEP_PENDING_AFTER_BLOCKS` and the dashboard password check did not exist in this codebase yet; `wallet::wallet_busy` (refresh pending or keeper submissions pending) and the constant (100 blocks) were added with this change. The dashboard route uses the `wallet_tx` lock and the `wallet_busy` check; the password check applies through the existing session/CSRF middleware.
 - The last renewal error is kept in the settings key `renewal_error` and returned by `GET /api/registry`.
+## ping-v1-1-runner
+- Empty `url`/`pubkey` of a `[[monitors]]` entry take the network default, like the old `[monitor]` fields.
+- An entry with an unusable key is skipped with a warning on the inbound side; `attest` uses the first entry as given.
+- The 4096-byte body limit is checked in the handler (axum limit raised to 64 KiB) so `too_large` has a JSON body.
+- The Network page shows a clock-skew warning via `ping.clock_skew_at` of `GET /api/network`.
+- The monitor repository's spec and `docs/PROTOCOL.md` are outside this directory and not changed here.

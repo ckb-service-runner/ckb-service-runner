@@ -57,65 +57,84 @@ pub async fn answer_challenge(
     c: &Challenge,
     now: i64,
 ) -> Result<(Answer, String), Rej> {
-    let (monitor_pub, network, mode, rpc_url) = {
+    let (monitors, network, mode, rpc_url) = {
         let cfg = state.config.read().unwrap();
-        if !crate::network::monitor_key_usable(&crate::network::effective_monitor_key(&cfg)) {
+        let usable: Vec<_> = cfg
+            .monitors()
+            .into_iter()
+            .filter(|m| crate::network::monitor_key_usable(&m.pubkey))
+            .collect();
+        if usable.is_empty() {
             crate::network::monitor_key_problem(&cfg);
             return Err((StatusCode::SERVICE_UNAVAILABLE, "no monitor key set"));
         }
         (
-            crate::network::effective_monitor_key(&cfg),
+            usable,
             cfg.network.clone(),
             cfg.ranking.ping_mode.clone(),
             cfg.node.rpc_url.clone(),
         )
     };
     if !proto::valid_nonce(&c.nonce) {
-        return Err((StatusCode::BAD_REQUEST, "invalid nonce"));
+        return Err((StatusCode::BAD_REQUEST, "bad_request"));
     }
-    let pk = parse_pubkey(&monitor_pub)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "bad monitor key"))?;
     let msg = proto::challenge_message(&c.nonce, c.height, c.issued_at);
-    if !proto::verify(&pk, &msg, &c.monitor_sig) {
-        return Err((StatusCode::FORBIDDEN, "invalid monitor signature"));
+    let signed = monitors.iter().any(|m| match parse_pubkey(&m.pubkey) {
+        Ok(pk) => proto::verify(&pk, &msg, &c.monitor_sig),
+        Err(e) => {
+            tracing::warn!("skipping monitor {}: key not usable: {e}", m.url);
+            false
+        }
+    });
+    if !signed {
+        return Err((StatusCode::FORBIDDEN, "bad_monitor_signature"));
     }
-    if (now - c.issued_at).abs() > proto::FRESHNESS_SECS {
-        return Err((StatusCode::BAD_REQUEST, "challenge not fresh"));
-    }
-    let (tip_number, tip_hash, r2_state, node_version) = {
+    let (tip, r2_state, node_version) = {
         let n = state.node.read().unwrap();
-        let tip = n.snap.tip.as_ref();
         (
-            tip.map(|t| t.number),
-            tip.map(|t| t.hash.clone()),
+            n.snap.tip.as_ref().map(|t| (t.number, t.hash.clone())),
             n.report.state.as_str(),
             n.snap.node_version.clone(),
         )
     };
-    let (Some(tip_number), Some(tip_hash)) = (tip_number, tip_hash) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "node tip unknown"));
+    let status = proto::challenge_status(
+        tip.as_ref().map_or(0, |t| t.0),
+        c.height,
+        c.issued_at,
+        now,
+    );
+    let block_known = match status {
+        proto::ChallengeStatus::ClockSkew => {
+            state.note_clock_skew(now);
+            return Err((StatusCode::BAD_REQUEST, "clock_skew"));
+        }
+        proto::ChallengeStatus::Answer { block_known } => block_known,
     };
-    if c.height > tip_number {
-        return Err((StatusCode::BAD_REQUEST, "height above tip"));
-    }
+    let Some((tip_number, tip_hash)) = tip else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "node_unavailable"));
+    };
     let peer_id = state.peer_id.read().unwrap().clone();
     let (Some(peer_id), Some(node_version)) = (peer_id, node_version) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "node info unknown"));
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "node_unavailable"));
     };
     if !state.reserve_ping_nonce(&c.nonce, now) {
-        return Err((StatusCode::CONFLICT, "nonce already answered"));
+        return Err((StatusCode::CONFLICT, "replay"));
     }
-    let block_hash = match RpcClient::new(&rpc_url)
-        .call("get_block_hash", json!([format!("0x{:x}", c.height)]))
-        .await
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-    {
-        Some(h) => h,
-        None => {
-            // A failed attempt does not burn the nonce.
-            state.release_ping_nonce(&c.nonce);
-            return Err((StatusCode::SERVICE_UNAVAILABLE, "block hash unavailable"));
+    let block_hash = if !block_known {
+        String::new()
+    } else {
+        match RpcClient::new(&rpc_url)
+            .call("get_block_hash", json!([format!("0x{:x}", c.height)]))
+            .await
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+        {
+            Some(h) => h,
+            None => {
+                // A failed attempt does not burn the nonce.
+                state.release_ping_nonce(&c.nonce);
+                return Err((StatusCode::SERVICE_UNAVAILABLE, "node_unavailable"));
+            }
         }
     };
     let binding_sig = proto::sign(
@@ -141,16 +160,23 @@ pub async fn answer_challenge(
     Ok((answer, sig))
 }
 
+fn rej((status, code): Rej) -> Response {
+    (status, Json(json!({"error": code}))).into_response()
+}
+
 async fn challenge(
     State(r): State<Arc<Responder>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     body: Bytes,
 ) -> Response {
     if !r.rate_ok(addr.ip()) {
-        return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
+        return rej((StatusCode::TOO_MANY_REQUESTS, "rate_limited"));
+    }
+    if body.len() > BODY_LIMIT {
+        return rej((StatusCode::PAYLOAD_TOO_LARGE, "too_large"));
     }
     let Ok(c) = serde_json::from_slice::<Challenge>(&body) else {
-        return (StatusCode::BAD_REQUEST, "malformed challenge").into_response();
+        return rej((StatusCode::BAD_REQUEST, "bad_request"));
     };
     let now = crate::run::now();
     match answer_challenge(&r.state, &c, now).await {
@@ -160,7 +186,7 @@ async fn challenge(
         }
         Err(e) => {
             tracing::info!("ping challenge rejected: {}", e.1);
-            e.into_response()
+            rej(e)
         }
     }
 }
@@ -168,6 +194,6 @@ async fn challenge(
 pub fn router(r: Arc<Responder>) -> Router {
     Router::new()
         .route("/v1/challenge", post(challenge))
-        .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT * 16))
         .with_state(r)
 }

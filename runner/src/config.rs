@@ -12,6 +12,9 @@ pub struct Config {
     pub dashboard: DashboardCfg,
     pub ranking: RankingCfg,
     pub monitor: MonitorCfg,
+    /// Several monitors (`[[monitors]]`); excludes the old one-entry `[monitor]` section.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub monitors: Vec<MonitorCfg>,
     pub runtime: RuntimeCfg,
     pub limits: LimitsCfg,
     pub storage: StorageCfg,
@@ -49,6 +52,30 @@ pub struct RankingCfg {
     pub join: bool,
     pub ping_mode: String,
     pub ping_bind: String,
+}
+
+fn check_monitor(name: &str, m: &MonitorCfg) -> Result<(), String> {
+    if !m.url.is_empty() {
+        let bad = || {
+            format!(
+                "{name}.url must use https (http only for loopback hosts), got \"{}\"",
+                m.url
+            )
+        };
+        let mu = url::Url::parse(&m.url).map_err(|_| bad())?;
+        let ok = match mu.scheme() {
+            "https" => mu.host_str().is_some(),
+            "http" => is_loopback_host(mu.host_str().unwrap_or("")),
+            _ => false,
+        };
+        if !ok {
+            return Err(bad());
+        }
+    }
+    if !m.pubkey.is_empty() {
+        parse_pubkey(&m.pubkey).map_err(|e| format!("{name}.pubkey: {e}"))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
@@ -126,6 +153,7 @@ impl Default for Config {
             dashboard: DashboardCfg::default(),
             ranking: RankingCfg::default(),
             monitor: MonitorCfg::default(),
+            monitors: Vec::new(),
             runtime: RuntimeCfg::default(),
             limits: LimitsCfg::default(),
             storage: StorageCfg::default(),
@@ -234,6 +262,23 @@ impl Config {
     }
 
     /// Parses TOML text and validates it.
+    /// The effective monitor list: `[[monitors]]`, else the old `[monitor]` values, else the
+    /// network's reference monitor. Empty fields of an entry take the network default.
+    pub fn monitors(&self) -> Vec<MonitorCfg> {
+        let d = crate::network::NetworkDefaults::for_network(&self.network);
+        let list = if self.monitors.is_empty() {
+            vec![self.monitor.clone()]
+        } else {
+            self.monitors.clone()
+        };
+        list.into_iter()
+            .map(|m| MonitorCfg {
+                url: if m.url.is_empty() { d.monitor_url.clone() } else { m.url },
+                pubkey: if m.pubkey.is_empty() { d.monitor_pubkey.clone() } else { m.pubkey },
+            })
+            .collect()
+    }
+
     pub fn parse(text: &str) -> Result<Config, String> {
         let cfg: Config = toml::from_str(text).map_err(|e| format!("invalid config: {e}"))?;
         cfg.validate()?;
@@ -354,25 +399,12 @@ impl Config {
             .parse::<SocketAddr>()
             .map_err(|e| format!("ranking.ping_bind is not a valid address: {e}"))?;
 
-        if !self.monitor.url.is_empty() {
-            let bad = || {
-                format!(
-                    "monitor.url must use https (http only for loopback hosts), got \"{}\"",
-                    self.monitor.url
-                )
-            };
-            let mu = url::Url::parse(&self.monitor.url).map_err(|_| bad())?;
-            let ok = match mu.scheme() {
-                "https" => mu.host_str().is_some(),
-                "http" => is_loopback_host(mu.host_str().unwrap_or("")),
-                _ => false,
-            };
-            if !ok {
-                return Err(bad());
-            }
+        if !self.monitors.is_empty() && self.monitor != MonitorCfg::default() {
+            return Err("set either [monitor] or [[monitors]], not both".into());
         }
-        if !self.monitor.pubkey.is_empty() {
-            parse_pubkey(&self.monitor.pubkey).map_err(|e| format!("monitor.pubkey: {e}"))?;
+        check_monitor("monitor", &self.monitor)?;
+        for (i, m) in self.monitors.iter().enumerate() {
+            check_monitor(&format!("monitors[{i}]"), m)?;
         }
 
         if !self.runtime.min_ckb_per_mcycle.is_finite() || self.runtime.min_ckb_per_mcycle < 0.0 {

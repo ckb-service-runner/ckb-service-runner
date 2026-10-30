@@ -1,4 +1,4 @@
-//! Ping protocol v1: message builders, signing and verification (see `spec/ping-protocol.md`).
+//! Ping protocol v1.1: message builders, signing and verification (see `spec/ping-protocol.md`).
 
 use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -40,6 +40,28 @@ pub fn challenge_message(nonce: &str, height: u64, issued_at: i64) -> String {
 
 pub fn binding_message(peer_id: &str, service_pubkey: &str, network: &str) -> String {
     format!("CSR-BINDING-v1\n{peer_id}\n{service_pubkey}\n{network}")
+}
+
+/// The message the service key signs in a check-in (`ts` in unix seconds).
+pub fn checkin_message(peer_id: &str, service_pubkey: &str, network: &str, ts: i64) -> String {
+    format!("CSR-CHECKIN-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChallengeStatus {
+    Answer { block_known: bool },
+    ClockSkew,
+}
+
+/// `ClockSkew` when |now - issued_at| > FRESHNESS_SECS; otherwise answer, with the block known when height <= tip.
+pub fn challenge_status(tip: u64, height: u64, issued_at: i64, now: i64) -> ChallengeStatus {
+    if (now - issued_at).abs() > FRESHNESS_SECS {
+        ChallengeStatus::ClockSkew
+    } else {
+        ChallengeStatus::Answer {
+            block_known: height <= tip,
+        }
+    }
 }
 
 pub fn answer_message(a: &Answer) -> String {
@@ -189,3 +211,7 @@ mod tests {
         assert!(!valid_nonce("0xab"));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../acceptance/aiworker-ping-v1-1-runner/ping_v11_tests.rs"]
+mod aiworker_ping_v11_tests;

@@ -468,3 +468,16 @@ cell naming the runner lock hash (either half), a job-lock cell, or a registry-t
 - The runner renews the registry attestation itself (`csr register refresh`, "Renew now", and automatically 2 days before expiry on the chain clock of the config cell, checked every 30 minutes, retried after 30 minutes on failure). A refresh needs no stake dep and no consent; only a runner-owned cell is refreshed.
 - `wallet_busy`, `SWEEP_PENDING_AFTER_BLOCKS` and the dashboard password check did not exist in this codebase yet; `wallet::wallet_busy` (refresh pending or keeper submissions pending) and the constant (100 blocks) were added with this change. The dashboard route uses the `wallet_tx` lock and the `wallet_busy` check; the password check applies through the existing session/CSRF middleware.
 - The last renewal error is kept in the settings key `renewal_error` and returned by `GET /api/registry`.
+## Ping protocol v1.1 (runner)
+
+### D19 A: several monitors
+`[[monitors]]` (each with `url` and `pubkey`) replaces the single `[monitor]`, which still works as a one-entry list;
+both together are a config error. Default: the network's reference monitor. Inbound accepts a challenge signed by any
+configured monitor, the outbound check-in goes to each monitor independently, `csr register attest` and the dashboard's
+monitor client use the first entry. The dashboard shows the list; editing stays in the file.
+
+### v1.1 changes
+- Fresh check-in: `ts` and `checkin_sig` (`CSR-CHECKIN-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}`) so a copied binding cannot be replayed (F-XC-001). Monitors that do not know them ignore them.
+- A challenge with a height above the tip gets a signed answer with empty `block_hash_at_height`; a stale challenge gets 400 `clock_skew`, warned at most every 10 minutes and shown on the Network page (F-XC-004).
+- Rejections carry JSON `{"error": "<code>"}`.
+- One error table for `POST /v1/attest` in `spec/monitor-public-api.md`, explained by `attest::explain_error` (F-XC-003); `wrong_owner` is gone, `stake_in_use` is 403.

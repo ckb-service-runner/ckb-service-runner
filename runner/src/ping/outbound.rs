@@ -38,30 +38,30 @@ pub async fn run(state: Arc<AppState>, mut stop: watch::Receiver<bool>) {
             let c = state.config.read().unwrap();
             c.ranking.join
                 && matches!(c.ranking.ping_mode.as_str(), "outbound" | "both")
-                && (crate::network::monitor_key_usable(&crate::network::effective_monitor_key(&c))
-                    || crate::network::monitor_key_problem(&c).is_none())
         };
         if !enabled {
             continue;
         }
-        if let Err(e) = checkin_once(&state, &http).await {
-            tracing::warn!("outbound check-in failed: {e}");
+        let monitors = state.config.read().unwrap().monitors();
+        for m in monitors {
+            // A monitor without a usable key (empty, or the placeholder) gets no check-in.
+            if !crate::network::monitor_key_usable(&m.pubkey) {
+                tracing::debug!("no check-in to {}: no usable monitor key", m.url);
+                continue;
+            }
+            if let Err(e) = checkin_once(&state, &http, &m.url).await {
+                tracing::warn!("outbound check-in to {} failed: {e}", m.url);
+            }
         }
     }
 }
 
-fn monitor_base(state: &AppState) -> String {
-    let c = state.config.read().unwrap();
-    let url = if c.monitor.url.is_empty() {
-        crate::network::NetworkDefaults::for_network(&c.network).monitor_url
-    } else {
-        c.monitor.url.clone()
-    };
-    url.trim_end_matches('/').to_string()
-}
-
-async fn checkin_once(state: &AppState, http: &reqwest::Client) -> Result<(), String> {
-    let base = monitor_base(state);
+async fn checkin_once(
+    state: &AppState,
+    http: &reqwest::Client,
+    base: &str,
+) -> Result<(), String> {
+    let base = base.trim_end_matches('/');
     let network = state.config.read().unwrap().network.clone();
     let Some(peer_id) = state.peer_id.read().unwrap().clone() else {
         return Err("node peer id unknown".into());
@@ -70,12 +70,19 @@ async fn checkin_once(state: &AppState, http: &reqwest::Client) -> Result<(), St
         &state.service_key,
         &proto::binding_message(&peer_id, &state.service_pubkey, &network),
     );
+    let ts = crate::run::now();
+    let checkin_sig = proto::sign(
+        &state.service_key,
+        &proto::checkin_message(&peer_id, &state.service_pubkey, &network, ts),
+    );
     let body = json!({
         "peer_id": peer_id,
         "service_pubkey": state.service_pubkey,
         "binding_sig": binding_sig,
         "network": network,
         "csr_version": env!("CARGO_PKG_VERSION"),
+        "ts": ts,
+        "checkin_sig": checkin_sig,
     });
     let resp = http
         .post(format!("{base}/v1/checkin"))
