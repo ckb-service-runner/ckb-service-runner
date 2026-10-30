@@ -205,6 +205,7 @@ impl Sessions {
         }
     }
 
+    #[cfg(test)]
     pub fn anonymous_count(&self) -> usize {
         self.inner
             .lock()
