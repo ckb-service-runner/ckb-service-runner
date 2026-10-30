@@ -255,7 +255,7 @@ pub fn select(cfg: &Config, allow: &[String], tip: &TipInfo, jobs: Vec<Job>) -> 
 /// Reads the live job cells and the tip, and computes the plan.
 pub async fn plan_now(chain: &Chain, db: &Db, cfg: &Config) -> Result<Plan, String> {
     let tip = chain.tip_info().await?;
-    let jobs: Vec<Job> = chain.job_cells().await?.iter().filter_map(decode).collect();
+    let jobs: Vec<Job> = chain.job_cells().await?.jobs.iter().filter_map(decode).collect();
     Ok(select(cfg, &allowlist(db, cfg)?, &tip, jobs))
 }
 

@@ -421,3 +421,12 @@ cell naming the runner lock hash (either half), a job-lock cell, or a registry-t
 ## F-RUN-001 – delete_on_consume in csr run
 - A background task (own `RpcClient`, checks every 2 s, acts when the tip number changes) asks `get_live_cell` for every rule out point; only status `dead` counts as consumed. `live`, `unknown`, RPC errors and missing methods keep the rules. It runs regardless of the runtime state.
 - Deletion log lines go to the tracing log and are appended to `deletions.log` in the storage root, like the CLI does.
+## Keeper robustness – phase 2
+- **Retry rules unchanged (D14 A):** three attempts per job cell, 30 blocks for an unknown transaction, 500 for a pending one and for a pending sweep.
+- **Incomplete discovery (F-FUN-007):** `Chain::job_cells` reads up to 200 pages and returns `JobCells { jobs, complete }`; a cut-off list never marks runs `Lost` (`lost_runs`), and warns once. `get_cells` (20 pages) returns an error instead of a short list.
+- **Indexer lag (F-FUN-008):** `indexer_ready` accepts the lag R2 accepts (`LAG_LIMIT`, 5 blocks).
+- **Attestation (F-RUN-015):** `run_context` compares the registry `expiry_ms` with the config cell `clock_ms`; an expired attestation is an error, so the batch is held and the runs stay waiting.
+- **Sweep (F-FUN-005):** the pending sweep is stored as `"<hash>:<block>"` under `sweep_pending` (cleared with an empty value) and given up after 500 blocks. While it is pending the keeper loop only follows submitted transactions (`Keeper::follow`), it starts no batch.
+- **Config bounds (F-FUN-006):** `sweep_amount_ckb` ≤ 1,000,000,000 (was 100,000,000), `sweep_threshold_ckb` ≤ 2,000,000,000, RAM/disk/quota ranges as in the spec; multiplications are checked or saturating.
+- **Supervision (F-FUN-004):** all background tasks (R2 guard, sampler, keeper loop, outbound check-in, dashboard, ping responder) are in a `JoinSet`; one ending before a shutdown request ends `csr run` with an error (non-zero exit), and systemd restarts it (`Restart=on-failure`).
+- **Pause rule (D4 A):** holds pause only runs that have not started; a started run finishes within `max_job_wall_seconds`. Comments and `docs/architecture.md` corrected; the lifecycle is in `spec/job-cell-standard.md`.

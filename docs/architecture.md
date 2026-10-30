@@ -49,7 +49,7 @@ Local check, in code, not configurable:
 - node RPC must be localhost; remote URLs are refused
 - before start and before every job: not in initial block download, tip within
   a few blocks of the best known tip, has outbound peers
-- if a check fails: pause running jobs, start no new ones
+- if a check fails: hold runs that have not started yet (they are paused), start no new ones; a run that has started finishes, within `max_job_wall_seconds`
 
 Remote proof:
 
@@ -96,4 +96,4 @@ are node diversity, bonding/slashing on leaks, and thresholds.
 
 - **Allowlist, not auto-discovery.** Only code hashes the operator approved run.
 - **The runner wallet, no operator wallet signing.** The runner owns a plain wallet (cells of its own service-key lock) that pays the registration and its fees and receives the tips; it sweeps surplus to the operator's `sweep_address` (any full-format address). The DAO stake stays in the operator's wallet, which consents once by signing a text.
-- **The node always wins.** Services pause while syncing or under load.
+- **The node always wins.** Runs that have not started wait while the node syncs or is under load.
