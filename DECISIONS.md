@@ -19,3 +19,4 @@ See docs/decisions.md, "Sandbox storage, phase 1".
 ## Node identity – runner, Phase 1
 
 See `docs/decisions.md`, section "Node identity – runner" (D6 A, D12 A and the "Phase 1 implementation notes"): single configured monitor (no `Config::monitors()` here), own base58 instead of `bs58` (offline build), erase-on-drop instead of a `zeroize` setup that does not exist here, the extra `unknown` identity state, `add_node` gated on `ranking.join` only, 10-minute retries after failures.
+csr-update-check phase 1: see `docs/decisions.md`, section "csr-update-check – the mainnet gate is switched on by a release (D5 B)".

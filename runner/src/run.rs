@@ -347,6 +347,7 @@ pub async fn run(
         monitor_cache: Default::default(),
         sessions: Default::default(),
         login_limiter: Default::default(),
+        update: Default::default(),
         config: RwLock::new(cfg),
         p2p_key,
         identity_status: RwLock::new(identity_status.clone()),
@@ -675,6 +676,8 @@ pub async fn run(
     names.insert(h.id(), "node identity proofs");
     let h = tasks.spawn(crate::monitor::add_node_loop(state.clone(), stop_rx.clone()));
     names.insert(h.id(), "add_node");
+    let h = tasks.spawn(crate::update::background(state.clone(), stop_rx.clone()));
+    names.insert(h.id(), "update check");
 
     let result = tokio::select! {
         biased;

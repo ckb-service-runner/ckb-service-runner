@@ -42,6 +42,7 @@ pub fn write_needs_password(method: &Method, path: &str) -> bool {
         || path.starts_with("/api/wallet/")
         || path.starts_with("/api/services/")
         || path.starts_with("/api/registry/")
+        || path.starts_with("/api/update/")
 }
 
 /// On a loopback bind only the loopback names with the bound port are accepted (DNS rebinding).
@@ -274,6 +275,9 @@ fn err(code: StatusCode, msg: &str) -> Response {
     (code, Json(json!({"error": msg}))).into_response()
 }
 
+/// Writes that need a dashboard password to be set: without one they are refused (403), so that
+/// nobody who reaches an unprotected dashboard can install software on the host.
+/// `csr update stage` stays available on the command line.
 /// Auth for `/api/*` (except session/login) and CSRF for every write.
 pub async fn guard(State(s): St, req: Request, next: Next) -> Response {
     let path = req.uri().path();
@@ -391,3 +395,14 @@ pub async fn login(
 #[cfg(test)]
 #[path = "../../../acceptance/aiworker-csr-dashboard-security/dashboard_security_tests.rs"]
 mod aiworker_dashboard_security_tests;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_writes_need_a_password() {
+        assert!(write_needs_password(&Method::POST, "/api/update/install"));
+        assert!(!write_needs_password(&Method::GET, "/api/update"));
+        assert!(write_needs_password(&Method::POST, "/api/wallet/send"));
+    }
+}

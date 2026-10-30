@@ -21,6 +21,7 @@ mod run;
 mod runtime;
 mod service;
 mod storage;
+mod update;
 mod wallet;
 mod web;
 
@@ -40,7 +41,7 @@ use std::process::ExitCode;
 #[command(
     name = "csr",
     about = "CSR - CKB Service Runner",
-    disable_version_flag = true
+    version
 )]
 struct Cli {
     /// Data root directory (default: $HOME/.csr)
@@ -127,10 +128,36 @@ enum Command {
         #[command(subcommand)]
         action: JobsAction,
     },
+    /// Check for, stage and verify updates (signed GitHub releases)
+    Update {
+        #[command(subcommand)]
+        action: UpdateAction,
+    },
     /// Run the service
     Run {
         #[arg(long)]
         confirm_mainnet: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum UpdateAction {
+    /// Ask GitHub for the latest release and compare it with this version
+    Check {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download and verify the latest release and stage it in <data root>/<network>/update/
+    Stage {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check staged files with this binary's release key and version (no network); exit 0 if valid
+    Verify {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -556,6 +583,20 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Update { action } => match action {
+            UpdateAction::Check { json } => {
+                let cache = update::Cache::default();
+                print_result(runtime().block_on(cache.check()), *json)
+            }
+            UpdateAction::Stage { json } => {
+                let r = load_config(&cli).and_then(|cfg| {
+                    let dir = data_root(&cli).join(&cfg.network).join("update");
+                    runtime().block_on(update::Cache::default().stage(&dir))
+                });
+                print_result(r, *json)
+            }
+            UpdateAction::Verify { dir, json } => print_result(update::verify_dir(dir), *json),
+        },
         Command::RunnerCell {
             action: RunnerCellAction::Status { json },
         } => chain_cmd(&cli, *json, |c| async move { c.runner_cell_status().await }),

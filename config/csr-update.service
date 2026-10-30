@@ -1,0 +1,12 @@
+# Installs a staged CSR update as root: the installed /usr/local/bin/csr verifies it first
+# (`csr update verify`), then it replaces the binary (previous one kept as csr.prev) and restarts
+# csr.service. Started by csr-update.path; see docs/install.md.
+# The directory must match the PathExists= line of csr-update.path.
+[Unit]
+Description=CSR - install a staged update
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/lib/csr/install-update.sh /var/lib/csr/testnet/update
+PrivateNetwork=yes

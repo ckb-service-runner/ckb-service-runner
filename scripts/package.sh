@@ -10,7 +10,8 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/$NAME" dist
 install -m 0755 target/release/csr "$STAGE/$NAME/csr"
-install -m 0644 config/csr.example.toml config/csr.service "$STAGE/$NAME/"
+install -m 0644 config/csr.example.toml config/csr.service config/csr-update.path config/csr-update.service "$STAGE/$NAME/"
+install -m 0755 scripts/install-update.sh "$STAGE/$NAME/install-update.sh"
 install -m 0644 README.md "$STAGE/$NAME/README.md"
 install -m 0644 docs/install.md "$STAGE/$NAME/INSTALL.md"
 [ -f LICENSE ] && install -m 0644 LICENSE "$STAGE/$NAME/LICENSE"

@@ -56,6 +56,8 @@ pub struct AppState {
     pub identity_proofs: Mutex<std::collections::BTreeMap<String, Value>>,
     /// `add_node` found the node's Net RPC module off.
     pub net_rpc_missing: AtomicBool,
+    /// Last update check and the lock of check/stage.
+    pub update: crate::update::Cache,
 }
 
 /// Shown when the node's Net RPC module is off (`add_node` and `get_peers` are "method not found").
@@ -106,6 +108,7 @@ impl AppState {
             "runtime": {"state": state, "reason": reason},
             "mainnet_runtime_unlocked": mainnet_runtime_unlocked(),
             "node_identity": self.identity_status.read().unwrap().state,
+            "update": self.update.cached_json(),
             "ranking": {
                 "join": cfg.ranking.join,
                 "ping_mode": cfg.ranking.ping_mode,

@@ -141,6 +141,63 @@ and the Node page shows it. CSR never removes peers or calls other Net methods.
 
 ## Upgrade
 
+### From the dashboard (signed releases)
+
+The Overview shows a notice when a newer release exists (CSR asks GitHub once a day; only the
+request itself is sent). "Check for update" asks at once; "Update" downloads the binary for this
+machine, `SHA256SUMS` and `SHA256SUMS.sig` from the GitHub release, checks the signature against the
+release key built into CSR and the binary's SHA-256, and stages it in
+`/var/lib/csr/<network>/update/`. The same on the command line:
+
+```sh
+sudo -u csr csr --data-root /var/lib/csr update check
+sudo -u csr csr --data-root /var/lib/csr update stage
+```
+
+The dashboard's Update button needs a dashboard password (`csr set-password`); without one use the
+command line. Builds without a configured release key refuse every update ("no release key
+configured"): upgrade manually (below).
+
+CSR runs as the unprivileged `csr` user and cannot replace its own binary. A small root installer
+does it: install it once.
+
+```sh
+sudo install -d -m 0755 /usr/local/lib/csr
+sudo install -m 0755 -o root -g root install-update.sh /usr/local/lib/csr/install-update.sh
+sudo install -m 0644 csr-update.path csr-update.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now csr-update.path
+```
+
+(All three files are in the release tarball; in the repository they are `scripts/install-update.sh` and `config/`.)
+The shipped units watch `/var/lib/csr/testnet/update/ready.json`. For **mainnet**, or another data
+root, change the path in both files: `PathExists=` in `csr-update.path` and the argument of
+`ExecStart=` in `csr-update.service` must be `<data root>/<network>/update` (with `ready.json` in
+the path unit). Run `sudo systemctl daemon-reload` and restart `csr-update.path` afterwards.
+
+When `ready.json` appears, `csr-update.service` runs `install-update.sh`, which
+
+1. copies the staged files into a root-only directory (read as the `csr` user),
+2. lets the **installed** `/usr/local/bin/csr update verify` check them (signature, SHA-256, newer
+   version; no network),
+3. keeps the current binary as `/usr/local/bin/csr.prev`, installs the new one
+   (`install -m 0755 -o root -g root`), removes the staged files and restarts `csr`;
+   if the new binary's `csr --version` fails, it puts `csr.prev` back and restarts.
+
+A failed check moves the staged files to `/var/lib/csr/<network>/update/rejected/`. Logs:
+`journalctl -u csr-update`.
+
+### Roll back
+
+```sh
+sudo install -m 0755 -o root -g root /usr/local/bin/csr.prev /usr/local/bin/csr
+sudo systemctl restart csr
+```
+
+(The updater itself never installs an older version.)
+
+### Manually
+
 ```sh
 sudo systemctl stop csr
 sudo install -m 0755 csr /usr/local/bin/csr
@@ -152,8 +209,10 @@ Data in `/var/lib/csr` is kept. Read `CHANGELOG.md` for config changes.
 ## Uninstall
 
 ```sh
-sudo systemctl disable --now csr
-sudo rm /etc/systemd/system/csr.service /usr/local/bin/csr
+sudo systemctl disable --now csr csr-update.path
+sudo rm /etc/systemd/system/csr.service /etc/systemd/system/csr-update.path \
+  /etc/systemd/system/csr-update.service /usr/local/bin/csr /usr/local/bin/csr.prev
+sudo rm -r /usr/local/lib/csr
 sudo userdel csr
 sudo rm -r /var/lib/csr    # deletes keys and data: back up first
 ```
