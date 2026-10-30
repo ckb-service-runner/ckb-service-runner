@@ -1345,16 +1345,10 @@ impl Chain {
         Ok(Some((out.into(), data)))
     }
 
-    /// Does the node report the cell as `dead` (`live` and `unknown` are not)?
+    /// Is the cell consumed (see `cell_consumed`)?
     pub async fn is_dead(&self, outpoint: &str) -> Result<bool, String> {
         let (h, i) = parse_out_point(outpoint)?;
-        let r = self
-            .call(
-                "get_live_cell",
-                json!([{"tx_hash": h, "index": format!("0x{i:x}")}, false]),
-            )
-            .await?;
-        Ok(r["status"] == "dead")
+        cell_consumed(&self.rpc, &h, i).await
     }
 
     pub async fn is_live(&self, outpoint: &str) -> Result<bool, String> {
@@ -1780,6 +1774,37 @@ fn script_ref(s: &Script) -> ScriptRef {
     }
 }
 
+/// Whether a cell was consumed. A current CKB node answers `get_live_cell` with `unknown` (not
+/// `dead`) for a spent cell, so `unknown` counts as consumed when the transaction that created the
+/// cell is committed and has that output; a cell of an unknown or uncommitted transaction is not.
+pub async fn cell_consumed(rpc: &RpcClient, tx_hash: &str, index: u32) -> Result<bool, String> {
+    let live = rpc
+        .call(
+            "get_live_cell",
+            json!([{"tx_hash": tx_hash, "index": format!("0x{index:x}")}, false]),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    match live["status"].as_str() {
+        Some("dead") => return Ok(true),
+        Some("unknown") => {}
+        _ => return Ok(false),
+    }
+    let tx = rpc
+        .call("get_transaction", json!([tx_hash]))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(created_and_committed(&tx, index))
+}
+
+/// The `get_transaction` answer shows a committed transaction with an output at `index`.
+pub fn created_and_committed(tx: &Value, index: u32) -> bool {
+    tx["tx_status"]["status"] == "committed"
+        && tx["transaction"]["outputs"]
+            .as_array()
+            .is_some_and(|o| (index as usize) < o.len())
+}
+
 /// What a skeleton input must not be: a cell owned by the runner.
 pub struct SkeletonPolicy {
     pub runner_lock: ScriptRef,
@@ -1813,6 +1838,26 @@ pub fn check_skeleton_input(
         return Ok(());
     };
     Err(format!("skeleton input {index} {reason}: a skeleton must not spend runner-owned cells"))
+}
+
+#[cfg(test)]
+mod consumed_tests {
+    use super::created_and_committed;
+    use serde_json::json;
+
+    // Integration (Oct 2026): CKB answers `unknown` for a spent cell; the creating transaction decides.
+    #[test]
+    fn unknown_cell_of_a_committed_output_is_consumed() {
+        let tx = json!({"tx_status": {"status": "committed"}, "transaction": {"outputs": [{}, {}]}});
+        assert!(created_and_committed(&tx, 0));
+        assert!(created_and_committed(&tx, 1));
+        assert!(!created_and_committed(&tx, 2), "no such output: never existed");
+        let pending = json!({"tx_status": {"status": "pending"}, "transaction": {"outputs": [{}]}});
+        assert!(!created_and_committed(&pending, 0));
+        let unknown = json!({"tx_status": {"status": "unknown"}, "transaction": null});
+        assert!(!created_and_committed(&unknown, 0));
+        assert!(!created_and_committed(&serde_json::Value::Null, 0));
+    }
 }
 
 #[cfg(test)]
