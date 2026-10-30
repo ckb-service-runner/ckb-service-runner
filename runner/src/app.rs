@@ -13,6 +13,12 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
+impl Drop for AppState {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.storage_key);
+    }
+}
+
 pub struct AppState {
     pub config: RwLock<Config>,
     pub config_path: PathBuf,
@@ -37,7 +43,8 @@ pub struct AppState {
     /// Dashboard sessions (in memory only).
     /// Cached monitor public-API data.
     pub monitor_cache: tokio::sync::Mutex<crate::monitor::Cache>,
-    pub sessions: Mutex<std::collections::HashMap<String, crate::web::Session>>,
+    pub sessions: crate::web::Sessions,
+    pub login_limiter: crate::web::LoginLimiter,
 }
 
 impl AppState {

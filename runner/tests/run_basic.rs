@@ -77,7 +77,7 @@ fn get(port: u16, path: &str) -> Option<String> {
     s.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     write!(
         s,
-        "GET {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nconnection: close\r\n\r\n"
     )
     .ok()?;
     let mut out = String::new();

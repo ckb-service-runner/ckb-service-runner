@@ -47,11 +47,29 @@ fn record_sweep(net_dir: &Path, tx_hash: &str, amount: u64) -> Result<(), String
         .map_err(|e| format!("cannot write {}: {e}", f.display()))
 }
 
+/// Warning when earnings pile up on the hot key and no sweep address is set.
+pub fn sweep_warning(sweep_address: Option<&str>, capacity_shannons: u64, threshold_ckb: u64) -> Option<String> {
+    if sweep_address.is_some() || capacity_shannons < threshold_ckb.saturating_mul(CKB) {
+        return None;
+    }
+    Some(format!(
+        "the runner wallet holds {} CKB and no sweep address is set: earnings stay on the runner's hot key. Set payout.sweep_address in the settings to sweep them to your own wallet",
+        capacity_shannons / CKB
+    ))
+}
+
 /// `csr wallet status` / `GET /api/wallet`.
 pub async fn status(chain: &Chain, cfg: &Config, net_dir: &Path) -> Result<Value, String> {
+    let capacity = chain.wallet_capacity().await?;
+    let sweep_warning = sweep_warning(
+        cfg.payout.sweep_address(),
+        capacity,
+        cfg.payout.sweep_threshold_ckb,
+    );
     Ok(json!({
         "address": chain.runner_address(),
-        "capacity_shannons": chain.wallet_capacity().await?,
+        "capacity_shannons": capacity,
+        "sweep_warning": sweep_warning,
         "sweep_address": cfg.payout.sweep_address(),
         "sweep_threshold_ckb": cfg.payout.sweep_threshold_ckb,
         "sweep_amount_ckb": cfg.payout.sweep_amount_ckb,

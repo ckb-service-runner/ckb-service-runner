@@ -608,6 +608,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "libc",
  "rand 0.8.8",
  "reqwest",
  "rusqlite",
@@ -623,6 +624,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zeroize",
 ]
 
 [[package]]

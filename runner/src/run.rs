@@ -71,6 +71,8 @@ struct Sweeper {
     /// The block at which the pending sweep was sent.
     sent_block: u64,
     warned: bool,
+    /// The "no sweep address" warning was checked for this start.
+    sweep_warned: bool,
 }
 
 const SWEEP_KEY: &str = "sweep_pending";
@@ -102,6 +104,20 @@ impl Sweeper {
         let due = self
             .checked
             .is_none_or(|t| t.elapsed() >= period(SWEEP_INTERVAL));
+        if !self.sweep_warned && cfg.payout.sweep_address().is_none() {
+            if let Ok(c) = crate::chain::Chain::connect(cfg, &state.service_pubkey).await {
+                if let Ok(cap) = c.wallet_capacity().await {
+                    self.sweep_warned = true;
+                    if let Some(w) = crate::wallet::sweep_warning(
+                        cfg.payout.sweep_address(),
+                        cap,
+                        cfg.payout.sweep_threshold_ckb,
+                    ) {
+                        tracing::warn!("{w}");
+                    }
+                }
+            }
+        }
         if self.pending.is_none() && (!due || cfg.payout.sweep_address().is_none()) {
             return;
         }
@@ -270,7 +286,8 @@ pub async fn run(
         config_write: Mutex::new(()),
         wallet_tx: Default::default(),
         monitor_cache: Default::default(),
-        sessions: Mutex::new(Default::default()),
+        sessions: Default::default(),
+        login_limiter: Default::default(),
         config: RwLock::new(cfg),
     });
     tracing::info!(
@@ -519,7 +536,10 @@ pub async fn run(
     let app = web::router(state.clone());
     let mut srv_stop = stop_rx.clone();
     let h = tasks.spawn(async move {
-        if let Err(e) = axum::serve(listener, app)
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
             .with_graceful_shutdown(async move {
                 let _ = srv_stop.changed().await;
             })

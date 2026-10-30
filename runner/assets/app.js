@@ -47,10 +47,26 @@
         throw new Error('authentication required');
       }
       return r.json().then(function (j) {
+        if (!r.ok && j.error === 'password_required') {
+          pwNotice(j.detail);
+          throw new Error(j.detail || 'a dashboard password is required');
+        }
         if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
         return j;
       });
     });
+  }
+  // Banner at the top of the page: wallet, registration, service and settings writes need a password.
+  function pwNotice(detail) {
+    var old = document.getElementById('pw-notice');
+    if (old) old.remove();
+    var n = el('div', 'msg err', (detail || 'Set a dashboard password (csr set-password) to use this action.') + ' ');
+    n.id = 'pw-notice';
+    var a = el('a', '', 'How to set a dashboard password');
+    a.href = '#/settings';
+    a.addEventListener('click', function () { setTimeout(function () { var t = document.getElementById('password-help'); if (t) t.scrollIntoView(); }, 0); });
+    n.appendChild(a);
+    view.insertBefore(n, view.firstChild);
   }
   function fmtUp(s) {
     var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
@@ -204,6 +220,9 @@
         while (cf.children.length > 1) cf.removeChild(cf.lastChild);
         dl(cf, [['Balance', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
         var a = el('a', '', 'Wallet & registration'); a.href = '#/wallet'; cf.appendChild(a);
+        api('/api/wallet').then(function (w) {
+          if (w.sweep_warning) cf.insertBefore(el('p', 'msg err', w.sweep_warning), a);
+        }).catch(function () {});
       }).catch(function () {});
     }
     function res() {
@@ -355,6 +374,9 @@
   pages.settings = function (root) {
     var c = card('Settings');
     root.appendChild(c);
+    var ph = el('p', '', state.pwReq ? 'A dashboard password is set.' : 'Dashboard password: not set. Run "csr set-password" on the runner host and restart; writes stay refused until then.');
+    ph.id = 'password-help';
+    c.appendChild(ph);
     api('/api/settings').then(function (cfg) {
       var f = el('form'), inputs = [];
       FIELDS.forEach(function (fd) {
@@ -461,6 +483,7 @@
       return b;
     }
     var c = card('Runner wallet');
+    var warn = el('p', 'msg err'); warn.style.display = 'none'; c.appendChild(warn);
     c.appendChild(el('p', '', 'Send about 700 CKB here from your wallet to start. The registration cell uses about 540 CKB, the rest pays small fees. Tips are added here.'));
     var info = el('div');
     var addr = el('div', 'addr-full'); addr.setAttribute('aria-label', 'Runner address');
@@ -526,6 +549,8 @@
     function load() {
       Promise.all([api('/api/wallet'), api('/api/registry'), api('/api/runner-cell')]).then(function (r) {
         var w = r[0], ls = w.last_sweep;
+        warn.textContent = w.sweep_warning || '';
+        warn.style.display = w.sweep_warning ? '' : 'none';
         addr.textContent = r[2].runner_address || w.address || '';
         info.textContent = '';
         dl(info, [
@@ -629,9 +654,14 @@
     var btns = el('div', 'row');
     var pa = el('a', 'btn', 'Wallet & registration'); pa.href = '#/wallet';
     btns.appendChild(pa);
-    [info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
+    var warn = el('p', 'msg err'); warn.style.display = 'none';
+    [warn, info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
     root.appendChild(c);
     function load() {
+      api('/api/wallet').then(function (w) {
+        warn.textContent = w.sweep_warning || '';
+        warn.style.display = w.sweep_warning ? '' : 'none';
+      }).catch(function () {});
       api('/api/earnings').then(function (e) {
         info.textContent = '';
         dl(info, [['Runner wallet', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid', ckb(e.fees_shannons)]]);
@@ -732,6 +762,9 @@
     if (!state.auth) return renderLogin();
     view.textContent = '';
     pages[name](view);
+    if (!state.pwReq && (name === 'wallet' || name === 'settings')) {
+      pwNotice('No dashboard password is set: sending CKB, registration, service actions and settings changes are refused until you set one with "csr set-password".');
+    }
   }
 
   function poll() {

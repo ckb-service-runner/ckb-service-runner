@@ -3,7 +3,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, cleanup, startCsr, getJson } from '../a1/lib.mjs';
+import { ROOT, cleanup, startCsr, runCsr, getJson } from '../a1/lib.mjs';
 import { rpc, csrDev, csrJson, waitCommitted } from '../a3b/devnet.mjs';
 import { deploy, owner, deposit, attestFile } from '../a7/flow.mjs';
 import { CKB, runner, fundRunnerCell } from '../a8/flow.mjs';
@@ -30,6 +30,26 @@ async function session(base) {
   return { cookie, csrf: (await r.json()).csrf_token };
 }
 
+
+const PW = 'correct horse battery';
+async function loginSession(base) {
+  const r0 = await fetch(`${base}/api/session`);
+  const c0 = (r0.headers.getSetCookie() || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('csr_session='));
+  const s0 = { cookie: c0, csrf: (await r0.json()).csrf_token };
+  const r = await fetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: s0.cookie, 'x-csrf-token': s0.csrf },
+    body: JSON.stringify({ password: PW }),
+  });
+  assert.equal(r.status, 200);
+  const c1 = (r.headers.getSetCookie() || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('csr_session='));
+  return { cookie: c1 || s0.cookie, csrf: (await r.json()).csrf_token };
+}
+async function setPassword(args) {
+  const sp = await runCsr([...args, 'set-password', '--password-stdin'], { input: `${PW}\n` });
+  assert.equal(sp.code, 0, sp.stderr);
+}
+
 async function post(base, s, url, body) {
   const r = await fetch(`${base}${url}`, {
     method: 'POST', body: JSON.stringify(body),
@@ -46,8 +66,17 @@ test('dashboard API: consent message, register create, register remove', async (
   const o = await owner();
   const r = await runner('a8-api');
   await fundRunnerCell(r, 700);
+  const open = await runner('a8b-open');
+  await startCsr([...open.args, 'run'], { healthUrl: `${open.base}/healthz` });
+  const so = await session(open.base);
+  for (const url of ['/api/registry/create', '/api/registry/remove']) {
+    const refused = await post(open.base, so, url, {});
+    assert.equal(refused.status, 403, refused.text);
+    assert.equal(refused.json.error, 'password_required');
+  }
+  await setPassword(r.args);
   await startCsr([...r.args, 'run'], { healthUrl: `${r.base}/healthz` });
-  const s = await session(r.base);
+  const s = await loginSession(r.base);
 
   const rc = (await getJson(`${r.base}/api/runner-cell`)).json;
   assert.equal(rc.runner_address, secpAddress(r.id.runner_lock_args, 'devnet'));
