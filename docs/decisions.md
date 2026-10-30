@@ -414,3 +414,7 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 - `NodeStats.rank`/`of` and the availability values are `Option`, `provisional` defaults to `false`, `last_check_at` defaults to 0; all fields are always serialized (`null` when missing) so the dashboard sees a stable shape.
 - An unparsable `/v1/nodes` reply is logged as a warning and becomes `node: None`; the `/v1/network` data is kept. Transport errors and non-404 statuses still fail the refresh.
 - Dashboard: `rank == null` shows "not ranked yet" (plus "(provisional)"); `null` availability shows "–"; stake and attestation are shown for unranked nodes. `spec/monitor-public-api.md` documents the unranked shape.
+## Skeleton input guard (F-SEC-001)
+`Chain::inputs_capacity` now checks every skeleton input with `check_skeleton_input` (pure function over
+`SkeletonPolicy`) and fails the run before anything is signed if the input is a runner wallet cell, a dual lock
+cell naming the runner lock hash (either half), a job-lock cell, or a registry-typed cell.

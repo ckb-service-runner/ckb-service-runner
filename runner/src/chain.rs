@@ -1460,20 +1460,36 @@ impl Chain {
         Ok((status, block))
     }
 
-    /// Total capacity of the live inputs of a skeleton (all of them must be live).
+    /// Total capacity of the live inputs of a skeleton (all of them must be live). Rejects a
+    /// skeleton that spends a runner-owned cell (`check_skeleton_input`).
     pub async fn inputs_capacity(&self, tx: &packed::Transaction) -> Result<u64, String> {
+        let policy = self.skeleton_policy();
         let mut sum = 0u64;
-        for i in tx.raw().inputs() {
+        for (index, i) in tx.raw().inputs().into_iter().enumerate() {
             let op = out_point_str(&i.previous_output());
             let (o, _) = self
                 .live_cell(&op)
                 .await?
                 .ok_or_else(|| format!("skeleton input {op} is not live"))?;
+            let lock = script_ref(&o.lock());
+            let type_script = o.type_().to_opt().map(|t| script_ref(&t));
+            check_skeleton_input(&policy, index, &lock, type_script.as_ref())?;
             sum = sum
                 .checked_add(Unpack::<u64>::unpack(&o.capacity()))
                 .ok_or("capacity overflow")?;
         }
         Ok(sum)
+    }
+
+    fn skeleton_policy(&self) -> SkeletonPolicy {
+        let d = |x: &Deployed| (x.code_hash.0, x.hash_type as u8);
+        SkeletonPolicy {
+            runner_lock: script_ref(&self.runner_lock),
+            runner_lock_hash: self.runner_lock_hash().0,
+            dual_lock: d(&self.dual),
+            job_lock: d(&self.job_lock),
+            registry_type: d(&self.registry),
+        }
     }
 
     /// Molecule `CellOutput` and data of a live cell, molecule `Header` or `Transaction` for the
@@ -1584,6 +1600,56 @@ pub fn parse_out_point(s: &str) -> Result<(String, u32), String> {
 pub fn read_json(p: &Path) -> Result<Value, String> {
     let t = std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
     serde_json::from_str(&t).map_err(|e| format!("{} is not JSON: {e}", p.display()))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptRef {
+    pub code_hash: [u8; 32],
+    pub hash_type: u8,
+    pub args: Vec<u8>,
+}
+
+fn script_ref(s: &Script) -> ScriptRef {
+    ScriptRef {
+        code_hash: Unpack::<H256>::unpack(&s.code_hash()).0,
+        hash_type: s.hash_type().as_slice()[0],
+        args: s.args().raw_data().to_vec(),
+    }
+}
+
+/// What a skeleton input must not be: a cell owned by the runner.
+pub struct SkeletonPolicy {
+    pub runner_lock: ScriptRef,
+    pub runner_lock_hash: [u8; 32],
+    pub dual_lock: ([u8; 32], u8),
+    pub job_lock: ([u8; 32], u8),
+    pub registry_type: ([u8; 32], u8),
+}
+
+/// Rejects a skeleton input that is a runner-owned cell: the runner wallet lock, a dual lock naming
+/// the runner lock hash, a job cell or a registry cell (F-SEC-001).
+pub fn check_skeleton_input(
+    p: &SkeletonPolicy,
+    index: usize,
+    lock: &ScriptRef,
+    type_script: Option<&ScriptRef>,
+) -> Result<(), String> {
+    let is = |s: &ScriptRef, k: &([u8; 32], u8)| s.code_hash == k.0 && s.hash_type == k.1;
+    let reason = if *lock == p.runner_lock {
+        "is a cell of the runner wallet"
+    } else if is(lock, &p.dual_lock)
+        && lock.args.len() == 64
+        && (lock.args[..32] == p.runner_lock_hash || lock.args[32..] == p.runner_lock_hash)
+    {
+        "is locked by a dual lock naming the runner"
+    } else if is(lock, &p.job_lock) {
+        "is a job cell"
+    } else if type_script.is_some_and(|t| is(t, &p.registry_type)) {
+        "is a registry cell"
+    } else {
+        return Ok(());
+    };
+    Err(format!("skeleton input {index} {reason}: a skeleton must not spend runner-owned cells"))
 }
 
 #[cfg(test)]
@@ -1753,3 +1819,7 @@ mod tests {
         assert_eq!(occupied(&l, None, 0), 61 * CKB);
     }
 }
+
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-fix-runner-skeleton-guard/skeleton_guard_tests.rs"]
+mod aiworker_skeleton_guard_tests;
