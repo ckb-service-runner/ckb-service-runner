@@ -15,6 +15,7 @@ mod node;
 mod password;
 mod ping;
 mod registry;
+mod renew;
 mod resources;
 mod run;
 mod runtime;
@@ -204,6 +205,11 @@ enum RegisterAction {
         /// The monitor's attestation (file); without it the monitor is asked
         #[arg(long)]
         attestation: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Renew the monitor's attestation of the registry cell (no stake owner consent needed)
+    Refresh {
         #[arg(long)]
         json: bool,
     },
@@ -617,6 +623,10 @@ fn main() -> ExitCode {
                     c.register_create(&att, stake, consent).await
                 })
             }
+            RegisterAction::Refresh { json } => node_cmd(&cli, *json, |c, cfg, (id, net_dir)| async move {
+                let db = db::Db::open(&net_dir.join("csr.db"))?;
+                renew::renew(&c, &cfg, &id.service_key, &id.service_pubkey, &db).await
+            }),
             RegisterAction::Remove { json } => {
                 chain_cmd(&cli, *json, |c| async move { c.register_remove().await })
             }

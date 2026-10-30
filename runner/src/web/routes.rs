@@ -43,6 +43,10 @@ pub fn routes() -> Router<Arc<AppState>> {
             post(super::operator::register_create),
         )
         .route(
+            "/api/registry/refresh",
+            post(super::operator::register_refresh),
+        )
+        .route(
             "/api/registry/remove",
             post(super::operator::register_remove),
         )

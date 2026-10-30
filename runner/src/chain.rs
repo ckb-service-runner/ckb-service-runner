@@ -451,6 +451,39 @@ fn parse_registry_data(d: &[u8]) -> Option<RegistryData> {
     })
 }
 
+/// Renew this long before the attestation expires (chain clock of the config cell).
+pub const RENEW_BEFORE_MS: u64 = 2 * 86_400_000;
+
+/// Whether the attestation is within `RENEW_BEFORE_MS` of its expiry (or past it).
+pub fn renewal_due(expiry_ms: u64, clock_ms: u64) -> bool {
+    clock_ms.saturating_add(RENEW_BEFORE_MS) >= expiry_ms
+}
+
+/// The registry data with only the attestation replaced.
+pub fn refresh_registry_data(existing: &[u8], attestation: &Value) -> Result<Vec<u8>, String> {
+    let old = parse_registry_data(existing)
+        .ok_or("the registry cell data is malformed")?;
+    let stake = old
+        .stake
+        .ok_or("the registry cell is a v1 cell without a stake; register again with `csr register create`")?;
+    let att = Attestation::parse(attestation)?;
+    if att.peer_id != old.peer_id.as_bytes() {
+        return Err("the attestation is for a different peer ID than the registration".into());
+    }
+    if att.pubkey != old.service_pubkey {
+        return Err("the attestation is for a different service key than the registration".into());
+    }
+    if att.expiry_ms <= old.expiry_ms {
+        return Err(format!(
+            "the new attestation expires at {} ms, not later than the current one ({} ms)",
+            att.expiry_ms, old.expiry_ms
+        ));
+    }
+    let payout = H256::from_slice(&old.payout_lock_hash)
+        .map_err(|_| "the registry cell has a malformed payout lock hash".to_string())?;
+    Ok(att.registry_data(&payout, &stake))
+}
+
 /// Signs the sighash group made of inputs `0..group` (runner wallet cells) with the service key. Witness 0
 /// keeps its other fields (the consent in `output_type` is covered by the signature).
 fn sign_wallet_inputs(
@@ -1152,6 +1185,80 @@ impl Chain {
             "outpoint": format!("{tx_hash}:0"),
             "stake_owner_lock_args": hx(owner),
             "updated": updated,
+        }))
+    }
+
+    /// What renewal needs: `(runner-owned, attestation expiry ms, chain clock ms, stake out point)` of the
+    /// registry cell, or `None` when this node is not registered.
+    pub async fn renewal_state(&self) -> Result<Option<(bool, u64, u64, Option<String>)>, String> {
+        let Some((cell, r)) = self.registry_cell().await? else {
+            return Ok(None);
+        };
+        let (_, clock) = self.config_cell().await?;
+        let owned = cell.lock == self.runner_owned_lock();
+        Ok(Some((
+            owned,
+            r.expiry_ms,
+            clock,
+            r.stake.as_ref().map(out_point_str),
+        )))
+    }
+
+    /// Renews the attestation of the runner-owned registry cell: the cell goes in, the same cell with the new
+    /// attestation comes out. No stake cell dep and no consent (`spec/registry.md` §9).
+    pub async fn register_refresh(&self, attestation: &Value) -> Result<Value, String> {
+        let polled = crate::node::poll(&self.rpc, &self.network).await;
+        if polled.report.state != crate::node::r2::R2State::Synced {
+            return Err(format!(
+                "the node is not synced (R2: {}); renewal needs a synced node",
+                polled.report.state.as_str()
+            ));
+        }
+        let (cell, _) = self
+            .registry_cell()
+            .await?
+            .ok_or("this node is not registered")?;
+        let lock = self.runner_owned_lock();
+        if cell.lock != lock {
+            return Err(
+                "the registry cell is not owned by the runner wallet; only the owner's wallet can \
+                 refresh it"
+                    .into(),
+            );
+        }
+        let att = Attestation::parse(attestation)?;
+        if Some(att.network) != network_id(&self.network) {
+            return Err(format!(
+                "the attestation is for another network, this node is on {}",
+                self.network
+            ));
+        }
+        let (config, clock) = self.config_cell().await?;
+        if att.expiry_ms <= clock {
+            return Err("the attestation has expired".into());
+        }
+        let data = Bytes::from(refresh_registry_data(&cell.data, attestation)?);
+        let type_ = self.registry_type();
+        let cap = occupied(&lock, Some(&type_), data.len());
+        let registry = Out {
+            lock,
+            type_: Some(type_),
+            data,
+            cap,
+        };
+        let deps = vec![
+            code_dep(self.registry.code_cell.clone()),
+            code_dep(config.out_point),
+            self.dual.cell_dep(),
+        ];
+        let tx = self
+            .wallet_tx(vec![cell], vec![registry], deps, None, None)
+            .await?;
+        let tx_hash = self.broadcast(&tx).await?;
+        Ok(json!({
+            "tx_hash": tx_hash,
+            "outpoint": format!("{tx_hash}:0"),
+            "expiry_ms": att.expiry_ms,
         }))
     }
 
@@ -1882,3 +1989,6 @@ pub fn attestation_usable(expiry_ms: u64, clock_ms: u64) -> Result<(), String> {
         ))
     }
 }
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-csr-attestation-renewal/renewal_tests.rs"]
+mod aiworker_renewal_tests;

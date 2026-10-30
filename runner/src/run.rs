@@ -19,6 +19,7 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
 const RESOURCE_INTERVAL: Duration = Duration::from_secs(5);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+const RENEW_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const MAINNET_MARKER: &str = ".mainnet-confirmed";
 
 pub fn now() -> i64 {
@@ -38,7 +39,7 @@ pub fn fast_tick() -> bool {
     false
 }
 
-fn period(normal: Duration) -> Duration {
+pub fn period(normal: Duration) -> Duration {
     if fast_tick() {
         Duration::from_secs(1)
     } else {
@@ -234,6 +235,59 @@ async fn watch_consumed(client: &RpcClient, root: &Path, key: &[u8; 32]) -> Resu
     res.map(|_| ())
 }
 
+/// The background renewal: every 30 minutes, two days before the expiry.
+#[derive(Default)]
+struct Renewer {
+    checked: Option<Instant>,
+}
+
+impl Renewer {
+    async fn step(&mut self, state: &AppState, cfg: &Config) {
+        crate::renew::follow_pending(state, cfg).await;
+        let every = period(RENEW_INTERVAL);
+        if self.checked.is_some_and(|t| t.elapsed() < every) {
+            return;
+        }
+        let r2 = state.node.read().unwrap().report.state;
+        let (rt, _) = crate::app::runtime_state(cfg.runtime.enabled, &cfg.network, r2);
+        if rt == "off" || crate::wallet::busy_reason(&state.db).is_some() {
+            return;
+        }
+        let chain = match crate::chain::Chain::connect(cfg, &state.service_pubkey).await {
+            Ok(c) => c.with_service_key(state.service_key),
+            Err(_) => return,
+        };
+        let due = match chain.renewal_state().await {
+            Ok(Some((true, expiry, clock, _))) => crate::chain::renewal_due(expiry, clock),
+            Ok(_) => false,
+            Err(e) => {
+                tracing::warn!("attestation renewal check failed: {e}");
+                self.checked = Some(Instant::now());
+                return;
+            }
+        };
+        self.checked = Some(Instant::now());
+        if !due {
+            return;
+        }
+        let _wallet = state.wallet_tx.lock().await;
+        match crate::renew::renew(&chain, cfg, &state.service_key, &state.service_pubkey, &state.db).await {
+            Ok(v) => {
+                let _ = state.db.put_setting(crate::renew::RENEWAL_ERROR, "");
+                tracing::info!(
+                    "attestation renewed in {}, new expiry {} ms",
+                    v["tx_hash"],
+                    v["expiry_ms"]
+                );
+            }
+            Err(e) => {
+                tracing::warn!("attestation renewal failed, trying again in 30 minutes: {e}");
+                let _ = state.db.put_setting(crate::renew::RENEWAL_ERROR, &e);
+            }
+        }
+    }
+}
+
 pub async fn run(
     cfg: Config,
     config_path: PathBuf,
@@ -424,6 +478,7 @@ pub async fn run(
             let mut warned = false;
             let mut sweeper = Sweeper::load(&state.db);
             let mut last_prune: Option<Instant> = None;
+            let mut renewer = Renewer::default();
             loop {
                 tokio::select! {
                     _ = tick.tick() => {},
@@ -438,9 +493,11 @@ pub async fn run(
                 }
                 let cfg = state.config.read().unwrap().clone();
                 sweeper.step(&state, &cfg).await;
+                renewer.step(&state, &cfg).await;
                 // Never start keeper transactions while a sweep is pending: both spend the wallet.
                 // Submitted transactions are still followed.
-                if sweeper.pending.is_some() {
+                // The same holds for a pending attestation refresh.
+                if sweeper.pending.is_some() || crate::wallet::refresh_pending(&state.db) {
                     if let Some(k) = keeper.as_mut() {
                         if let Err(e) = k.follow(&state).await {
                             tracing::warn!("job tracking: {e}");

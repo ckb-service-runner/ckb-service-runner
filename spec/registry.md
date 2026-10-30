@@ -397,6 +397,19 @@ attestation, wallet change]`, cell deps `[new stake deposit, …]`, consent in w
 updated, e.g. after the monitor disqualified a withdrawn deposit.
 
 *Refresh* (`registry_runner_owned_refresh_ok`). As the update, keeping `stake`: no stake dep, no consent.
+Inputs `[runner wallet cell(s)…, registry cell]`, outputs `[the same registry cell with only the attestation
+replaced, wallet change]`, cell deps `[registry code, config cell, dual lock, secp256k1 dep group]`. CSR builds
+it with `csr register refresh` (or "Renew now" / `POST /api/registry/refresh`): it asks the monitor for a new
+attestation for the same node, key and stake and refuses one for another peer ID or key, or one that does not
+expire later than the current one.
+
+*Automatic renewal.* While the runtime is not `off`, `csr run` reads the registry cell and the config cell clock
+every 30 minutes. When the cell is runner-owned and the attestation expires within 2 days (`RENEW_BEFORE_MS`,
+measured on the chain clock of the config cell, not the machine clock), it renews it as above. A failure is
+logged as a warning, shown on the dashboard (`renewal_error`) and retried after 30 minutes. The refresh spends a
+runner wallet cell, so, like a sweep, it is followed until committed (settings key `refresh_pending`); new job
+batches wait while it is pending, and it is given up after `SWEEP_PENDING_AFTER_BLOCKS` blocks. A registration
+owned by the operator (A7) cannot be renewed by the runner; only the owner's wallet can.
 
 *Remove* (`registry_runner_owned_destroy_ok`). Inputs `[runner wallet cell, registry cell]`, outputs `[wallet
 cell with everything minus the fee]`: the registry cell's capacity returns to the runner wallet.

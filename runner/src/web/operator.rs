@@ -45,7 +45,12 @@ fn busy(s: &AppState) -> Option<Response> {
         .ok()
         .flatten()
         .is_some_and(|v| !v.is_empty());
-    crate::wallet::wallet_busy(submitting, sweep).map(|detail| {
+    let reason = if crate::wallet::refresh_pending(&s.db) {
+        Some("an attestation refresh is pending".to_string())
+    } else {
+        crate::wallet::wallet_busy(submitting, sweep)
+    };
+    reason.map(|detail| {
         (
             StatusCode::CONFLICT,
             Json(json!({"error": "busy", "detail": detail})),
@@ -105,7 +110,11 @@ pub async fn wallet_send(State(s): St, Json(b): Json<Value>) -> Response {
 
 pub async fn registry_status(State(s): St) -> Response {
     match chain(&s).await {
-        Ok(c) => reply(c.register_status().await),
+        Ok(c) => reply(c.register_status().await.map(|mut v| {
+            let e = s.db.get_setting(crate::renew::RENEWAL_ERROR).ok().flatten();
+            v["renewal_error"] = e.filter(|e| !e.is_empty()).map_or(Value::Null, Value::from);
+            v
+        })),
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
 }
@@ -203,4 +212,31 @@ pub async fn register_remove(State(s): St) -> Response {
         }
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
+}
+
+/// Asks the monitor for a new attestation and refreshes the registry cell (no body).
+pub async fn register_refresh(State(s): St) -> Response {
+    let c = match chain(&s).await {
+        Ok(c) => c,
+        Err(e) => return fail(StatusCode::BAD_GATEWAY, e),
+    };
+    let _tx = s.wallet_tx.lock().await;
+    if crate::wallet::busy_reason(&s.db).is_some() {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "a runner transaction is still pending; try again when it is committed".into(),
+        );
+    }
+    let cfg = s.config.read().unwrap().clone();
+    let r = crate::renew::renew(&c, &cfg, &s.service_key, &s.service_pubkey, &s.db).await;
+    match &r {
+        Ok(v) => {
+            let _ = s.db.put_setting(crate::renew::RENEWAL_ERROR, "");
+            tracing::info!("attestation renewed: {}", v["tx_hash"]);
+        }
+        Err(e) => {
+            let _ = s.db.put_setting(crate::renew::RENEWAL_ERROR, e);
+        }
+    }
+    reply(r)
 }

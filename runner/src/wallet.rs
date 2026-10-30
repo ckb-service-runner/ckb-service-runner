@@ -7,6 +7,36 @@ use ckb_types::{bytes::Bytes, core::ScriptHashType, packed, prelude::*};
 use serde_json::{json, Value};
 use std::path::Path;
 
+/// Settings key of the refresh transaction that is not committed yet: `<tx hash>:<block at sending>`.
+pub const REFRESH_PENDING: &str = "refresh_pending";
+/// A pending runner transaction is given up after this many blocks (the keeper's rule).
+pub const SWEEP_PENDING_AFTER_BLOCKS: u64 = crate::keeper::SWEEP_PENDING_AFTER_BLOCKS;
+
+/// Whether a registry refresh is not committed yet.
+pub fn refresh_pending(db: &crate::db::Db) -> bool {
+    db.get_setting(REFRESH_PENDING)
+        .map(|v| v.is_some_and(|s| !s.is_empty()))
+        .unwrap_or(true)
+}
+
+/// Why the runner wallet is in use right now (keeper submission, sweep or registry refresh), read from the
+/// database; `None` when it is free.
+pub fn busy_reason(db: &crate::db::Db) -> Option<String> {
+    if refresh_pending(db) {
+        return Some("an attestation refresh is pending".into());
+    }
+    let submitting = db
+        .runs_in(&[crate::keeper::SUBMITTING])
+        .map(|r| r.len())
+        .unwrap_or(1);
+    let sweep = db
+        .get_setting("sweep_pending")
+        .ok()
+        .flatten()
+        .is_some_and(|v| !v.is_empty());
+    wallet_busy(submitting, sweep)
+}
+
 /// File in the network's data directory that remembers the last sweep.
 const LAST_SWEEP: &str = "last_sweep.json";
 
