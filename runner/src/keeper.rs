@@ -118,7 +118,7 @@ fn new_run(j: &Job) -> JobRun {
         id: 0,
         outpoint: j.outpoint.clone(),
         code_hash: j.code_hash.clone(),
-        trigger: j.trigger.label(),
+        trigger: j.trigger_label(),
         tip_shannons: j.tip_shannons,
         max_cycles: j.max_cycles,
         tip_rate: j.tip_rate(),
@@ -165,7 +165,8 @@ impl Keeper {
             .map(|r| (r.outpoint.clone(), r.data.clone()))
             .collect();
         let decoded: Vec<Job> = raws.iter().filter_map(jobs::decode).collect();
-        let plan = jobs::select(cfg, &jobs::allowlist(&st.db, cfg)?, &tip, decoded);
+        let dead = self.watch(st, &decoded, tip.number).await?;
+        let plan = jobs::select(cfg, &jobs::allowlist(&st.db, cfg)?, &tip, &dead, decoded);
         jobs::store(&st.db, &plan)?;
         self.reconcile(st, &plan, &data, complete)?;
         let summary = format!(
@@ -213,6 +214,28 @@ impl Keeper {
     pub async fn follow(&mut self, st: &Arc<AppState>) -> Result<(), String> {
         let tip = self.chain.tip_info().await?;
         self.track(st, tip.number).await
+    }
+
+    /// Checks the cells watched by the job cells seen (`get_live_cell` per out point); the ones
+    /// found `dead` are remembered. `live`, `unknown` and RPC errors mean "not yet". Returns the
+    /// known consumed out points.
+    async fn watch(&self, st: &AppState, seen: &[Job], tip: u64) -> Result<HashSet<[u8; 36]>, String> {
+        let watched: HashSet<[u8; 36]> = seen
+            .iter()
+            .filter(|j| j.trigger == Trigger::OnDemand)
+            .filter_map(|j| jobs::watch_outpoint(&j.payload))
+            .collect();
+        let mut dead = st.db.watched_dead_blocks()?;
+        for op in &watched {
+            let key = jobs::outpoint_str(op);
+            if !dead.contains_key(&key) && self.chain.is_dead(&key).await.unwrap_or(false) {
+                st.db.mark_watched_dead(&key, tip)?;
+                dead.insert(key, tip);
+            }
+        }
+        let keep: HashSet<String> = watched.iter().map(jobs::outpoint_str).collect();
+        st.db.forget_watched(&keep, tip.saturating_sub(1000))?;
+        Ok(dead.keys().filter_map(|k| jobs::outpoint_bytes(k)).collect())
     }
 
     /// Creates runs for newly selected jobs and returns the next batch (best tip rate first).

@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::db::{Db, JobCellRow};
 use crate::registry::ENABLED;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Trigger {
@@ -46,7 +47,71 @@ pub struct Job {
     pub block: u64,
 }
 
+/// Watch header: "CSRW" ‖ version 1 (one byte) ‖ watched out point (36 bytes: tx hash ‖ index u32 LE).
+pub const WATCH_MAGIC: &[u8; 4] = b"CSRW";
+pub const WATCH_HEADER_LEN: usize = 41;
+
+/// A payload that starts with the watch header for `outpoint`, followed by `inner`.
+#[allow(dead_code)] // used by tests and tools that build watched jobs
+pub fn watch_payload(outpoint: &[u8; 36], inner: &[u8]) -> Vec<u8> {
+    let mut p = WATCH_MAGIC.to_vec();
+    p.push(1);
+    p.extend_from_slice(outpoint);
+    p.extend_from_slice(inner);
+    p
+}
+
+/// The watched out point; `None` unless magic, version 1 and length >= 41.
+pub fn watch_outpoint(payload: &[u8]) -> Option<[u8; 36]> {
+    if payload.len() < WATCH_HEADER_LEN || &payload[..4] != WATCH_MAGIC || payload[4] != 1 {
+        return None;
+    }
+    payload[5..WATCH_HEADER_LEN].try_into().ok()
+}
+
+/// `0x<tx hash>:<index>`, the form the node and the database use.
+pub fn outpoint_str(op: &[u8; 36]) -> String {
+    let index = u32::from_le_bytes(op[32..].try_into().expect("4 bytes"));
+    format!("0x{}:{index}", hex::encode(&op[..32]))
+}
+
+/// Parses `0x<tx hash>:<index>`.
+pub fn outpoint_bytes(s: &str) -> Option<[u8; 36]> {
+    let (h, i) = s.split_once(':')?;
+    let hash = hex::decode(h.trim_start_matches("0x")).ok()?;
+    let index: u32 = i.parse().ok()?;
+    let mut out = [0u8; 36];
+    out[..32].copy_from_slice(hash.as_slice().try_into().ok()?);
+    out[32..].copy_from_slice(&index.to_le_bytes());
+    Some(out)
+}
+
+/// True if the payload has no watch, or the watched cell is known to be consumed.
+pub fn watch_due(payload: &[u8], dead: &HashSet<[u8; 36]>) -> bool {
+    watch_outpoint(payload).is_none_or(|op| dead.contains(&op))
+}
+
+/// `on-cell-consumed:0x<tx hash>:<index>`.
+pub fn watch_label(outpoint: &[u8; 36]) -> String {
+    format!("on-cell-consumed:{}", outpoint_str(outpoint))
+}
+
 impl Job {
+    /// The watched out point of an `OnDemand` job (watch headers on other triggers are ignored).
+    pub fn watched(&self) -> Option<[u8; 36]> {
+        if self.trigger == Trigger::OnDemand {
+            watch_outpoint(&self.payload)
+        } else {
+            None
+        }
+    }
+
+    /// The trigger label shown in the API: the watch label for watched jobs.
+    pub fn trigger_label(&self) -> String {
+        self.watched()
+            .map_or_else(|| self.trigger.label(), |op| watch_label(&op))
+    }
+
     /// `(tip / 1e8) / (max_cycles / 1e6)`: CKB per million cycles.
     pub fn tip_rate(&self) -> f64 {
         (self.tip_shannons as f64 / 1e8) / (self.max_cycles.max(1) as f64 / 1e6)
@@ -156,6 +221,7 @@ pub enum Exclusion {
     TriggerNotDue,
     AboveMaxCycles,
     BelowMinRate,
+    WaitingForCell,
 }
 
 impl Exclusion {
@@ -166,6 +232,7 @@ impl Exclusion {
             Exclusion::TriggerNotDue => "trigger_not_due",
             Exclusion::AboveMaxCycles => "above_max_cycles",
             Exclusion::BelowMinRate => "below_min_rate",
+            Exclusion::WaitingForCell => "waiting_for_cell",
         }
     }
 }
@@ -216,7 +283,13 @@ pub fn allowlist(db: &Db, cfg: &Config) -> Result<Vec<String>, String> {
 }
 
 /// Applies the exclusion rules (first match wins) and orders the rest by tip rate.
-pub fn select(cfg: &Config, allow: &[String], tip: &TipInfo, jobs: Vec<Job>) -> Plan {
+pub fn select(
+    cfg: &Config,
+    allow: &[String],
+    tip: &TipInfo,
+    dead: &HashSet<[u8; 36]>,
+    jobs: Vec<Job>,
+) -> Plan {
     let mut selected = Vec::new();
     let mut excluded = Vec::new();
     for j in jobs {
@@ -226,6 +299,8 @@ pub fn select(cfg: &Config, allow: &[String], tip: &TipInfo, jobs: Vec<Job>) -> 
             Some(Exclusion::Expired)
         } else if !trigger_due(&j, tip) {
             Some(Exclusion::TriggerNotDue)
+        } else if j.watched().is_some_and(|_| !watch_due(&j.payload, dead)) {
+            Some(Exclusion::WaitingForCell)
         } else if j.max_cycles > cfg.limits.max_cycles_per_job {
             Some(Exclusion::AboveMaxCycles)
         } else if j.tip_rate() < cfg.runtime.min_ckb_per_mcycle {
@@ -256,7 +331,7 @@ pub fn select(cfg: &Config, allow: &[String], tip: &TipInfo, jobs: Vec<Job>) -> 
 pub async fn plan_now(chain: &Chain, db: &Db, cfg: &Config) -> Result<Plan, String> {
     let tip = chain.tip_info().await?;
     let jobs: Vec<Job> = chain.job_cells().await?.jobs.iter().filter_map(decode).collect();
-    Ok(select(cfg, &allowlist(db, cfg)?, &tip, jobs))
+    Ok(select(cfg, &allowlist(db, cfg)?, &tip, &db.watched_dead()?, jobs))
 }
 
 /// Stores a plan as the set of discovered jobs (eligible ones as `discovered`).
@@ -266,7 +341,7 @@ pub fn store(db: &Db, plan: &Plan) -> Result<(), String> {
         code_hash: j.code_hash.clone(),
         tip_shannons: j.tip_shannons,
         max_cycles: j.max_cycles,
-        trigger: j.trigger.label(),
+        trigger: j.trigger_label(),
         state: if reason.is_some() {
             "excluded"
         } else {
@@ -401,7 +476,7 @@ mod tests {
             foreign,
             expired,
         ];
-        let p = select(&cfg, &allow, &tip(100), jobs);
+        let p = select(&cfg, &allow, &tip(100), &HashSet::new(), jobs);
         let sel: Vec<_> = p.selected.iter().map(|j| j.outpoint.as_str()).collect();
         assert_eq!(sel, ["c", "a", "b"]);
         let why: std::collections::HashMap<_, _> = p
@@ -416,3 +491,7 @@ mod tests {
         assert_eq!(why["e"], "expired");
     }
 }
+
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-csr-cell-consumed-trigger/watch_tests.rs"]
+mod aiworker_watch_tests;
