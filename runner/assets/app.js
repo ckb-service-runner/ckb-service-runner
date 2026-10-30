@@ -306,6 +306,11 @@
           cr.appendChild(el('p', '', nw ? 'Not ranked yet.' : 'No data available.'));
           dl(cr, [['Ping mode', ping.mode], ['Last successful check', fmtTime(ping.last_check_ok_at)]]);
         }
+        var idn = j.identity || {};
+        var proofs = (idn.proofs || []).map(function (p) {
+          return [p.monitor, proofText(p.result) + (p.error ? ' (' + (p.status ? p.status + ' ' : '') + p.error + ')' : '') + ', ' + fmtTime(p.at)];
+        });
+        dl(cr, [['Node identity', idn.state]].concat(proofs.length ? proofs : [['Identity proof', idn.state === 'proven' ? 'not sent yet' : 'not sent']]));
         if (nw && nw.countries && nw.countries.length) cc.appendChild(countryBars(nw.countries));
         else cc.appendChild(el('p', '', 'No country data.'));
       }).catch(function (x) { clear(cw); cw.appendChild(el('p', 'msg err', x.message)); });
@@ -313,6 +318,10 @@
     load();
     timers.push(setInterval(load, 30000));
   };
+
+  function proofText(r) {
+    return {accepted: 'accepted', not_supported: 'monitor does not support it yet', rejected: 'rejected', failed: 'failed'}[r] || r;
+  }
 
   pages.node = function (root) {
     var c = card('Node'), ct = card('Tip lag (24 h)'), cp = card('Tx pool & peers');
@@ -322,7 +331,10 @@
         while (c.children.length > 1) c.removeChild(c.lastChild);
         while (cp.children.length > 1) cp.removeChild(cp.lastChild);
         dl(c, [['Chain', n.chain], ['Version', n.node_version], ['Type', n.node_type], ['Tip', n.tip_number], ['Tip hash', n.tip_hash],
-          ['Best known', n.best_known], ['Tip lag', n.tip_lag], ['Epoch', n.epoch], ['Indexer tip', n.indexer_tip], ['Indexer lag', n.indexer_lag]]);
+          ['Best known', n.best_known], ['Tip lag', n.tip_lag], ['Epoch', n.epoch], ['Indexer tip', n.indexer_tip], ['Indexer lag', n.indexer_lag],
+          ['Node identity', n.identity && n.identity.state]]);
+        if (n.identity && n.identity.message) c.appendChild(el('p', n.identity.state === 'unknown' ? 'msg' : 'msg err', n.identity.message));
+        if (n.net_rpc_hint) c.appendChild(el('p', 'msg err', n.net_rpc_hint));
         dl(cp, [['Pending', n.tx_pool && n.tx_pool.pending], ['Proposed', n.tx_pool && n.tx_pool.proposed], ['Peers in', n.peers_in], ['Peers out', n.peers_out]]);
       }).catch(function () {});
       api('/api/resources/history').then(function (h) {

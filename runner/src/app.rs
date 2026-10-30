@@ -9,7 +9,7 @@ use crate::node::Polled;
 use crate::resources::Resources;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
@@ -48,7 +48,19 @@ pub struct AppState {
     pub monitor_cache: tokio::sync::Mutex<crate::monitor::Cache>,
     pub sessions: crate::web::Sessions,
     pub login_limiter: crate::web::LoginLimiter,
+    /// The CKB node's P2P key (`node.p2p_key_file`): in memory only, never serialised or logged.
+    pub p2p_key: crate::identity::ConfiguredP2pKey,
+    /// The node-identity state against the node ID the node reports now.
+    pub identity_status: RwLock<crate::identity::IdentityStatus>,
+    /// Last `POST /v1/identity` result per monitor URL.
+    pub identity_proofs: Mutex<std::collections::BTreeMap<String, Value>>,
+    /// `add_node` found the node's Net RPC module off.
+    pub net_rpc_missing: AtomicBool,
 }
+
+/// Shown when the node's Net RPC module is off (`add_node` and `get_peers` are "method not found").
+pub const NET_RPC_HINT: &str = "Net RPC module is disabled: add \"Net\" to `modules` under [rpc] in ckb.toml \
+     and restart the node, so that CSR can ask the node to connect to the monitor's node (add_node)";
 
 impl AppState {
     /// Reserves a ping nonce; false if it was answered within the replay window.
@@ -93,6 +105,7 @@ impl AppState {
             "r2": {"state": node.report.state.as_str(), "reasons": node.report.reasons},
             "runtime": {"state": state, "reason": reason},
             "mainnet_runtime_unlocked": mainnet_runtime_unlocked(),
+            "node_identity": self.identity_status.read().unwrap().state,
             "ranking": {
                 "join": cfg.ranking.join,
                 "ping_mode": cfg.ranking.ping_mode,
@@ -139,6 +152,8 @@ impl AppState {
                 "pending": p.tx_pool.map(|t| t.0),
                 "proposed": p.tx_pool.map(|t| t.1),
             },
+            "identity": *self.identity_status.read().unwrap(),
+            "net_rpc_hint": self.net_rpc_missing.load(Ordering::Relaxed).then_some(NET_RPC_HINT),
         })
     }
 }

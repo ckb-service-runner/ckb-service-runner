@@ -16,3 +16,6 @@ See docs/decisions.md, "Sandbox storage, phase 1".
 - The 4096-byte body limit is checked in the handler (axum limit raised to 64 KiB) so `too_large` has a JSON body.
 - The Network page shows a clock-skew warning via `ping.clock_skew_at` of `GET /api/network`.
 - The monitor repository's spec and `docs/PROTOCOL.md` are outside this directory and not changed here.
+## Node identity – runner, Phase 1
+
+See `docs/decisions.md`, section "Node identity – runner" (D6 A, D12 A and the "Phase 1 implementation notes"): single configured monitor (no `Config::monitors()` here), own base58 instead of `bs58` (offline build), erase-on-drop instead of a `zeroize` setup that does not exist here, the extra `unknown` identity state, `add_node` gated on `ranking.join` only, 10-minute retries after failures.

@@ -4,6 +4,9 @@ network = "testnet"                 # testnet | mainnet
 [node]
 rpc_url = "http://127.0.0.1:8114"   # host must be 127.0.0.1, localhost or [::1]; http only
 node_type = "auto"                  # auto | ckb | neuron
+# The node's P2P key, read only, for the node-identity proof (docs/install.md, "Node identity").
+# Empty = off: the monitors will not rank the node once they require the proof.
+# p2p_key_file = "/var/lib/ckb/data/network/secret_key"
 
 [dashboard]
 bind = "127.0.0.1:8130"             # non-loopback bind requires password_hash (see `csr set-password`)
