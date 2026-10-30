@@ -17,6 +17,7 @@ pub struct Sample {
     pub cpu_percent: f64,
     pub ram_free_mb: u64,
     pub tip_lag: Option<u64>,
+    pub disk_free_gb: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,7 +125,8 @@ impl Db {
                  t INTEGER PRIMARY KEY,
                  cpu_percent REAL NOT NULL,
                  ram_free_mb INTEGER NOT NULL,
-                 tip_lag INTEGER
+                 tip_lag INTEGER,
+                 disk_free_gb INTEGER
              );
              CREATE TABLE IF NOT EXISTS services (
                  code_hash TEXT PRIMARY KEY,
@@ -141,6 +143,10 @@ impl Db {
                  state TEXT NOT NULL,
                  reason TEXT,
                  seen_block INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS watched_cells (
+                 outpoint TEXT PRIMARY KEY,
+                 dead_block INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS job_runs (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,6 +165,7 @@ impl Db {
                  submit_block INTEGER
              );
              CREATE INDEX IF NOT EXISTS job_runs_outpoint ON job_runs (outpoint);
+             CREATE INDEX IF NOT EXISTS job_runs_state ON job_runs (state);
              CREATE TABLE IF NOT EXISTS job_events (
                  run_id INTEGER NOT NULL,
                  t INTEGER NOT NULL,
@@ -181,6 +188,13 @@ impl Db {
             .is_ok();
         if !has_outpoint {
             conn.execute_batch("ALTER TABLE services ADD COLUMN outpoint TEXT")
+                .map_err(|e| format!("cannot migrate database: {e}"))?;
+        }
+        let has_disk = conn
+            .prepare("SELECT disk_free_gb FROM samples LIMIT 0")
+            .is_ok();
+        if !has_disk {
+            conn.execute_batch("ALTER TABLE samples ADD COLUMN disk_free_gb INTEGER")
                 .map_err(|e| format!("cannot migrate database: {e}"))?;
         }
         Ok(Db {
@@ -275,6 +289,59 @@ impl Db {
             .map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Watched cells seen consumed: `0x<tx hash>:<index>` to the block it was found dead.
+    pub fn watched_dead_blocks(&self) -> Result<std::collections::HashMap<String, u64>, String> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare("SELECT outpoint, dead_block FROM watched_cells")
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+
+    /// The watched cells seen consumed, as raw out points.
+    pub fn watched_dead(&self) -> Result<std::collections::HashSet<[u8; 36]>, String> {
+        Ok(self
+            .watched_dead_blocks()?
+            .keys()
+            .filter_map(|k| crate::jobs::outpoint_bytes(k))
+            .collect())
+    }
+
+    pub fn mark_watched_dead(&self, outpoint: &str, block: u64) -> Result<(), String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT OR IGNORE INTO watched_cells (outpoint, dead_block) VALUES (?1, ?2)",
+                params![outpoint, block as i64],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Removes rows no job cell watches any more that were found dead before `before_block`.
+    pub fn forget_watched(
+        &self,
+        keep: &std::collections::HashSet<String>,
+        before_block: u64,
+    ) -> Result<(), String> {
+        let stale: Vec<String> = self
+            .watched_dead_blocks()?
+            .into_iter()
+            .filter(|(k, b)| !keep.contains(k) && *b < before_block)
+            .map(|(k, _)| k)
+            .collect();
+        let c = self.conn.lock().unwrap();
+        for k in stale {
+            c.execute("DELETE FROM watched_cells WHERE outpoint = ?1", params![k])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     #[allow(dead_code)] // read by the jobs API
@@ -395,13 +462,62 @@ impl Db {
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
+    /// Runs in any of `states`, oldest first.
     pub fn runs_in(&self, states: &[&str]) -> Result<Vec<JobRun>, String> {
-        Ok(self
-            .runs()?
-            .into_iter()
-            .rev()
-            .filter(|r| states.contains(&r.state.as_str()))
-            .collect())
+        if states.is_empty() {
+            return Ok(Vec::new());
+        }
+        let marks = vec!["?"; states.len()].join(", ");
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare(&format!(
+                "SELECT {RUN_COLS} FROM job_runs WHERE state IN ({marks}) ORDER BY id ASC"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(states.iter()), run_row)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Moves the runs of an interrupted batch (`Scheduled`, `Running`, `Completed`) to `Failed`.
+    pub fn abort_batch(&self, note: &str) -> Result<usize, String> {
+        let runs = self.runs_in(&["Scheduled", "Running", "Completed"])?;
+        for r in &runs {
+            self.set_run_state(r.id, "Failed", Some(note))?;
+        }
+        Ok(runs.len())
+    }
+
+    /// Deletes finished runs (and their events) last touched before `now - keep_seconds` whose
+    /// job cell is no longer listed. Settlements stay.
+    pub fn prune_runs(&self, now: i64, keep_seconds: i64) -> Result<usize, String> {
+        let c = self.conn.lock().unwrap();
+        let old = "SELECT id FROM job_runs
+             WHERE state IN ('Settled', 'Lost', 'Rejected', 'Failed', 'Expired')
+               AND outpoint NOT IN (SELECT outpoint FROM job_cells)
+               AND COALESCE((SELECT MAX(t) FROM job_events WHERE run_id = job_runs.id), 0) < ?1";
+        let cutoff = now.saturating_sub(keep_seconds);
+        c.execute(
+            &format!("DELETE FROM job_events WHERE run_id IN ({old})"),
+            params![cutoff],
+        )
+        .map_err(|e| e.to_string())?;
+        c.execute(&format!("DELETE FROM job_runs WHERE id IN ({old})"), params![cutoff])
+            .map_err(|e| e.to_string())
+    }
+
+    /// Which attempt this run is for its job cell (1 = first); `None` when it does not exist.
+    pub fn attempt_of(&self, id: i64) -> Result<Option<u32>, String> {
+        let c = self.conn.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM job_runs
+             WHERE outpoint = (SELECT outpoint FROM job_runs WHERE id = ?1) AND id <= ?1",
+            [id],
+            |r| r.get::<_, u32>(0),
+        )
+        .map(|n| Some(n).filter(|n| *n > 0))
+        .map_err(|e| e.to_string())
     }
 
     pub fn run(&self, id: i64) -> Result<Option<JobRun>, String> {
@@ -510,8 +626,8 @@ impl Db {
     pub fn add_sample(&self, s: &Sample) -> Result<(), String> {
         let c = self.conn.lock().unwrap();
         c.execute(
-            "INSERT OR REPLACE INTO samples (t, cpu_percent, ram_free_mb, tip_lag) VALUES (?1, ?2, ?3, ?4)",
-            params![s.t, s.cpu_percent, s.ram_free_mb as i64, s.tip_lag.map(|v| v as i64)],
+            "INSERT OR REPLACE INTO samples (t, cpu_percent, ram_free_mb, tip_lag, disk_free_gb) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![s.t, s.cpu_percent, s.ram_free_mb as i64, s.tip_lag.map(|v| v as i64), s.disk_free_gb.map(|v| v as i64)],
         )
         .map_err(|e| e.to_string())?;
         c.execute(
@@ -522,11 +638,31 @@ impl Db {
         Ok(())
     }
 
+    /// Per `job_runs.code_hash`: number of settlements and the sum of their tips.
+    pub fn service_totals(&self) -> Result<std::collections::HashMap<String, (u64, u64)>, String> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare(
+                "SELECT j.code_hash, COUNT(*), COALESCE(SUM(s.tip_shannons), 0)
+                 FROM settlements s JOIN job_runs j ON j.id = s.run_id GROUP BY j.code_hash",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)? as u64),
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+
     pub fn samples_since(&self, since: i64) -> Result<Vec<Sample>, String> {
         let c = self.conn.lock().unwrap();
         let mut st = c
             .prepare(
-                "SELECT t, cpu_percent, ram_free_mb, tip_lag FROM samples WHERE t >= ?1 ORDER BY t",
+                "SELECT t, cpu_percent, ram_free_mb, tip_lag, disk_free_gb FROM samples WHERE t >= ?1 ORDER BY t",
             )
             .map_err(|e| e.to_string())?;
         let rows = st
@@ -536,12 +672,17 @@ impl Db {
                     cpu_percent: r.get(1)?,
                     ram_free_mb: r.get::<_, i64>(2)? as u64,
                     tip_lag: r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
+                    disk_free_gb: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
                 })
             })
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 }
+
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-csr-runner-fixes/runner_fixes_tests.rs"]
+mod aiworker_runner_fixes_tests;
 
 #[cfg(test)]
 mod tests {
@@ -553,6 +694,7 @@ mod tests {
             cpu_percent: 1.5,
             ram_free_mb: 100,
             tip_lag: Some(2),
+            disk_free_gb: Some(50),
         }
     }
 

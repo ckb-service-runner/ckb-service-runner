@@ -12,6 +12,25 @@ async function session(base) {
   const cookie = (r.headers.getSetCookie() || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('csr_session='));
   return { cookie, csrf: (await r.json()).csrf_token };
 }
+
+const PW = 'correct horse battery';
+async function loginSession(base) {
+  const r0 = await fetch(`${base}/api/session`);
+  const c0 = (r0.headers.getSetCookie() || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('csr_session='));
+  const s0 = { cookie: c0, csrf: (await r0.json()).csrf_token };
+  const r = await fetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: s0.cookie, 'x-csrf-token': s0.csrf },
+    body: JSON.stringify({ password: PW }),
+  });
+  assert.equal(r.status, 200);
+  const c1 = (r.headers.getSetCookie() || []).map((c) => c.split(';')[0]).find((c) => c.startsWith('csr_session='));
+  return { cookie: c1 || s0.cookie, csrf: (await r.json()).csrf_token };
+}
+async function setPassword(args) {
+  const sp = await runCsr([...args, 'set-password', '--password-stdin'], { input: `${PW}\n` });
+  assert.equal(sp.code, 0, sp.stderr);
+}
 async function action(base, s, hash, verb) {
   const headers = {};
   if (s) { headers.cookie = s.cookie; headers['x-csrf-token'] = s.csrf; }
@@ -39,14 +58,16 @@ test('services registry: approve, disable, enable, revoke', async () => {
   assert.equal(cli.code, 0, cli.stderr);
   assert.equal(JSON.parse(cli.stdout).length, 2);
 
+  await setPassword(env.args);
   await startCsr([...env.args, 'run'], { healthUrl: `${env.base}/healthz` });
-  const list = (await getJson(`${env.base}/api/services`)).json;
+  // Integration (Oct 2026): with a password set, every /api/* read needs the login session (dashboard-security).
+  const s = await loginSession(env.base);
+  const list = (await getJson(`${env.base}/api/services`, { cookie: s.cookie })).json;
   assert.equal(list.length, 2);
   for (const s of list) assert.equal(s.status, 'not_approved');
   assert.ok(list.find((s) => s.code_hash === kv.code_hash).storage_bytes > 0);
 
-  assert.equal((await action(env.base, null, hello, 'approve')).status, 403);
-  const s = await session(env.base);
+  assert.ok([401, 403].includes((await action(env.base, null, hello, 'approve')).status));
   let r = await action(env.base, s, hello, 'approve');
   assert.equal(r.status, 200, r.text);
   assert.equal(r.json.status, 'approved_enabled');
@@ -59,6 +80,15 @@ test('services registry: approve, disable, enable, revoke', async () => {
   assert.equal(r.json.status, 'not_approved');
   assert.ok(!fs.readFileSync(env.configPath, 'utf8').includes(hello.slice(2)), 'revoked hash must leave allowed_services');
   assert.equal((await action(env.base, s, '0x' + '00'.repeat(32), 'approve')).status, 404);
+});
+
+test('service actions without a password are refused with password_required', async () => {
+  const env = await setup('a2-open');
+  await startCsr([...env.args, 'run'], { healthUrl: `${env.base}/healthz` });
+  const s = await session(env.base);
+  const r = await action(env.base, s, '0x' + '00'.repeat(32), 'approve');
+  assert.equal(r.status, 403, r.text);
+  assert.equal(r.json.error, 'password_required');
 });
 
 test('services page is linked; milestone documented', () => {

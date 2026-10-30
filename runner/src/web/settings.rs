@@ -82,10 +82,7 @@ pub async fn put(State(s): St, Json(patch): Json<Value>) -> Response {
         )
             .into_response();
     }
-    let restart = old.network != new.network
-        || old.dashboard.bind != new.dashboard.bind
-        || old.node.rpc_url != new.node.rpc_url
-        || old.ranking.ping_bind != new.ranking.ping_bind;
+    let restart = old.needs_restart(&new);
     if old.logging.level != new.logging.level {
         (s.set_log_level)(&new.logging.level);
     }

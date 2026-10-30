@@ -12,6 +12,9 @@ pub struct Config {
     pub dashboard: DashboardCfg,
     pub ranking: RankingCfg,
     pub monitor: MonitorCfg,
+    /// Several monitors (`[[monitors]]`); excludes the old one-entry `[monitor]` section.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub monitors: Vec<MonitorCfg>,
     pub runtime: RuntimeCfg,
     pub limits: LimitsCfg,
     pub storage: StorageCfg,
@@ -34,6 +37,8 @@ pub struct DevnetCfg {
 pub struct NodeCfg {
     pub rpc_url: String,
     pub node_type: String,
+    /// The CKB node's P2P secret key (`<ckb data dir>/network/secret_key`), read only; empty = off.
+    pub p2p_key_file: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -49,6 +54,30 @@ pub struct RankingCfg {
     pub join: bool,
     pub ping_mode: String,
     pub ping_bind: String,
+}
+
+fn check_monitor(name: &str, m: &MonitorCfg) -> Result<(), String> {
+    if !m.url.is_empty() {
+        let bad = || {
+            format!(
+                "{name}.url must use https (http only for loopback hosts), got \"{}\"",
+                m.url
+            )
+        };
+        let mu = url::Url::parse(&m.url).map_err(|_| bad())?;
+        let ok = match mu.scheme() {
+            "https" => mu.host_str().is_some(),
+            "http" => is_loopback_host(mu.host_str().unwrap_or("")),
+            _ => false,
+        };
+        if !ok {
+            return Err(bad());
+        }
+    }
+    if !m.pubkey.is_empty() {
+        parse_pubkey(&m.pubkey).map_err(|e| format!("{name}.pubkey: {e}"))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
@@ -126,6 +155,7 @@ impl Default for Config {
             dashboard: DashboardCfg::default(),
             ranking: RankingCfg::default(),
             monitor: MonitorCfg::default(),
+            monitors: Vec::new(),
             runtime: RuntimeCfg::default(),
             limits: LimitsCfg::default(),
             storage: StorageCfg::default(),
@@ -140,6 +170,7 @@ impl Default for NodeCfg {
         NodeCfg {
             rpc_url: "http://127.0.0.1:8114".into(),
             node_type: "auto".into(),
+            p2p_key_file: String::new(),
         }
     }
 }
@@ -223,7 +254,35 @@ fn is_loopback_host(host: &str) -> bool {
 }
 
 impl Config {
+    /// True when `new` differs in a setting that only takes effect after a restart.
+    pub fn needs_restart(&self, new: &Config) -> bool {
+        self.network != new.network
+            || self.dashboard.bind != new.dashboard.bind
+            || self.node.rpc_url != new.node.rpc_url
+            || self.node.p2p_key_file != new.node.p2p_key_file
+            || self.ranking.ping_bind != new.ranking.ping_bind
+            || self.ranking.join != new.ranking.join
+            || self.ranking.ping_mode != new.ranking.ping_mode
+    }
+
     /// Parses TOML text and validates it.
+    /// The effective monitor list: `[[monitors]]`, else the old `[monitor]` values, else the
+    /// network's reference monitor. Empty fields of an entry take the network default.
+    pub fn monitors(&self) -> Vec<MonitorCfg> {
+        let d = crate::network::NetworkDefaults::for_network(&self.network);
+        let list = if self.monitors.is_empty() {
+            vec![self.monitor.clone()]
+        } else {
+            self.monitors.clone()
+        };
+        list.into_iter()
+            .map(|m| MonitorCfg {
+                url: if m.url.is_empty() { d.monitor_url.clone() } else { m.url },
+                pubkey: if m.pubkey.is_empty() { d.monitor_pubkey.clone() } else { m.pubkey },
+            })
+            .collect()
+    }
+
     pub fn parse(text: &str) -> Result<Config, String> {
         let cfg: Config = toml::from_str(text).map_err(|e| format!("invalid config: {e}"))?;
         cfg.validate()?;
@@ -344,25 +403,12 @@ impl Config {
             .parse::<SocketAddr>()
             .map_err(|e| format!("ranking.ping_bind is not a valid address: {e}"))?;
 
-        if !self.monitor.url.is_empty() {
-            let bad = || {
-                format!(
-                    "monitor.url must use https (http only for loopback hosts), got \"{}\"",
-                    self.monitor.url
-                )
-            };
-            let mu = url::Url::parse(&self.monitor.url).map_err(|_| bad())?;
-            let ok = match mu.scheme() {
-                "https" => mu.host_str().is_some(),
-                "http" => is_loopback_host(mu.host_str().unwrap_or("")),
-                _ => false,
-            };
-            if !ok {
-                return Err(bad());
-            }
+        if !self.monitors.is_empty() && self.monitor != MonitorCfg::default() {
+            return Err("set either [monitor] or [[monitors]], not both".into());
         }
-        if !self.monitor.pubkey.is_empty() {
-            parse_pubkey(&self.monitor.pubkey).map_err(|e| format!("monitor.pubkey: {e}"))?;
+        check_monitor("monitor", &self.monitor)?;
+        for (i, m) in self.monitors.iter().enumerate() {
+            check_monitor(&format!("monitors[{i}]"), m)?;
         }
 
         if !self.runtime.min_ckb_per_mcycle.is_finite() || self.runtime.min_ckb_per_mcycle < 0.0 {
@@ -382,7 +428,9 @@ impl Config {
             1,
             u64::MAX,
         )?;
-        range("limits.max_vm_memory_mb", l.max_vm_memory_mb.into(), 1, 64)?;
+        if l.max_vm_memory_mb != 4 {
+            return Err("limits.max_vm_memory_mb must be 4 (only 4 MiB is supported)".into());
+        }
         range(
             "limits.max_job_wall_seconds",
             l.max_job_wall_seconds.into(),
@@ -396,6 +444,25 @@ impl Config {
             100,
         )?;
 
+        range("limits.min_free_ram_mb", l.min_free_ram_mb, 0, 1_048_576)?;
+        range("limits.min_free_disk_gb", l.min_free_disk_gb, 0, 100_000)?;
+        range("storage.total_quota_mb", self.storage.total_quota_mb, 1, 1_000_000)?;
+        range(
+            "storage.per_service_quota_mb",
+            self.storage.per_service_quota_mb,
+            1,
+            u64::MAX,
+        )?;
+        for h in &self.runtime.allowed_services {
+            let ok = h.strip_prefix("0x").is_some_and(|x| {
+                x.len() == 64 && x.bytes().all(|b| b.is_ascii_hexdigit())
+            });
+            if !ok {
+                return Err(format!(
+                    "runtime.allowed_services entries must be 0x + 64 hex chars (a code hash), got \"{h}\""
+                ));
+            }
+        }
         if self.storage.per_service_quota_mb > self.storage.total_quota_mb {
             return Err("storage.per_service_quota_mb must be <= storage.total_quota_mb".into());
         }
@@ -416,10 +483,22 @@ impl PayoutCfg {
                 self.sweep_amount_ckb
             ));
         }
+        if self.sweep_amount_ckb > 1_000_000_000 {
+            return Err(format!(
+                "payout.sweep_amount_ckb must be at most 1000000000, got {}",
+                self.sweep_amount_ckb
+            ));
+        }
         if self.sweep_threshold_ckb < self.sweep_amount_ckb.saturating_add(100) {
             return Err(format!(
                 "payout.sweep_threshold_ckb must be at least payout.sweep_amount_ckb + 100 ({}), got {}",
                 self.sweep_amount_ckb.saturating_add(100),
+                self.sweep_threshold_ckb
+            ));
+        }
+        if self.sweep_threshold_ckb > 2_000_000_000 {
+            return Err(format!(
+                "payout.sweep_threshold_ckb must be at most 2000000000, got {}",
                 self.sweep_threshold_ckb
             ));
         }
@@ -465,7 +544,11 @@ mod tests {
     fn network_defaults_parse() {
         for n in ["testnet", "mainnet"] {
             let d = crate::network::NetworkDefaults::for_network(n);
-            parse_pubkey(&d.monitor_pubkey).unwrap();
+            if n == "mainnet" {
+                assert!(d.monitor_pubkey.is_empty() && d.monitor_url.is_empty());
+            } else {
+                parse_pubkey(&d.monitor_pubkey).unwrap();
+            }
         }
     }
 
@@ -491,7 +574,7 @@ mod tests {
         assert!(Config::parse("[logging]\nlevel = \"loud\"").is_err());
         assert!(Config::parse("[node]\nnode_type = \"light\"").is_err());
         assert!(Config::parse("[limits]\nmax_concurrent_jobs = 0").is_err());
-        assert!(Config::parse("[limits]\nmax_vm_memory_mb = 65").is_err());
+        assert!(Config::parse("[limits]\nmax_vm_memory_mb = 8").is_err());
         assert!(Config::parse("[limits]\nmax_job_wall_seconds = 3601").is_err());
         assert!(Config::parse("[limits]\npause_above_cpu_percent = 101").is_err());
         assert!(Config::parse("[limits]\nmax_cycles_per_job = 0").is_err());

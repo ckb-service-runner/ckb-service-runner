@@ -451,6 +451,39 @@ fn parse_registry_data(d: &[u8]) -> Option<RegistryData> {
     })
 }
 
+/// Renew this long before the attestation expires (chain clock of the config cell).
+pub const RENEW_BEFORE_MS: u64 = 2 * 86_400_000;
+
+/// Whether the attestation is within `RENEW_BEFORE_MS` of its expiry (or past it).
+pub fn renewal_due(expiry_ms: u64, clock_ms: u64) -> bool {
+    clock_ms.saturating_add(RENEW_BEFORE_MS) >= expiry_ms
+}
+
+/// The registry data with only the attestation replaced.
+pub fn refresh_registry_data(existing: &[u8], attestation: &Value) -> Result<Vec<u8>, String> {
+    let old = parse_registry_data(existing)
+        .ok_or("the registry cell data is malformed")?;
+    let stake = old
+        .stake
+        .ok_or("the registry cell is a v1 cell without a stake; register again with `csr register create`")?;
+    let att = Attestation::parse(attestation)?;
+    if att.peer_id != old.peer_id.as_bytes() {
+        return Err("the attestation is for a different peer ID than the registration".into());
+    }
+    if att.pubkey != old.service_pubkey {
+        return Err("the attestation is for a different service key than the registration".into());
+    }
+    if att.expiry_ms <= old.expiry_ms {
+        return Err(format!(
+            "the new attestation expires at {} ms, not later than the current one ({} ms)",
+            att.expiry_ms, old.expiry_ms
+        ));
+    }
+    let payout = H256::from_slice(&old.payout_lock_hash)
+        .map_err(|_| "the registry cell has a malformed payout lock hash".to_string())?;
+    Ok(att.registry_data(&payout, &stake))
+}
+
 /// Signs the sighash group made of inputs `0..group` (runner wallet cells) with the service key. Witness 0
 /// keeps its other fields (the consent in `output_type` is covered by the signature).
 fn sign_wallet_inputs(
@@ -533,6 +566,14 @@ pub struct TipInfo {
     pub median_ms: u64,
 }
 
+/// The job cells read from the chain; `complete` is false when the list was cut off.
+pub struct JobCells {
+    pub jobs: Vec<RawJob>,
+    pub complete: bool,
+}
+
+static JOB_LIST_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// A live cell with job lock and job type, data not yet decoded.
 pub struct RawJob {
     pub outpoint: String,
@@ -547,6 +588,35 @@ impl Chain {
     /// Connects to the configured node; the chain must be the network's chain.
     pub async fn connect(cfg: &Config, service_pubkey: &str) -> Result<Chain, String> {
         let dep = load_deployments(cfg)?;
+        Self::connect_with(cfg, service_pubkey, dep).await
+    }
+
+    /// As `connect`, for the runner wallet only: works on every network, also where the CSR scripts are
+    /// not deployed (the registry and job functions of such a chain must not be used).
+    pub async fn connect_wallet(cfg: &Config, service_pubkey: &str) -> Result<Chain, String> {
+        let none = || Deployed {
+            code_hash: H256::default(),
+            hash_type: ScriptHashType::Data1,
+            code_cell: OutPoint::default(),
+            dep_type: DepType::Code,
+        };
+        let dep = Deployments {
+            dual: none(),
+            registry: none(),
+            job_type: none(),
+            job_lock: none(),
+            registry_type_hash: vec![],
+            config_type_args: vec![],
+            config_type_hash: H256::default(),
+        };
+        Self::connect_with(cfg, service_pubkey, dep).await
+    }
+
+    async fn connect_with(
+        cfg: &Config,
+        service_pubkey: &str,
+        dep: Deployments,
+    ) -> Result<Chain, String> {
         let rpc = RpcClient::new(&cfg.node.rpc_url);
         let info = rpc
             .call("get_blockchain_info", json!([]))
@@ -607,7 +677,7 @@ impl Chain {
             let tip = hex_u64(&self.call("get_tip_header", json!([])).await?["number"]);
             let it = self.call("get_indexer_tip", json!([])).await?;
             if let (Some(tip), Some(idx)) = (tip, hex_u64(&it["block_number"])) {
-                if idx >= tip {
+                if indexer_ready(tip, idx) {
                     return Ok(());
                 }
             }
@@ -631,10 +701,10 @@ impl Chain {
             }
             cursor = r["last_cursor"].clone();
             if page.len() < 0x400 || cursor.is_null() {
-                break;
+                return Ok(cells);
             }
         }
-        Ok(cells)
+        Err("get_cells: more than 20 pages of cells, the list would be incomplete".into())
     }
 
     /// Cells without type script and data under a lock.
@@ -835,7 +905,8 @@ impl Chain {
     }
 
     /// Live cells with this deployment's job lock, restricted to the job type.
-    pub async fn job_cells(&self) -> Result<Vec<RawJob>, String> {
+    /// Reads up to 200 pages; `complete` is false when the cursor had not ended by then.
+    pub async fn job_cells(&self) -> Result<JobCells, String> {
         self.wait_indexer().await?;
         let lock = Script::new_builder()
             .code_hash(self.job_lock.code_hash.pack())
@@ -849,7 +920,8 @@ impl Chain {
         });
         let mut out = Vec::new();
         let mut cursor = Value::Null;
-        for _ in 0..20 {
+        let mut complete = false;
+        for _ in 0..200 {
             let r = self
                 .call("get_cells", json!([key, "asc", "0x400", cursor]))
                 .await?;
@@ -879,10 +951,14 @@ impl Chain {
             }
             cursor = r["last_cursor"].clone();
             if page.len() < 0x400 || cursor.is_null() {
+                complete = true;
                 break;
             }
         }
-        Ok(out)
+        if !complete && !JOB_LIST_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!("job discovery: more than 200 pages of job cells, the list is incomplete");
+        }
+        Ok(JobCells { jobs: out, complete })
     }
 
     fn registry_type(&self) -> Script {
@@ -1112,6 +1188,80 @@ impl Chain {
         }))
     }
 
+    /// What renewal needs: `(runner-owned, attestation expiry ms, chain clock ms, stake out point)` of the
+    /// registry cell, or `None` when this node is not registered.
+    pub async fn renewal_state(&self) -> Result<Option<(bool, u64, u64, Option<String>)>, String> {
+        let Some((cell, r)) = self.registry_cell().await? else {
+            return Ok(None);
+        };
+        let (_, clock) = self.config_cell().await?;
+        let owned = cell.lock == self.runner_owned_lock();
+        Ok(Some((
+            owned,
+            r.expiry_ms,
+            clock,
+            r.stake.as_ref().map(out_point_str),
+        )))
+    }
+
+    /// Renews the attestation of the runner-owned registry cell: the cell goes in, the same cell with the new
+    /// attestation comes out. No stake cell dep and no consent (`spec/registry.md` §9).
+    pub async fn register_refresh(&self, attestation: &Value) -> Result<Value, String> {
+        let polled = crate::node::poll(&self.rpc, &self.network).await;
+        if polled.report.state != crate::node::r2::R2State::Synced {
+            return Err(format!(
+                "the node is not synced (R2: {}); renewal needs a synced node",
+                polled.report.state.as_str()
+            ));
+        }
+        let (cell, _) = self
+            .registry_cell()
+            .await?
+            .ok_or("this node is not registered")?;
+        let lock = self.runner_owned_lock();
+        if cell.lock != lock {
+            return Err(
+                "the registry cell is not owned by the runner wallet; only the owner's wallet can \
+                 refresh it"
+                    .into(),
+            );
+        }
+        let att = Attestation::parse(attestation)?;
+        if Some(att.network) != network_id(&self.network) {
+            return Err(format!(
+                "the attestation is for another network, this node is on {}",
+                self.network
+            ));
+        }
+        let (config, clock) = self.config_cell().await?;
+        if att.expiry_ms <= clock {
+            return Err("the attestation has expired".into());
+        }
+        let data = Bytes::from(refresh_registry_data(&cell.data, attestation)?);
+        let type_ = self.registry_type();
+        let cap = occupied(&lock, Some(&type_), data.len());
+        let registry = Out {
+            lock,
+            type_: Some(type_),
+            data,
+            cap,
+        };
+        let deps = vec![
+            code_dep(self.registry.code_cell.clone()),
+            code_dep(config.out_point),
+            self.dual.cell_dep(),
+        ];
+        let tx = self
+            .wallet_tx(vec![cell], vec![registry], deps, None, None)
+            .await?;
+        let tx_hash = self.broadcast(&tx).await?;
+        Ok(json!({
+            "tx_hash": tx_hash,
+            "outpoint": format!("{tx_hash}:0"),
+            "expiry_ms": att.expiry_ms,
+        }))
+    }
+
     /// Destroys the runner-owned registry cell; its capacity returns to the runner wallet.
     pub async fn register_remove(&self) -> Result<Value, String> {
         let lock = self.runner_owned_lock();
@@ -1195,6 +1345,12 @@ impl Chain {
         Ok(Some((out.into(), data)))
     }
 
+    /// Is the cell consumed (see `cell_consumed`)?
+    pub async fn is_dead(&self, outpoint: &str) -> Result<bool, String> {
+        let (h, i) = parse_out_point(outpoint)?;
+        cell_consumed(&self.rpc, &h, i).await
+    }
+
     pub async fn is_live(&self, outpoint: &str) -> Result<bool, String> {
         Ok(self.live_cell(outpoint).await?.is_some())
     }
@@ -1224,7 +1380,8 @@ impl Chain {
                     self.runner_address()
                 )
             })?;
-        let (config, _) = self.config_cell().await?;
+        let (config, clock_ms) = self.config_cell().await?;
+        attestation_usable(reg.expiry_ms, clock_ms)?;
         Ok(RunContext {
             runner,
             deps: vec![
@@ -1460,20 +1617,36 @@ impl Chain {
         Ok((status, block))
     }
 
-    /// Total capacity of the live inputs of a skeleton (all of them must be live).
+    /// Total capacity of the live inputs of a skeleton (all of them must be live). Rejects a
+    /// skeleton that spends a runner-owned cell (`check_skeleton_input`).
     pub async fn inputs_capacity(&self, tx: &packed::Transaction) -> Result<u64, String> {
+        let policy = self.skeleton_policy();
         let mut sum = 0u64;
-        for i in tx.raw().inputs() {
+        for (index, i) in tx.raw().inputs().into_iter().enumerate() {
             let op = out_point_str(&i.previous_output());
             let (o, _) = self
                 .live_cell(&op)
                 .await?
                 .ok_or_else(|| format!("skeleton input {op} is not live"))?;
+            let lock = script_ref(&o.lock());
+            let type_script = o.type_().to_opt().map(|t| script_ref(&t));
+            check_skeleton_input(&policy, index, &lock, type_script.as_ref())?;
             sum = sum
                 .checked_add(Unpack::<u64>::unpack(&o.capacity()))
                 .ok_or("capacity overflow")?;
         }
         Ok(sum)
+    }
+
+    fn skeleton_policy(&self) -> SkeletonPolicy {
+        let d = |x: &Deployed| (x.code_hash.0, x.hash_type as u8);
+        SkeletonPolicy {
+            runner_lock: script_ref(&self.runner_lock),
+            runner_lock_hash: self.runner_lock_hash().0,
+            dual_lock: d(&self.dual),
+            job_lock: d(&self.job_lock),
+            registry_type: d(&self.registry),
+        }
     }
 
     /// Molecule `CellOutput` and data of a live cell, molecule `Header` or `Transaction` for the
@@ -1584,6 +1757,107 @@ pub fn parse_out_point(s: &str) -> Result<(String, u32), String> {
 pub fn read_json(p: &Path) -> Result<Value, String> {
     let t = std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
     serde_json::from_str(&t).map_err(|e| format!("{} is not JSON: {e}", p.display()))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptRef {
+    pub code_hash: [u8; 32],
+    pub hash_type: u8,
+    pub args: Vec<u8>,
+}
+
+fn script_ref(s: &Script) -> ScriptRef {
+    ScriptRef {
+        code_hash: Unpack::<H256>::unpack(&s.code_hash()).0,
+        hash_type: s.hash_type().as_slice()[0],
+        args: s.args().raw_data().to_vec(),
+    }
+}
+
+/// Whether a cell was consumed. A current CKB node answers `get_live_cell` with `unknown` (not
+/// `dead`) for a spent cell, so `unknown` counts as consumed when the transaction that created the
+/// cell is committed and has that output; a cell of an unknown or uncommitted transaction is not.
+pub async fn cell_consumed(rpc: &RpcClient, tx_hash: &str, index: u32) -> Result<bool, String> {
+    let live = rpc
+        .call(
+            "get_live_cell",
+            json!([{"tx_hash": tx_hash, "index": format!("0x{index:x}")}, false]),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    match live["status"].as_str() {
+        Some("dead") => return Ok(true),
+        Some("unknown") => {}
+        _ => return Ok(false),
+    }
+    let tx = rpc
+        .call("get_transaction", json!([tx_hash]))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(created_and_committed(&tx, index))
+}
+
+/// The `get_transaction` answer shows a committed transaction with an output at `index`.
+pub fn created_and_committed(tx: &Value, index: u32) -> bool {
+    tx["tx_status"]["status"] == "committed"
+        && tx["transaction"]["outputs"]
+            .as_array()
+            .is_some_and(|o| (index as usize) < o.len())
+}
+
+/// What a skeleton input must not be: a cell owned by the runner.
+pub struct SkeletonPolicy {
+    pub runner_lock: ScriptRef,
+    pub runner_lock_hash: [u8; 32],
+    pub dual_lock: ([u8; 32], u8),
+    pub job_lock: ([u8; 32], u8),
+    pub registry_type: ([u8; 32], u8),
+}
+
+/// Rejects a skeleton input that is a runner-owned cell: the runner wallet lock, a dual lock naming
+/// the runner lock hash, a job cell or a registry cell (F-SEC-001).
+pub fn check_skeleton_input(
+    p: &SkeletonPolicy,
+    index: usize,
+    lock: &ScriptRef,
+    type_script: Option<&ScriptRef>,
+) -> Result<(), String> {
+    let is = |s: &ScriptRef, k: &([u8; 32], u8)| s.code_hash == k.0 && s.hash_type == k.1;
+    let reason = if *lock == p.runner_lock {
+        "is a cell of the runner wallet"
+    } else if is(lock, &p.dual_lock)
+        && lock.args.len() == 64
+        && (lock.args[..32] == p.runner_lock_hash || lock.args[32..] == p.runner_lock_hash)
+    {
+        "is locked by a dual lock naming the runner"
+    } else if is(lock, &p.job_lock) {
+        "is a job cell"
+    } else if type_script.is_some_and(|t| is(t, &p.registry_type)) {
+        "is a registry cell"
+    } else {
+        return Ok(());
+    };
+    Err(format!("skeleton input {index} {reason}: a skeleton must not spend runner-owned cells"))
+}
+
+#[cfg(test)]
+mod consumed_tests {
+    use super::created_and_committed;
+    use serde_json::json;
+
+    // Integration (Oct 2026): CKB answers `unknown` for a spent cell; the creating transaction decides.
+    #[test]
+    fn unknown_cell_of_a_committed_output_is_consumed() {
+        let tx = json!({"tx_status": {"status": "committed"}, "transaction": {"outputs": [{}, {}]}});
+        assert!(created_and_committed(&tx, 0));
+        assert!(created_and_committed(&tx, 1));
+        assert!(!created_and_committed(&tx, 2), "no such output: never existed");
+        let pending = json!({"tx_status": {"status": "pending"}, "transaction": {"outputs": [{}]}});
+        assert!(!created_and_committed(&pending, 0));
+        let unknown = json!({"tx_status": {"status": "unknown"}, "transaction": null});
+        assert!(!created_and_committed(&unknown, 0));
+        assert!(!created_and_committed(&serde_json::Value::Null, 0));
+    }
 }
 
 #[cfg(test)]
@@ -1753,3 +2027,25 @@ mod tests {
         assert_eq!(occupied(&l, None, 0), 61 * CKB);
     }
 }
+
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-fix-runner-skeleton-guard/skeleton_guard_tests.rs"]
+mod aiworker_skeleton_guard_tests;
+/// The indexer is usable when it is at most `LAG_LIMIT` blocks behind the node tip (as in R2).
+pub fn indexer_ready(tip: u64, indexer_tip: u64) -> bool {
+    tip.saturating_sub(indexer_tip) <= crate::node::r2::LAG_LIMIT
+}
+
+/// The attestation may be used while its expiry lies after the chain clock.
+pub fn attestation_usable(expiry_ms: u64, clock_ms: u64) -> Result<(), String> {
+    if expiry_ms > clock_ms {
+        Ok(())
+    } else {
+        Err(format!(
+            "attestation expired (expiry {expiry_ms} ms, chain time {clock_ms} ms)"
+        ))
+    }
+}
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-csr-attestation-renewal/renewal_tests.rs"]
+mod aiworker_renewal_tests;

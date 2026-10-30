@@ -11,21 +11,14 @@ after(cleanup);
 
 const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 
-test('dashboard: Stake & payout page replaces the float page', () => {
+test('dashboard: the wallet page replaces the float and payout pages', () => {
   const html = read('runner/assets/index.html');
-  assert.ok(html.includes('href="#/payout"'), 'navigation link #/payout missing');
+  assert.ok(html.includes('href="#/wallet"'), 'navigation link #/wallet missing');
   assert.ok(!html.includes('#/float'), 'the #/float link must be gone');
-  assert.match(html, /<a href="#\/payout">Stake &amp; payout<\/a>/);
   const js = read('runner/assets/app.js');
   assert.ok(!/\/api\/float/.test(js), 'app.js must not call /api/float any more');
-  for (const s of ['/api/payout', '/api/payout/prepare-create', '/api/payout/prepare-withdraw', '/api/registry/prepare-create',
-    'pages.payout', 'stake']) {
-    assert.ok(js.includes(s), `app.js must contain ${s}`);
-  }
+  assert.ok(js.includes('stake'));
   assert.ok(!/pages\.float\b/.test(js));
-  assert.ok(!/card\('Float'\)/.test(js), 'the Overview card is now called Payout');
-  assert.match(js, /card\('Payout'\)/);
-  assert.match(js, /\['payout\.lock_args', 'Payout lock args', 'text'/);
 });
 
 test('the CSR monitor tab passes the monitor stake object through', async () => {
@@ -63,11 +56,10 @@ test('documentation', () => {
   assert.ok(fs.existsSync(path.join(ROOT, 'docs', 'milestones', 'A7.md')));
   assert.match(read('CHANGELOG.md'), /A7/);
   const testing = read('docs/testing.md');
-  for (const s of ['dao-deposit', 'payout prepare-create', '--stake']) assert.ok(testing.includes(s), `testing.md: ${s}`);
+  for (const s of ['dao-deposit', 'register create', '--stake']) assert.ok(testing.includes(s), `testing.md: ${s}`);
   assert.ok(!testing.includes('float prepare-create'));
   const ex = read('config/csr.example.toml');
   assert.match(ex, /^\[payout\]$/m);
-  assert.match(ex, /^lock_args\s*=/m);
   for (const f of ['README.md', 'docs/install.md', 'docs/architecture.md']) {
     assert.ok(!/csr float /.test(read(f)), `${f} must not mention csr float commands`);
   }

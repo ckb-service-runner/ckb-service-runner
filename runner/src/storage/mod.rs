@@ -1,8 +1,11 @@
 //! Encrypted per-service key/value storage.
 //!
-//! Layout: `<root>/<code_hash hex>/<HMAC-SHA256(storage key, key) hex>.e`. Each file holds
-//! `nonce (12) ‖ ChaCha20-Poly1305(secret flag (1) ‖ key length u16 LE ‖ key ‖ value)`, with the
-//! file name as associated data. File names are keyed hashes, so they reveal nothing about keys.
+//! Format version 2. Layout: `<root>/<code_hash hex>/<HMAC-SHA256(service key, "csr-storage-name-v2"
+//! ‖ key) hex>.e`, where the service key is `HMAC-SHA256(storage key, "csr-storage-service-v2" ‖
+//! code_hash hex)`. Each file holds `nonce (12) ‖ ChaCha20-Poly1305(secret flag (1) ‖ key length
+//! u16 LE ‖ key ‖ value)` sealed with the service key and `"v2:" ‖ code_hash hex ‖ ":" ‖ file name`
+//! as associated data, so an entry cannot be moved to another service. File names are keyed
+//! hashes, so they reveal nothing about keys. `migrate_v1` converts version 1 data.
 //! Quotas count plaintext key + value bytes, which equal the file size minus a fixed overhead.
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -21,6 +24,7 @@ const NONCE_LEN: usize = 12;
 /// nonce + tag + secret flag + key length.
 const FILE_OVERHEAD: u64 = (NONCE_LEN + 16 + 1 + 2) as u64;
 const RULES_FILE: &str = "rules.bin";
+pub const MAX_RULES_PER_SERVICE: usize = 256;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Put {
@@ -92,11 +96,44 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<(), String> {
     r.map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
-/// Plaintext bytes (key + value) stored in one service directory.
+fn hmac(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("hmac key");
+    for p in parts {
+        mac.update(p);
+    }
+    mac.finalize().into_bytes().into()
+}
+
+fn service_key(key: &[u8; 32], code_hash: &str) -> [u8; 32] {
+    hmac(key, &[b"csr-storage-service-v2", code_hash.as_bytes()])
+}
+
+fn name_v2(skey: &[u8; 32], key: &[u8]) -> String {
+    format!(
+        "{}.e",
+        hex::encode(hmac(skey, &[b"csr-storage-name-v2", key]))
+    )
+}
+
+fn name_v1(key: &[u8; 32], k: &[u8]) -> String {
+    format!(
+        "{}.e",
+        hex::encode(hmac(key, &[b"csr-storage-name-v1", k]))
+    )
+}
+
+fn aad_v2(code_hash: &str, name: &str) -> String {
+    format!("v2:{code_hash}:{name}")
+}
+
+/// Plaintext bytes (key + value, or rules) stored in one service directory.
 fn dir_usage(dir: &Path) -> u64 {
     let Ok(rd) = fs::read_dir(dir) else { return 0 };
     rd.flatten()
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".e"))
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.ends_with(".e") || n == RULES_FILE
+        })
         .filter_map(|e| e.metadata().ok())
         .map(|m| m.len().saturating_sub(FILE_OVERHEAD))
         .sum()
@@ -129,8 +166,8 @@ impl Store {
             root: root.to_path_buf(),
             code_hash: code_hash_hex.to_string(),
             key,
-            per_service_quota: per_service_quota_mb * 1024 * 1024,
-            total_quota: total_quota_mb * 1024 * 1024,
+            per_service_quota: per_service_quota_mb.saturating_mul(1024 * 1024),
+            total_quota: total_quota_mb.saturating_mul(1024 * 1024),
         }
     }
 
@@ -138,11 +175,12 @@ impl Store {
         self.root.join(&self.code_hash)
     }
 
+    fn skey(&self) -> [u8; 32] {
+        service_key(&self.key, &self.code_hash)
+    }
+
     fn file_name(&self, key: &[u8]) -> String {
-        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.key).expect("hmac key");
-        mac.update(b"csr-storage-name-v1");
-        mac.update(key);
-        format!("{}.e", hex::encode(mac.finalize().into_bytes()))
+        name_v2(&self.skey(), key)
     }
 
     fn read_entry(&self, key: &[u8]) -> Result<Option<(bool, Vec<u8>)>, String> {
@@ -152,7 +190,7 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(format!("cannot read storage entry: {e}")),
         };
-        let p = open(&self.key, &name, &data)?;
+        let p = open(&self.skey(), &aad_v2(&self.code_hash, &name), &data)?;
         if p.len() < 3 {
             return Err("corrupt storage entry".into());
         }
@@ -172,7 +210,8 @@ impl Store {
         p.extend_from_slice(&(key.len() as u16).to_le_bytes());
         p.extend_from_slice(key);
         p.extend_from_slice(value);
-        write_atomic(&dir.join(&name), &seal(&self.key, &name, &p)?)
+        let aad = aad_v2(&self.code_hash, &name);
+        write_atomic(&dir.join(&name), &seal(&self.skey(), &aad, &p)?)
     }
 
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
@@ -205,11 +244,18 @@ impl Store {
     }
 
     pub fn delete(&self, key: &[u8]) -> Result<bool, String> {
-        match fs::remove_file(self.dir().join(self.file_name(key))) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(format!("cannot delete storage entry: {e}")),
+        let found = match fs::remove_file(self.dir().join(self.file_name(key))) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(format!("cannot delete storage entry: {e}")),
+        };
+        let hk = hex::encode(key);
+        let rules = self.load_rules()?;
+        if rules.iter().any(|r| r.key == hk) {
+            let rest: Vec<Rule> = rules.into_iter().filter(|r| r.key != hk).collect();
+            self.save_rules(&rest)?;
         }
+        Ok(found)
     }
 
     pub fn mark_secret(&self, key: &[u8]) -> Result<bool, String> {
@@ -223,33 +269,125 @@ impl Store {
     }
 
     /// Registers a rule: the entry for `key` is deleted when `outpoint` (36 bytes) is consumed.
-    pub fn delete_on_consume(&self, key: &[u8], outpoint: &[u8; 36]) -> Result<(), String> {
-        let mut rules = load_rules(&self.dir(), &self.key)?;
+    /// At most `MAX_RULES_PER_SERVICE` rules per service; `rules.bin` counts in the quotas.
+    pub fn delete_on_consume(&self, key: &[u8], outpoint: &[u8; 36]) -> Result<Put, String> {
+        let mut rules = self.load_rules()?;
         let rule = Rule {
             outpoint: hex::encode(outpoint),
             key: hex::encode(key),
         };
-        if !rules.contains(&rule) {
-            rules.push(rule);
-            save_rules(&self.dir(), &self.key, &rules)?;
+        if rules.contains(&rule) {
+            return Ok(Put::Ok);
         }
-        Ok(())
+        if rules.len() >= MAX_RULES_PER_SERVICE {
+            return Ok(Put::QuotaExceeded);
+        }
+        let old = serde_json::to_vec(&rules).map_err(|e| e.to_string())?.len() as u64;
+        rules.push(rule);
+        let new = serde_json::to_vec(&rules).map_err(|e| e.to_string())?.len() as u64;
+        let grow = new - old.min(new);
+        let own = dir_usage(&self.dir());
+        let total: u64 = service_dirs(&self.root).iter().map(|d| dir_usage(d)).sum();
+        if own + grow > self.per_service_quota || total + grow > self.total_quota {
+            return Ok(Put::QuotaExceeded);
+        }
+        self.save_rules(&rules)?;
+        Ok(Put::Ok)
+    }
+
+    fn load_rules(&self) -> Result<Vec<Rule>, String> {
+        load_rules(&self.dir(), &self.skey(), &self.code_hash)
+    }
+
+    fn save_rules(&self, rules: &[Rule]) -> Result<(), String> {
+        save_rules(&self.dir(), &self.skey(), &self.code_hash, rules)
     }
 }
 
-fn load_rules(dir: &Path, key: &[u8; 32]) -> Result<Vec<Rule>, String> {
+fn rules_aad(code_hash: &str) -> String {
+    aad_v2(code_hash, RULES_FILE)
+}
+
+fn load_rules(dir: &Path, skey: &[u8; 32], code_hash: &str) -> Result<Vec<Rule>, String> {
     match fs::read(dir.join(RULES_FILE)) {
-        Ok(d) => serde_json::from_slice(&open(key, RULES_FILE, &d)?)
+        Ok(d) => serde_json::from_slice(&open(skey, &rules_aad(code_hash), &d)?)
             .map_err(|e| format!("corrupt rules: {e}")),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(format!("cannot read rules: {e}")),
     }
 }
 
-fn save_rules(dir: &Path, key: &[u8; 32], rules: &[Rule]) -> Result<(), String> {
+fn save_rules(
+    dir: &Path,
+    skey: &[u8; 32],
+    code_hash: &str,
+    rules: &[Rule],
+) -> Result<(), String> {
+    let path = dir.join(RULES_FILE);
+    if rules.is_empty() {
+        return match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("cannot remove rules: {e}")),
+        };
+    }
     fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let plain = serde_json::to_vec(rules).map_err(|e| e.to_string())?;
-    write_atomic(&dir.join(RULES_FILE), &seal(key, RULES_FILE, &plain)?)
+    write_atomic(&path, &seal(skey, &rules_aad(code_hash), &plain)?)
+}
+
+fn dir_code_hash(dir: &Path) -> String {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Migrates version 1 storage (one key for all services, no service binding) to version 2.
+/// Returns the number of migrated entries; version 2 files are left alone.
+pub fn migrate_v1(root: &Path, key: &[u8; 32]) -> Result<usize, String> {
+    let mut n = 0;
+    for dir in service_dirs(root) {
+        let ch = dir_code_hash(&dir);
+        let store = Store::new(root, &ch, *key, 0, 0);
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        files.sort();
+        for path in files {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let is_rules = name == RULES_FILE;
+            if !is_rules && !name.ends_with(".e") {
+                continue;
+            }
+            let data = fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let aad = if is_rules { RULES_FILE } else { name.as_str() };
+            let Ok(plain) = open(key, aad, &data) else {
+                continue; // already version 2 (or foreign)
+            };
+            if is_rules {
+                let sealed = seal(&store.skey(), &rules_aad(&ch), &plain)?;
+                write_atomic(&path, &sealed)?;
+                continue;
+            }
+            if plain.len() < 3 {
+                return Err(format!("corrupt storage entry {}", path.display()));
+            }
+            let klen = u16::from_le_bytes([plain[1], plain[2]]) as usize;
+            if plain.len() < 3 + klen {
+                return Err(format!("corrupt storage entry {}", path.display()));
+            }
+            let k = &plain[3..3 + klen];
+            if name_v1(key, k) != name {
+                continue;
+            }
+            store.write_entry(k, plain[0] != 0, &plain[3 + klen..])?;
+            fs::remove_file(&path).map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Applies every `delete_on_consume` rule of every service for a consumed outpoint. Returns the
@@ -260,17 +398,25 @@ pub fn simulate_consumed(
     outpoint: &[u8; 36],
     log: &mut dyn Write,
 ) -> Result<usize, String> {
+    apply_outpoint(root, key, outpoint, log)
+}
+
+/// Applies the rules for one consumed outpoint; see `simulate_consumed`.
+fn apply_outpoint(
+    root: &Path,
+    key: &[u8; 32],
+    outpoint: &[u8; 36],
+    log: &mut dyn Write,
+) -> Result<usize, String> {
     let op_hex = hex::encode(outpoint);
     let mut deleted = 0;
     for dir in service_dirs(root) {
-        let rules = load_rules(&dir, key)?;
+        let code_hash = dir_code_hash(&dir);
+        let skey = service_key(key, &code_hash);
+        let rules = load_rules(&dir, &skey, &code_hash)?;
         if !rules.iter().any(|r| r.outpoint == op_hex) {
             continue;
         }
-        let code_hash = dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
         let store = Store::new(root, &code_hash, *key, 0, 0);
         for r in rules.iter().filter(|r| r.outpoint == op_hex) {
             let k = hex::decode(&r.key).map_err(|_| "corrupt rule".to_string())?;
@@ -286,11 +432,54 @@ pub fn simulate_consumed(
                 );
             }
         }
-        let rest: Vec<Rule> = rules.into_iter().filter(|r| r.outpoint != op_hex).collect();
-        save_rules(&dir, key, &rest)?;
+        // store.delete may have dropped rules already; reload before removing this outpoint.
+        let rest: Vec<Rule> = load_rules(&dir, &skey, &code_hash)?
+            .into_iter()
+            .filter(|r| r.outpoint != op_hex)
+            .collect();
+        save_rules(&dir, &skey, &code_hash, &rest)?;
     }
     Ok(deleted)
 }
+
+/// Out points of all rules of all services, sorted ascending, without duplicates.
+pub fn rule_outpoints(root: &Path, key: &[u8; 32]) -> Result<Vec<[u8; 36]>, String> {
+    let mut out = Vec::new();
+    for dir in service_dirs(root) {
+        let ch = dir_code_hash(&dir);
+        for r in load_rules(&dir, &service_key(key, &ch), &ch)? {
+            let op: [u8; 36] = hex::decode(&r.outpoint)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| "corrupt rule".to_string())?;
+            out.push(op);
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// For every rule out point asks `is_live`; for `Ok(false)` applies the rules (as `simulate_consumed`),
+/// for `Ok(true)` or `Err(_)` keeps them. Returns the number of deleted entries.
+pub fn apply_consumed(
+    root: &Path,
+    key: &[u8; 32],
+    is_live: &mut dyn FnMut(&[u8; 36]) -> Result<bool, String>,
+    log: &mut dyn Write,
+) -> Result<usize, String> {
+    let mut deleted = 0;
+    for op in rule_outpoints(root, key)? {
+        if let Ok(false) = is_live(&op) {
+            deleted += simulate_consumed(root, key, &op, log)?;
+        }
+    }
+    Ok(deleted)
+}
+
+#[cfg(test)]
+#[path = "../../../acceptance/aiworker-csr-sandbox-storage/sandbox_storage_tests.rs"]
+mod aiworker_sandbox_storage_tests;
 
 #[cfg(test)]
 mod tests {
@@ -352,7 +541,7 @@ mod tests {
         let tmp = crate::test_tmp();
         let s = store(tmp.path(), 1);
         s.put(b"secret", b"v").unwrap();
-        s.delete_on_consume(b"secret", &[9; 36]).unwrap();
+        assert_eq!(s.delete_on_consume(b"secret", &[9; 36]).unwrap(), Put::Ok);
         let mut log = Vec::new();
         assert_eq!(
             simulate_consumed(tmp.path(), &[7; 32], &[1; 36], &mut log).unwrap(),
@@ -379,3 +568,7 @@ mod tests {
         assert!(s.read_entry(b"k").unwrap().unwrap().0);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../acceptance/aiworker-fix-runner-delete-on-consume/consumed_watch_tests.rs"]
+mod aiworker_consumed_watch_tests;

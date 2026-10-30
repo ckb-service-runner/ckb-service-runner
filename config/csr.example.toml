@@ -4,6 +4,9 @@ network = "testnet"                 # testnet | mainnet
 [node]
 rpc_url = "http://127.0.0.1:8114"   # host must be 127.0.0.1, localhost or [::1]; http only
 node_type = "auto"                  # auto | ckb | neuron
+# The node's P2P key, read only, for the node-identity proof (docs/install.md, "Node identity").
+# Empty = off: the monitors will not rank the node once they require the proof.
+# p2p_key_file = "/var/lib/ckb/data/network/secret_key"
 
 [dashboard]
 bind = "127.0.0.1:8130"             # non-loopback bind requires password_hash (see `csr set-password`)
@@ -18,24 +21,30 @@ ping_bind = "0.0.0.0:8131"
 url = ""                            # empty = network default
 pubkey = ""                         # empty = network default; 0x + 66 hex (compressed secp256k1)
 
+# Several monitors instead of [monitor] (setting both is an error). Challenges signed by any of
+# them are answered, the check-in goes to each, attestations are asked from the first.
+# [[monitors]]
+# url = "https://monitor.example"
+# pubkey = "0x02..."
+
 [runtime]
 enabled = false
-allowed_services = []
+allowed_services = []               # code hashes: 0x + 64 hex characters each
 min_ckb_per_mcycle = 0.0
 
 [limits]
 max_concurrent_jobs = 2             # 1..=64
 max_cycles_per_job = 70000000
-max_vm_memory_mb = 4                # 1..=64
+max_vm_memory_mb = 4                # fixed: only 4 is supported
 max_job_wall_seconds = 30           # 1..=3600
 pause_above_cpu_percent = 85        # 1..=100
-min_free_ram_mb = 1024
-min_free_disk_gb = 10
+min_free_ram_mb = 1024              # 0..=1048576
+min_free_disk_gb = 10               # 0..=100000
 
 [storage]
 path = "service_data"
-total_quota_mb = 256
-per_service_quota_mb = 64           # <= total_quota_mb
+total_quota_mb = 256                # 1..=1000000
+per_service_quota_mb = 64           # >= 1, <= total_quota_mb
 
 [logging]
 level = "info"                      # error | warn | info | debug | trace
@@ -44,5 +53,5 @@ level = "info"                      # error | warn | info | debug | trace
 # Tips go into the runner wallet (the runner address, `csr wallet status`). When it holds at least
 # sweep_threshold_ckb, the runner sends sweep_amount_ckb to sweep_address (your own wallet).
 sweep_address = ""                  # "" = no sweep; a full-format address (ckb1…/ckt1…) of this network
-sweep_threshold_ckb = 1500          # >= sweep_amount_ckb + 100
-sweep_amount_ckb = 1000             # >= 61
+sweep_threshold_ckb = 1500          # >= sweep_amount_ckb + 100, <= 2000000000
+sweep_amount_ckb = 1000             # 61..=1000000000

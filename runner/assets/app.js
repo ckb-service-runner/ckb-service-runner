@@ -47,10 +47,26 @@
         throw new Error('authentication required');
       }
       return r.json().then(function (j) {
-        if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+        if (!r.ok && j.error === 'password_required') {
+          pwNotice(j.detail);
+          throw new Error(j.detail || 'a dashboard password is required');
+        }
+        if (!r.ok) throw new Error(j.error === 'busy' && j.detail ? 'The runner wallet is busy: ' + j.detail + '. Try again after the next block.' : j.error || 'HTTP ' + r.status);
         return j;
       });
     });
+  }
+  // Banner at the top of the page: wallet, registration, service and settings writes need a password.
+  function pwNotice(detail) {
+    var old = document.getElementById('pw-notice');
+    if (old) old.remove();
+    var n = el('div', 'msg err', (detail || 'Set a dashboard password (csr set-password) to use this action.') + ' ');
+    n.id = 'pw-notice';
+    var a = el('a', '', 'How to set a dashboard password');
+    a.href = '#/settings';
+    a.addEventListener('click', function () { setTimeout(function () { var t = document.getElementById('password-help'); if (t) t.scrollIntoView(); }, 0); });
+    n.appendChild(a);
+    view.insertBefore(n, view.firstChild);
   }
   function fmtUp(s) {
     var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
@@ -124,6 +140,10 @@
   }
 
   function fmtTime(t) { return t ? new Date(t * 1000).toLocaleString() : 'never'; }
+  function rankText(n) {
+    if (typeof n.rank !== 'number') return 'not ranked yet' + (n.provisional ? ' (provisional)' : '');
+    return n.rank + ' / ' + n.of + (n.provisional ? ' (provisional)' : '');
+  }
   function pct(v) { return typeof v === 'number' ? (v * 100).toFixed(2) + '%' : '–'; }
   function clear(c) { while (c.children.length > 1) c.removeChild(c.lastChild); }
   function stale(c, j) {
@@ -163,12 +183,14 @@
   pages.overview = function (root) {
     var g = el('div', 'grid');
     var cs = card('Network'), cn = card('Node'), cr = card('Runtime'), cres = card('Resources');
-    var cf = card('Wallet'), ck = card('CSR monitor');
-    [cs, cn, cr, cres, cf, ck].forEach(function (c) { g.appendChild(c); });
+    var cf = card('Wallet'), ck = card('CSR monitor'), cw = card('Attestation'), cu = card('Update');
+    [cs, cn, cr, cres, cf, ck, cu].forEach(function (c) { g.appendChild(c); });
     root.appendChild(g);
+    var upd = updateCard(cu);
     function paint() {
       var s = state.status;
       if (!s) return;
+      upd.notice(s.update);
       [cs, cn, cr, ck].forEach(function (c) { while (c.children.length > 1) c.removeChild(c.lastChild); });
       dl(cs, [['Network', s.network], ['Version', s.version], ['Uptime', fmtUp(s.uptime_s)], ['Peer ID', s.peer_id], ['Service key', s.service_pubkey]]);
       dl(cn, [['R2 state', pill(s.r2.state)], ['Reasons', (s.r2.reasons || []).join('; ') || 'none']]);
@@ -187,7 +209,7 @@
         ck.appendChild(rk);
         api('/api/network').then(function (j) {
           var n = j.node;
-          dl(rk, [['Rank', n ? n.rank + ' / ' + n.of : 'not ranked'], ['Availability 30 d', n ? pct(n.availability.d30) : '–']]);
+          dl(rk, [['Rank', n ? rankText(n) : 'not ranked'], ['Availability 30 d', n ? pct(n.availability.d30) : '–']]);
           if (j.stale) rk.appendChild(el('p', 'msg stale', 'stale'));
           var ol = el('a', '', 'Open CSR monitor'); ol.href = '#/network'; rk.appendChild(ol);
         }).catch(function () {});
@@ -200,6 +222,24 @@
         while (cf.children.length > 1) cf.removeChild(cf.lastChild);
         dl(cf, [['Balance', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
         var a = el('a', '', 'Wallet & registration'); a.href = '#/wallet'; cf.appendChild(a);
+        api('/api/wallet').then(function (w) {
+          if (w.sweep_warning) cf.insertBefore(el('p', 'msg err', w.sweep_warning), a);
+        }).catch(function () {});
+      }).catch(function () {});
+    }
+    function expiryWarning() {
+      api('/api/registry').then(function (r) {
+        if (cw.parentNode) cw.parentNode.removeChild(cw);
+        var exp = r.attestation_expiry_ms;
+        if (!r.registered || !exp) return;
+        var left = exp - Date.now();
+        if (left > 2 * 86400000) return;
+        var t = left <= 0 ? 'The attestation has expired (' : 'The attestation expires within 2 days (';
+        cw.textContent = '';
+        cw.appendChild(el('h2', '', 'Attestation'));
+        cw.appendChild(el('p', 'msg err', t + new Date(exp).toLocaleString() + ').' + (r.renewal_error ? ' Last renewal error: ' + r.renewal_error : '')));
+        var wl = el('a', '', 'Wallet & registration'); wl.href = '#/wallet'; cw.appendChild(wl);
+        g.insertBefore(cw, g.firstChild);
       }).catch(function () {});
     }
     function res() {
@@ -211,10 +251,67 @@
           ['Disk free', r.disk.free_gb + ' / ' + r.disk.total_gb + ' GB']]);
       }).catch(function () {});
     }
-    onStatus = paint; paint(); res(); payoutCard();
+    onStatus = paint; paint(); res(); payoutCard(); expiryWarning();
     timers.push(setInterval(payoutCard, 10000));
     timers.push(setInterval(res, 5000));
+    timers.push(setInterval(expiryWarning, 60000));
   };
+
+  // Update card: daily notice (from /api/status), "Check for update" and, with a newer signed
+  // release and a configured release key, "Update" with an in-page confirmation.
+  function updateCard(c) {
+    var note = el('p', 'msg'), info = el('div'), msg = el('div', 'msg');
+    var row = el('div', 'row');
+    var check = el('button', 'btn', 'Check for update');
+    var go = el('button', 'btn primary', 'Update'); go.hidden = true;
+    var sure = el('button', 'btn primary', 'Yes, download and install'); sure.hidden = true;
+    var cancel = el('button', 'btn', 'Cancel'); cancel.hidden = true;
+    [check, go, sure, cancel].forEach(function (b) { b.type = 'button'; row.appendChild(b); });
+    [note, info, row, msg].forEach(function (x) { c.appendChild(x); });
+    function say(cls, text) { msg.className = 'msg' + (cls ? ' ' + cls : ''); msg.textContent = text; }
+    function link(u) { var a = el('a', '', 'Release notes'); a.href = u; a.target = '_blank'; a.rel = 'noopener noreferrer'; return a; }
+    function show(u) {
+      info.textContent = '';
+      dl(info, [['Current', u.current], ['Latest', u.latest], ['Checked', fmtTime(u.checked_at)], ['Notes', link(u.notes_url)]]);
+      var can = u.newer === true && u.key_configured;
+      go.hidden = !can; sure.hidden = true; cancel.hidden = true;
+      if (u.newer === true && !u.key_configured) say('', 'This build has no release key configured: install the update manually (docs/install.md).');
+      else if (u.newer === false) say('ok', 'CSR is up to date.');
+      else if (u.newer === null) say('', 'The latest release tag is not a plain version; nothing to install.');
+      else say('', '');
+    }
+    check.addEventListener('click', function () {
+      check.disabled = true; msg.className = 'msg'; msg.textContent = 'Asking GitHub for the latest release…';
+      api('/api/update').then(show).catch(function (x) { msg.className = 'msg err'; msg.textContent = x.message; })
+        .then(function () { check.disabled = false; });
+    });
+    go.addEventListener('click', function () {
+      go.hidden = true; sure.hidden = false; cancel.hidden = false;
+      msg.className = 'msg'; msg.textContent = 'Download the release, verify its signature and install it? The runner restarts afterwards.';
+    });
+    cancel.addEventListener('click', function () { go.hidden = false; sure.hidden = true; cancel.hidden = true; msg.textContent = ''; });
+    sure.addEventListener('click', function () {
+      sure.disabled = cancel.disabled = check.disabled = true;
+      msg.className = 'msg'; msg.textContent = 'Downloading and verifying the release (binary, SHA256SUMS, SHA256SUMS.sig)…';
+      api('/api/update/install', { method: 'POST', body: {} }).then(function (r) {
+        sure.hidden = cancel.hidden = true;
+        msg.className = 'msg ok'; msg.textContent = r.message || 'Update staged; the runner will restart.';
+      }).catch(function (x) {
+        msg.className = 'msg err'; msg.textContent = 'Update failed: ' + x.message;
+        sure.hidden = cancel.hidden = true; go.hidden = false;
+      }).then(function () { sure.disabled = cancel.disabled = check.disabled = false; });
+    });
+    return {
+      notice: function (u) {
+        if (u && u.newer === true) {
+          note.className = 'msg stale'; note.textContent = 'CSR ' + u.latest + ' is available (this is ' + u.current + '). ';
+          note.appendChild(link(u.notes_url));
+        } else {
+          note.className = 'msg'; note.textContent = 'Version ' + ((state.status || {}).version || '–');
+        }
+      }
+    };
+  }
 
   pages.network = function (root) {
     var cw = card('Nodes worldwide'), cr = card('My rank'), cm = card('Map'), cc = card('Countries');
@@ -254,9 +351,11 @@
         dl(cw, [['Nodes worldwide', nw ? nw.nodes_total : null], ['Nodes reachable', nw ? nw.nodes_reachable : null],
           ['Updated', nw ? fmtTime(nw.updated_at) : null], ['Fetched', fmtTime(j.fetched_at)], ['Monitor', j.monitor_url]]);
         var ping = j.ping || {};
+        if (j.warning) cw.insertBefore(el('p', 'msg err', j.warning), cw.children[1] || null);
+        if (ping.clock_skew_at) cw.appendChild(el('p', 'msg err', 'Warning: a monitor challenge was outside the 60 s freshness window (last at ' + fmtTime(ping.clock_skew_at) + '). Check this machine\'s clock.'));
         if (n) {
           var a = n.attestation || {};
-          dl(cr, [['Rank', n.rank + ' / ' + n.of], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
+          dl(cr, [['Rank', rankText(n)], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
             ['Availability 365 d', pct(n.availability.d365)], ['Check type', checkType(n.check_type)],
             ['Attestation', a.status + (a.expiry ? ' (expires ' + fmtTime(a.expiry) + ')' : '')],
             ['Stake', n.stake ? n.stake.status + (n.stake.capacity_ckb != null ? ' (' + n.stake.capacity_ckb + ' CKB)' : '') : null],
@@ -265,6 +364,11 @@
           cr.appendChild(el('p', '', nw ? 'Not ranked yet.' : 'No data available.'));
           dl(cr, [['Ping mode', ping.mode], ['Last successful check', fmtTime(ping.last_check_ok_at)]]);
         }
+        var idn = j.identity || {};
+        var proofs = (idn.proofs || []).map(function (p) {
+          return [p.monitor, proofText(p.result) + (p.error ? ' (' + (p.status ? p.status + ' ' : '') + p.error + ')' : '') + ', ' + fmtTime(p.at)];
+        });
+        dl(cr, [['Node identity', idn.state]].concat(proofs.length ? proofs : [['Identity proof', idn.state === 'proven' ? 'not sent yet' : 'not sent']]));
         if (nw && nw.countries && nw.countries.length) cc.appendChild(countryBars(nw.countries));
         else cc.appendChild(el('p', '', 'No country data.'));
       }).catch(function (x) { clear(cw); cw.appendChild(el('p', 'msg err', x.message)); });
@@ -272,6 +376,10 @@
     load();
     timers.push(setInterval(load, 30000));
   };
+
+  function proofText(r) {
+    return {accepted: 'accepted', not_supported: 'monitor does not support it yet', rejected: 'rejected', failed: 'failed'}[r] || r;
+  }
 
   pages.node = function (root) {
     var c = card('Node'), ct = card('Tip lag (24 h)'), cp = card('Tx pool & peers');
@@ -281,7 +389,10 @@
         while (c.children.length > 1) c.removeChild(c.lastChild);
         while (cp.children.length > 1) cp.removeChild(cp.lastChild);
         dl(c, [['Chain', n.chain], ['Version', n.node_version], ['Type', n.node_type], ['Tip', n.tip_number], ['Tip hash', n.tip_hash],
-          ['Best known', n.best_known], ['Tip lag', n.tip_lag], ['Epoch', n.epoch], ['Indexer tip', n.indexer_tip], ['Indexer lag', n.indexer_lag]]);
+          ['Best known', n.best_known], ['Tip lag', n.tip_lag], ['Epoch', n.epoch], ['Indexer tip', n.indexer_tip], ['Indexer lag', n.indexer_lag],
+          ['Node identity', n.identity && n.identity.state]]);
+        if (n.identity && n.identity.message) c.appendChild(el('p', n.identity.state === 'unknown' ? 'msg' : 'msg err', n.identity.message));
+        if (n.net_rpc_hint) c.appendChild(el('p', 'msg err', n.net_rpc_hint));
         dl(cp, [['Pending', n.tx_pool && n.tx_pool.pending], ['Proposed', n.tx_pool && n.tx_pool.proposed], ['Peers in', n.peers_in], ['Peers out', n.peers_out]]);
       }).catch(function () {});
       api('/api/resources/history').then(function (h) {
@@ -294,8 +405,8 @@
   };
 
   pages.resources = function (root) {
-    var c = card('Now'), c1 = card('CPU % (24 h)'), c2 = card('Free RAM MB (24 h)');
-    root.appendChild(c); root.appendChild(c1); root.appendChild(c2);
+    var c = card('Now'), c1 = card('CPU % (24 h)'), c2 = card('Free RAM MB (24 h)'), c3 = card('Free disk GB (24 h)');
+    root.appendChild(c); root.appendChild(c1); root.appendChild(c2); root.appendChild(c3);
     function load() {
       api('/api/resources').then(function (r) {
         while (c.children.length > 1) c.removeChild(c.lastChild);
@@ -308,6 +419,8 @@
         while (c2.children.length > 1) c2.removeChild(c2.lastChild);
         c1.appendChild(chart(h.samples, 'cpu_percent', 'CPU %'));
         c2.appendChild(chart(h.samples, 'ram_free_mb', 'free MB'));
+        while (c3.children.length > 1) c3.removeChild(c3.lastChild);
+        c3.appendChild(chart(h.samples.filter(function (s) { return s.disk_free_gb !== null && s.disk_free_gb !== undefined; }), 'disk_free_gb', 'free GB'));
       }).catch(function () {});
     }
     load();
@@ -319,8 +432,8 @@
     ['node.rpc_url', 'Node RPC URL', 'text', true],
     ['node.node_type', 'Node type', 'select:auto,ckb,neuron'],
     ['dashboard.bind', 'Dashboard bind', 'text', true],
-    ['ranking.join', 'Join the CSR monitor', 'bool'],
-    ['ranking.ping_mode', 'Ping mode', 'select:inbound,outbound,both'],
+    ['ranking.join', 'Join the CSR monitor', 'bool', true],
+    ['ranking.ping_mode', 'Ping mode', 'select:inbound,outbound,both', true],
     ['ranking.ping_bind', 'Ping bind', 'text', true],
     ['monitor.url', 'Monitor URL', 'text'],
     ['monitor.pubkey', 'Monitor pubkey', 'text'],
@@ -331,7 +444,6 @@
     ['runtime.min_ckb_per_mcycle', 'Min CKB per Mcycle', 'number'],
     ['limits.max_concurrent_jobs', 'Max concurrent jobs', 'int'],
     ['limits.max_cycles_per_job', 'Max cycles per job', 'int'],
-    ['limits.max_vm_memory_mb', 'Max VM memory (MB)', 'int'],
     ['limits.max_job_wall_seconds', 'Max job wall seconds', 'int'],
     ['limits.pause_above_cpu_percent', 'Pause above CPU %', 'int'],
     ['limits.min_free_ram_mb', 'Min free RAM (MB)', 'int'],
@@ -351,8 +463,18 @@
   pages.settings = function (root) {
     var c = card('Settings');
     root.appendChild(c);
+    var ph = el('p', '', state.pwReq ? 'A dashboard password is set.' : 'Dashboard password: not set. Run "csr set-password" on the runner host and restart; writes stay refused until then.');
+    ph.id = 'password-help';
+    c.appendChild(ph);
     api('/api/settings').then(function (cfg) {
       var f = el('form'), inputs = [];
+      var ml = cfg.monitors || [];
+      if (ml.length) {
+        f.appendChild(el('p', '', 'Monitors (edit [[monitors]] in the config file):'));
+        var ul = el('ul');
+        ml.forEach(function (mo) { ul.appendChild(el('li', '', (mo.url || 'network default') + ' \u00b7 ' + (mo.pubkey || 'network default key'))); });
+        f.appendChild(ul);
+      }
       FIELDS.forEach(function (fd) {
         var l = el('label', '', fd[1]);
         if (fd[3]) l.appendChild(el('span', 'restart', ' (restart required)'));
@@ -457,6 +579,7 @@
       return b;
     }
     var c = card('Runner wallet');
+    var warn = el('p', 'msg err'); warn.style.display = 'none'; c.appendChild(warn);
     c.appendChild(el('p', '', 'Send about 700 CKB here from your wallet to start. The registration cell uses about 540 CKB, the rest pays small fees. Tips are added here.'));
     var info = el('div');
     var addr = el('div', 'addr-full'); addr.setAttribute('aria-label', 'Runner address');
@@ -488,6 +611,7 @@
     var sig = el('input'); sig.placeholder = 'Signature 0x…'; sig.size = 50; sig.setAttribute('aria-label', 'Signature');
     var reg = el('button', 'btn', 'Register'); reg.type = 'button';
     var rm = el('button', 'btn', 'Remove registration'); rm.type = 'button';
+    var renew = el('button', 'btn', 'Renew now'); renew.type = 'button';
     var ask = el('div', 'row'); ask.hidden = true;
     var yes = el('button', 'btn', 'Yes, remove'); yes.type = 'button';
     var no = el('button', 'btn', 'Cancel'); no.type = 'button';
@@ -507,6 +631,11 @@
         .then(function (j) { say((j.updated ? 'Registration updated: ' : 'Registered: ') + j.tx_hash); load(); })
         .catch(function (x) { say(x.message, true); });
     });
+    renew.addEventListener('click', function () {
+      api('/api/registry/refresh', { method: 'POST', body: {} })
+        .then(function (j) { say('Attestation renewed: ' + j.tx_hash); load(); })
+        .catch(function (x) { say(x.message, true); });
+    });
     rm.addEventListener('click', function () { ask.hidden = false; });
     no.addEventListener('click', function () { ask.hidden = true; });
     yes.addEventListener('click', function () {
@@ -516,12 +645,15 @@
         .catch(function (x) { say(x.message, true); });
     });
     var r1 = el('div', 'row'); [stake, getText].forEach(function (n) { r1.appendChild(n); });
-    var r2 = el('div', 'row'); [sig, reg, rm].forEach(function (n) { r2.appendChild(n); });
+    var r2 = el('div', 'row'); [sig, reg, renew, rm].forEach(function (n) { r2.appendChild(n); });
     [rinfo, r1, textBox, r2, ask].forEach(function (n) { cr.appendChild(n); });
     root.appendChild(c); root.appendChild(cr); root.appendChild(msg);
     function load() {
-      Promise.all([api('/api/wallet'), api('/api/registry'), api('/api/runner-cell')]).then(function (r) {
+      var none = { registered: false, stake: null, unavailable: true };
+      Promise.all([api('/api/wallet'), api('/api/registry').catch(function (x) { none.error = x.message; return none; }), api('/api/runner-cell').catch(function () { return {}; })]).then(function (r) {
         var w = r[0], ls = w.last_sweep;
+        warn.textContent = w.sweep_warning || '';
+        warn.style.display = w.sweep_warning ? '' : 'none';
         addr.textContent = r[2].runner_address || w.address || '';
         info.textContent = '';
         dl(info, [
@@ -533,9 +665,15 @@
         reg.textContent = r[1].registered ? 'Update stake' : 'Register';
         rinfo.textContent = '';
         var st = r[1].stake;
+        if (r[1].unavailable) {
+          var mainnet = /not deployed on mainnet/.test(r[1].error || '');
+          rinfo.appendChild(el('p', 'msg', mainnet ? 'The CSR scripts are not deployed on mainnet yet.' : (r[1].error || 'Registry unavailable.')));
+          return;
+        }
         dl(rinfo, [
           ['Registered', r[1].registered ? r[1].outpoint : 'no'],
-          ['Attestation expiry (ms)', r[1].attestation_expiry_ms],
+          ['Attestation expires', r[1].attestation_expiry_ms ? new Date(r[1].attestation_expiry_ms).toLocaleString() : '–'],
+          ['Last renewal error', r[1].renewal_error || '–'],
           ['Stake', st ? st.outpoint : '–'],
           ['Stake status', st ? st.status : '–'],
           ['Stake amount', st ? ckb(st.capacity_shannons) : '–'],
@@ -625,9 +763,14 @@
     var btns = el('div', 'row');
     var pa = el('a', 'btn', 'Wallet & registration'); pa.href = '#/wallet';
     btns.appendChild(pa);
-    [info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
+    var warn = el('p', 'msg err'); warn.style.display = 'none';
+    [warn, info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
     root.appendChild(c);
     function load() {
+      api('/api/wallet').then(function (w) {
+        warn.textContent = w.sweep_warning || '';
+        warn.style.display = w.sweep_warning ? '' : 'none';
+      }).catch(function () {});
       api('/api/earnings').then(function (e) {
         info.textContent = '';
         dl(info, [['Runner wallet', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned (verified on chain)', ckb(e.tips_shannons)], ['Fees paid', ckb(e.fees_shannons)]]);
@@ -728,6 +871,9 @@
     if (!state.auth) return renderLogin();
     view.textContent = '';
     pages[name](view);
+    if (!state.pwReq && (name === 'wallet' || name === 'settings')) {
+      pwNotice('No dashboard password is set: sending CKB, registration, service actions and settings changes are refused until you set one with "csr set-password".');
+    }
   }
 
   function poll() {

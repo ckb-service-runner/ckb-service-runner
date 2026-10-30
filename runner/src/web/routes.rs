@@ -43,6 +43,10 @@ pub fn routes() -> Router<Arc<AppState>> {
             post(super::operator::register_create),
         )
         .route(
+            "/api/registry/refresh",
+            post(super::operator::register_refresh),
+        )
+        .route(
             "/api/registry/remove",
             post(super::operator::register_remove),
         )
@@ -50,6 +54,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/jobs/{id}", get(job))
         .route("/api/earnings", get(earnings))
         .route("/api/events", get(super::settings::events))
+        .route("/api/update", get(super::operator::update_check))
+        .route("/api/update/install", post(super::operator::update_install))
 }
 
 async fn status(State(s): St) -> Json<Value> {
@@ -190,7 +196,7 @@ async fn earnings(State(s): St) -> Response {
         Err(e) => return db_error(e),
     };
     let cfg = s.config.read().unwrap().clone();
-    if let Ok(c) = crate::chain::Chain::connect(&cfg, &s.service_pubkey).await {
+    if let Ok(c) = crate::chain::Chain::connect_wallet(&cfg, &s.service_pubkey).await {
         if let Ok(cap) = c.wallet_capacity().await {
             v["wallet"]["capacity_shannons"] = json!(cap);
         }

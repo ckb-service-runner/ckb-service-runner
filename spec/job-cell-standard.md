@@ -43,7 +43,18 @@ Details:
   own check of the `since` value; the "the condition really holds" half is CKB consensus.
 
 `OnCellConsumed` from the spec **cannot be proven on-chain** (a script cannot prove that a cell no longer
-exists), so it is an off-chain trigger only: the runner watches it and submits an `OnDemand` job.
+exists). It is an `OnDemand` job with a watch convention (decision D2 A): the payload starts with the 41-byte
+header `"CSRW"` ‖ version `01` ‖ the watched out point (tx hash ‖ index as u32 LE). The runner leaves such a job
+alone until it has seen the watched cell consumed, then runs it like any other job. On chain it is plain
+`OnDemand`, so the chain cannot check that the event happened: a runner that does not follow the convention
+could run the job earlier. The service receives the whole payload, including the header. Watch headers on
+other triggers are ignored.
+
+Example header for cell `0xaa…aa:1` (tx hash of 32 × `aa`, index 1):
+
+```
+43535257 01 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 01000000
+```
 
 ## 3. Rules
 
@@ -198,3 +209,45 @@ after the security fixes (registered-runner and attestation-expiry checks):
 
 Before the fixes: 38,219 / 1,738,768 / 1,794,708. The extra checks cost ~13 k cycles (one more cell-dep scan,
 the registry lock/type loads); the system lock's secp256k1 verification still dominates.
+
+## Run lifecycle
+
+This section describes what a runner (the keeper of `csr`) does with a job cell. It is not part of the
+on-chain rules above.
+
+| State | Meaning | Next |
+|---|---|---|
+| `Discovered` | run created for a selected job cell | `Queued` |
+| `Queued` | waits for the next batch | `Scheduled`, `Paused`, `Lost`, `Expired` |
+| `Scheduled` | in the batch about to start | `Running`, `Paused` |
+| `Paused` | held (R2 or resource hold, or an unusable attestation); not started yet | `Queued`/`Scheduled` again, `Lost`, `Expired` |
+| `Running` | the service runs in the sandbox | `Completed`, `Failed` |
+| `Completed` | executed, transaction not yet sent | `Submitting`, `Failed` |
+| `Submitting` | transaction sent, waits for commit | `Settled`, `Rejected`, `Lost` |
+| `Settled` | transaction committed | final |
+| `Lost` | the job cell was spent by someone else | final |
+| `Expired` | the job reached its expiry before it ran | final |
+| `Failed` | execution or transaction building failed | final for this run |
+| `Rejected` | the node refused or dropped the transaction while the job cell is live | final for this run |
+
+**Attempts.** A job cell gets at most three runs. `Failed` and `Rejected` runs count; after the third the
+job cell is not tried again.
+
+**Give-up timers.** A submitted transaction that the node no longer knows is given up after 30 blocks; a
+transaction still pending is given up after 500 blocks. A runner wallet sweep that is still pending is
+given up after 500 blocks as well. A given-up run becomes `Rejected` while the job cell is live and `Lost`
+otherwise.
+
+**Restart.** When the runner starts, runs in `Running`, `Scheduled`, `Paused` or `Completed` go back to
+`Queued`; `Submitting` runs are followed on.
+
+**Batch abort.** If executing or submitting a batch fails as a whole, the runs of that batch still in
+`Running`, `Completed` or `Scheduled` become `Failed` (one attempt each), so the next batch can start.
+
+**Attestation.** No run starts while the runner's registry attestation is expired (its `expiry_ms` is not
+after the chain clock of the config cell). The runs stay waiting and the jobs page shows the reason.
+
+**Pause rule.** The R2 and resource holds pause only runs that have not started yet. A run that has
+started finishes, within `max_job_wall_seconds`.
+
+A service must tolerate being run more than once for one job cell.

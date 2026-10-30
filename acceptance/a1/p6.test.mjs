@@ -106,10 +106,10 @@ describe('inbound: rejected challenges', () => {
     assert.ok(is4xx((await post(`${env.ping}/v1/challenge`, c)).status));
   });
 
-  test('height above tip', async () => {
+  test('height above tip is answered with an empty block hash', async () => {
     const r = await post(`${env.ping}/v1/challenge`, makeChallenge(mon, { height: 5000 }));
-    assert.ok(is4xx(r.status));
-    assert.ok(!(r.json && r.json.answer), 'no answer for a rejected challenge');
+    assert.equal(r.status, 200);
+    assert.equal(r.json.answer.block_hash_at_height, '');
   });
 
   test('replayed nonce', async () => {

@@ -34,9 +34,13 @@ pub async fn check(cfg: &Config) -> CheckResult {
     let snap = fetch_snapshot(&client).await;
     let report = evaluate(&snap, expected_chain(&cfg.network));
     let reachable = !snap.transport_error && snap.tip.is_some();
+    // Read only, dropped (and erased) at the end of the check.
+    let identity = crate::identity::ConfiguredP2pKey::load(&cfg.node.p2p_key_file)
+        .status(snap.node_id.as_deref());
     let json = json!({
         "network": cfg.network,
         "config_ok": true,
+        "node_identity": identity,
         "node": {
             "reachable": reachable,
             "chain": snap.chain_info.as_ref().map(|c| c.0.clone()),
@@ -78,6 +82,11 @@ pub fn print_check_human(j: &Value, report: &R2Report) {
         show(&j["r2"]["indexer_lag"]),
         show(&j["r2"]["outbound_peers"])
     );
+    let id = &j["node_identity"];
+    println!("node identity: {}", id["state"].as_str().unwrap_or("-"));
+    if let Some(m) = id["message"].as_str() {
+        println!("  - {m}");
+    }
 }
 
 pub struct DetectResult {

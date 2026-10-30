@@ -6,6 +6,7 @@ use crate::node::rpc::RpcClient;
 use crate::runtime::manifest::Manifest;
 use crate::storage;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::Path;
 
 pub const NOT_APPROVED: &str = "not_approved";
@@ -93,23 +94,25 @@ pub async fn add_onchain(db: &Db, rpc_url: &str, outpoint: &str) -> Result<Value
     Ok(json!({"code_hash": code_hash, "name": name}))
 }
 
-fn entry(row: &ServiceRow, storage_root: &Path) -> Value {
+fn entry(row: &ServiceRow, storage_root: &Path, totals: &HashMap<String, (u64, u64)>) -> Value {
+    let (jobs, earned) = totals.get(&row.code_hash).copied().unwrap_or((0, 0));
     json!({
         "code_hash": row.code_hash,
         "name": row.name,
         "language": row.language,
         "status": row.status,
         "storage_bytes": storage::service_usage(storage_root, row.code_hash.trim_start_matches("0x")),
-        "jobs": 0,
-        "earned_shannons": 0,
+        "jobs": jobs,
+        "earned_shannons": earned,
     })
 }
 
 pub fn list(db: &Db, storage_root: &Path) -> Result<Vec<Value>, String> {
+    let totals = db.service_totals()?;
     Ok(db
         .services()?
         .iter()
-        .map(|r| entry(r, storage_root))
+        .map(|r| entry(r, storage_root, &totals))
         .collect())
 }
 
@@ -149,11 +152,13 @@ pub fn act(
     cfg.save(config_path).map_err(ActionError::Other)?;
     db.set_service_status(&code_hash, new)
         .map_err(ActionError::Other)?;
+    let totals = db.service_totals().map_err(ActionError::Other)?;
     Ok(entry(
         &ServiceRow {
             status: new.into(),
             ..row
         },
         storage_root,
+        &totals,
     ))
 }

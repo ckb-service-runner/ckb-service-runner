@@ -409,3 +409,112 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 ## A8b – dashboard polish
 - The runner address is a read-only `div.addr-full` (monospace, wraps anywhere, `user-select:all`) instead of an input with a Copy button, because `navigator.clipboard` is missing over plain http. The Text-to-sign Copy button falls back to `execCommand('copy')` on the textarea and finally says "Press Ctrl+C to copy" with the text left selected.
 - Logos sit on a white tile in both themes (simplest, keeps the dark green visible). `ico` is served as `image/x-icon`.
+
+## fix-runner-unranked-node
+- `NodeStats.rank`/`of` and the availability values are `Option`, `provisional` defaults to `false`, `last_check_at` defaults to 0; all fields are always serialized (`null` when missing) so the dashboard sees a stable shape.
+- An unparsable `/v1/nodes` reply is logged as a warning and becomes `node: None`; the `/v1/network` data is kept. Transport errors and non-404 statuses still fail the refresh.
+- Dashboard: `rank == null` shows "not ranked yet" (plus "(provisional)"); `null` availability shows "–"; stake and attestation are shown for unranked nodes. `spec/monitor-public-api.md` documents the unranked shape.
+## Skeleton input guard (F-SEC-001)
+`Chain::inputs_capacity` now checks every skeleton input with `check_skeleton_input` (pure function over
+`SkeletonPolicy`) and fails the run before anything is signed if the input is a runner wallet cell, a dual lock
+cell naming the runner lock hash (either half), a job-lock cell, or a registry-typed cell.
+## F-RUN-001 – delete_on_consume in csr run
+- A background task (own `RpcClient`, checks every 2 s, acts when the tip number changes) asks `get_live_cell` for every rule out point. A cell counts as consumed when the node answers `dead`, or `unknown` while the transaction that created it is committed and has that output (a current CKB node answers `unknown` for spent cells; integration fix, Oct 2026). `live`, cells of unknown or uncommitted transactions, RPC errors and missing methods keep the rules. It runs regardless of the runtime state.
+- Deletion log lines go to the tracing log and are appended to `deletions.log` in the storage root, like the CLI does.
+## Keeper robustness – phase 2
+- **Retry rules unchanged (D14 A):** three attempts per job cell, 30 blocks for an unknown transaction, 500 for a pending one and for a pending sweep.
+- **Incomplete discovery (F-FUN-007):** `Chain::job_cells` reads up to 200 pages and returns `JobCells { jobs, complete }`; a cut-off list never marks runs `Lost` (`lost_runs`), and warns once. `get_cells` (20 pages) returns an error instead of a short list.
+- **Indexer lag (F-FUN-008):** `indexer_ready` accepts the lag R2 accepts (`LAG_LIMIT`, 5 blocks).
+- **Attestation (F-RUN-015):** `run_context` compares the registry `expiry_ms` with the config cell `clock_ms`; an expired attestation is an error, so the batch is held and the runs stay waiting.
+- **Sweep (F-FUN-005):** the pending sweep is stored as `"<hash>:<block>"` under `sweep_pending` (cleared with an empty value) and given up after 500 blocks. While it is pending the keeper loop only follows submitted transactions (`Keeper::follow`), it starts no batch.
+- **Config bounds (F-FUN-006):** `sweep_amount_ckb` ≤ 1,000,000,000 (was 100,000,000), `sweep_threshold_ckb` ≤ 2,000,000,000, RAM/disk/quota ranges as in the spec; multiplications are checked or saturating.
+- **Supervision (F-FUN-004):** all background tasks (R2 guard, sampler, keeper loop, outbound check-in, dashboard, ping responder) are in a `JoinSet`; one ending before a shutdown request ends `csr run` with an error (non-zero exit), and systemd restarts it (`Restart=on-failure`).
+- **Pause rule (D4 A):** holds pause only runs that have not started; a started run finishes within `max_job_wall_seconds`. Comments and `docs/architecture.md` corrected; the lifecycle is in `spec/job-cell-standard.md`.
+## Dashboard security, phase 1 (D25 B)
+
+- Wallet, registration, service and settings writes need a dashboard password; without one they answer 403 `password_required`. Read-only pages still work without a password on loopback.
+- `Host` is checked on every request (421) and `Origin` on writes (403); both are checked before authentication.
+- Login: 5 failures per client IP and 50 globally per 15 minutes give 429 with `Retry-After`; Argon2 runs under a 2-permit semaphore.
+- Sessions: separate pools (50 authenticated, 200 anonymous); a full pool evicts only its own oldest entry. The cookie gets `Secure` when `x-forwarded-proto: https`.
+- Old acceptance tests that wrote without a password (a1/p4, a2/p5, a8/p5, a8b/p5) now set a password and log in, and each has one assertion for 403 `password_required`. a2/p5 and the devnet tests could not be run here (no RISC-V service build / devnet).
+- `identity::key_mode_too_open` (fixes the mode to 0600 with a warning) and `wallet::sweep_warning` are in place; their wiring is phase 2.
+
+## Dashboard security, phase 2 (D25 B, D26 A, D28 B)
+
+- **D25 B:** a dashboard password is required only for writes (wallet, registration, service, settings); read-only pages work without one on loopback.
+- **D26 A:** the storage key stays on the same disk in `keys/`. A stolen disk or a clear backup is covered by full-disk encryption, as the install guide says; `keys/` is not backed up in clear.
+- **D28 B:** no automatic sweep is forced. The runner warns (log once per start, `sweep_warning` in `GET /api/wallet`, Overview and Earnings pages) when the hot key holds at least `payout.sweep_threshold_ckb` and `payout.sweep_address` is empty.
+- Files are private: `umask(0o077)` at process start, key files with group/other bits are set to 0600 with a warning, key buffers are zeroized, `LimitCORE=0` turns off core dumps.
+## Sandbox storage, phase 1
+- Storage format v2 (per-service key and AAD); `migrate_v1` runs once at `csr run` start and logs the count. A file that opens with the v1 rules but whose name does not match its key is skipped.
+- `rules.bin` is deleted when its last rule goes; it counts in both quotas, `delete_on_consume` checks the quota on growth. 256 rules per service; a duplicate rule is always `Ok`.
+- `rule_outpoints` and `apply_consumed` were missing from the tree, so they are added here (`simulate_consumed` calls `apply_consumed`).
+- `limits.max_vm_memory_mb` must be 4; removed from the settings form. `data_cycles` (1 cycle per 4 bytes), `NODE_CALL_CYCLES` (100 000) and `MAX_DEBUG_SCAN` (1024) are defined but not yet charged (phase 2).
+
+## Sandbox storage, phase 2
+- Host calls cost 500 + `data_cycles(bytes copied)` (+ `NODE_CALL_CYCLES` for `chain_read`/`cells_query`). The data charge sits in `write_partial` (bytes actually copied out) and `read_mem` (bytes read from VM memory), so every data-moving call is covered; `debug` is charged for the bytes kept. The extra charge uses `add_cycles`, so a job that runs out stops with the cycle-limit error. `debug` scans at most `MAX_DEBUG_SCAN` bytes.
+- Example services: see the check below.
+- Example services: all of `services/manifests` except the intentionally failing ones (`loop`, `memhog`, `badsyscall`, `bigresult`, `quotatest`) move only a few hundred bytes per call, so the extra charge is a few hundred cycles per job against the 70,000,000 default `max_cycles_per_job`; none needs a higher limit. Nothing was raised.
+## csr-runner-fixes
+- **Restart flag (F-RUN-009):** `Config::needs_restart` also covers `ranking.join` and `ranking.ping_mode`; both settings are marked "restart required" on the settings page.
+- **Disk history (F-RUN-011):** `samples.disk_free_gb` (nullable; added by `ALTER TABLE` to older databases). The Resources page draws only samples that have a value.
+- **Service totals (F-RUN-012):** `Db::service_totals` joins `settlements` to `job_runs` on `run_id` and groups by `code_hash` as stored.
+- **Monitor key (F-RUN-013):** the mainnet file ships `monitor_url = ""` and `monitor_pubkey = ""`. While the effective key (config, else default) is unusable, the inbound listener answers 503 "no monitor key set", the outbound check-in does nothing, one warning is logged and `/api/network` carries `warning` (shown on the Network page).
+- **HTTP clients (F-RUN-014, F-SEC-017):** `network::http_client` (no proxy, no redirects); a 3xx answer is the error "unexpected redirect".
+- **Wallet without deployment (F-RUN-017):** `Chain::connect_wallet` fills the deployment fields with unused placeholders; only wallet functions may be used on such a chain. The CLI `csr wallet …`, the wallet routes, `/api/runner-cell`, the earnings balance and the sweeper use it. `mainnet_runtime_unlocked()` stays `false` (decision D5 B). The registry part of the wallet page says "the CSR scripts are not deployed on mainnet yet".
+- **Log rotation (F-RUN-018):** `logs::RotatingFile` replaces the start-up rename; `tail` continues with the end of `csr.log.1` when the current file is short.
+- **Pending transactions (F-SEC-015):** `wallet::wallet_busy`. This codebase did not store a pending sweep yet, so the sweeper writes its pending transaction hash to the settings key `sweep_pending` (empty = none, cleared at start-up because an earlier process's sweep is no longer followed). The dashboard actions answer 409 `{"error":"busy","detail"}`; there is no registry refresh action.
+## Attestation renewal (D3 A)
+- The runner renews the registry attestation itself (`csr register refresh`, "Renew now", and automatically 2 days before expiry on the chain clock of the config cell, checked every 30 minutes, retried after 30 minutes on failure). A refresh needs no stake dep and no consent; only a runner-owned cell is refreshed.
+- `wallet_busy`, `SWEEP_PENDING_AFTER_BLOCKS` and the dashboard password check did not exist in this codebase yet; `wallet::wallet_busy` (refresh pending or keeper submissions pending) and the constant (100 blocks) were added with this change. The dashboard route uses the `wallet_tx` lock and the `wallet_busy` check; the password check applies through the existing session/CSRF middleware.
+- The last renewal error is kept in the settings key `renewal_error` and returned by `GET /api/registry`.
+## Ping protocol v1.1 (runner)
+
+### D19 A: several monitors
+`[[monitors]]` (each with `url` and `pubkey`) replaces the single `[monitor]`, which still works as a one-entry list;
+both together are a config error. Default: the network's reference monitor. Inbound accepts a challenge signed by any
+configured monitor, the outbound check-in goes to each monitor independently, `csr register attest` and the dashboard's
+monitor client use the first entry. The dashboard shows the list; editing stays in the file.
+
+### v1.1 changes
+- Fresh check-in: `ts` and `checkin_sig` (`CSR-CHECKIN-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}`) so a copied binding cannot be replayed (F-XC-001). Monitors that do not know them ignore them.
+- A challenge with a height above the tip gets a signed answer with empty `block_hash_at_height`; a stale challenge gets 400 `clock_skew`, warned at most every 10 minutes and shown on the Network page (F-XC-004).
+- Rejections carry JSON `{"error": "<code>"}`.
+- One error table for `POST /v1/attest` in `spec/monitor-public-api.md`, explained by `attest::explain_error` (F-XC-003); `wrong_owner` is gone, `stake_in_use` is 403.
+## Node identity – runner
+
+### D6 A: the node's P2P key signs the binding
+- Until now the binding (`CSR-BINDING-v1`) was signed by the runner's service key only, so anyone could claim any well-connected node (F-MON-006, F-RUN-007). The runner now reads the CKB node's P2P secret key (`node.p2p_key_file`, read only, kept in memory), checks that it derives the node ID the node reports (`local_node_info.node_id`; peer ID = `base58(0x12 ‖ 0x20 ‖ SHA-256(compressed pubkey))`, tentacle `PeerId::from_public_key`), and posts `CSR-NODE-IDENTITY-v1\n{peer_id}\n{service_pubkey}\n{network}\n{ts}` signed by the P2P key and the service key to `POST /v1/identity` (`spec/ping-protocol.md` §5b): at start, every 24 h and after a node restart.
+- This narrows the rule "CSR never touches the node's data": the key file is only read, never written, chmod-ed or chowned, and only when the operator sets it. A file readable by "other" is refused; on a key/node mismatch no proof is sent (error log, Node page, `csr check`).
+- Without the key everything works as before; the monitors will not rank the node once they require the proof. The runner is deployed first: monitors ignore a missing proof until then, and a 404 from an older monitor is not an error.
+
+### D12 A: a daily full-node check for runners behind NAT
+- Each monitor publishes the P2P address of its own CKB node (`p2p_address` in `GET /v1/monitor`). The runner asks its node to connect to it (`add_node(peer_id, address)`, Net RPC module) at start and every 6 h unless `get_peers` already lists that peer; the monitor then checks the node among its own peers. "Method not found" means the Net module is off: one warning with the fix, shown on the Node page. No other Net method (`remove_node`, …) is called.
+
+### Phase 1 implementation notes
+- One monitor: this code base has no `Config::monitors()` list (the `ping-v1-1-runner` change is not in it), so "every configured monitor" is the single `monitor.url` (or the network default). Results are kept per monitor URL so a list fits later.
+- Base58 is implemented in `identity.rs` (about 40 lines, tested) instead of adding `bs58`: the build must work offline, and the crate is not in the local registry.
+- No `zeroize` setup exists here (the `csr-dashboard-security` change is not in this code base): the `P2pKey` erases its secret on drop (`SecretKey::non_secure_erase`), and the file buffer and parse buffer are overwritten with zeros. `P2pKey` has no `Serialize`, and its `Debug` prints only the peer ID.
+- Identity states: `off`, `proven`, `mismatch`, `unreadable`, plus `unknown` while the key is loaded but the node does not report a node ID (unreachable). While the node is unreachable the dashboard keeps the last known state.
+- `add_node` runs only with `ranking.join = true` (it serves the ranking; a non-joined runner does not contact the monitor at all) and does not need the P2P key (the P2P handshake itself proves the peer ID to the monitor's node).
+- Retries: a failed proof post (network, 5xx, 200 without `ok`) is retried after 10 minutes, a failed `/v1/monitor` fetch or RPC error for `add_node` too; 4xx rejections and 404 wait for the next regular interval.
+- `csr check` exit codes are unchanged (they still reflect R2 only); the identity state is printed and in `--json` as `node_identity`.
+- Changing `node.p2p_key_file` in the dashboard settings requires a restart (the key is read at start only).
+## D2 A – `OnCellConsumed` is watched by the runner
+- **Decision.** A job that should run when a cell is spent is an ordinary `OnDemand` job cell whose payload starts with the 41-byte watch header `"CSRW"` ‖ `01` ‖ out point (36 bytes). No contract change. The runner excludes it (`waiting_for_cell`) until it has seen the cell consumed, then runs it normally. The chain cannot check this, so a runner ignoring the convention could run it early; the standard says so.
+- **Watcher.** On every new block the keeper checks the watched out points of the job cells it saw with the same rule (`chain::cell_consumed`: `dead`, or `unknown` with a committed creating transaction that has the output); consumed ones are stored in `watched_cells (outpoint, dead_block)`. Live cells, cells of unknown transactions and RPC errors mean "not yet". Rows no job cell watches any more are removed 1,000 blocks after the cell was found dead. The check lives in the keeper tick (the separate consumed-cell task of `fix-runner-delete-on-consume` is not in this code base).
+- **Details.** Headers on triggers other than `OnDemand` are ignored. The run's trigger label is `on-cell-consumed:0x<tx hash>:<index>`. The service gets the whole payload including the header.
+## csr-update-check – the mainnet gate is switched on by a release (D5 B)
+
+### D5 B: the gate stays a constant; operators update through a signed release
+- `mainnet_runtime_unlocked()` stays a constant in the code. It is switched on by a new release once a person has checked the figures (12 months, 60 diverse runners); a monitor-controlled switch was not chosen, so nobody can unlock mainnet remotely. Every operator then has to update, so updating is made easy now, before it is needed.
+- **Check.** `GET /api/update` and `csr update check [--json]` ask `https://api.github.com/repos/ckb-service-runner/ckb-service-runner/releases/latest` (`User-Agent: csr/<version>`, 15 s, at most 1 MiB, cached 1 hour) and answer `{current, latest, newer, notes_url, checked_at, key_configured}`. `csr run` checks once a day (first 60 s after start); the Overview "Update" card shows a notice from the cached result (`update` in `/api/status`), never contacting GitHub on page load. Only the request itself is sent. There is no opt-out setting in phase 1 (one anonymous GET a day).
+- **Versions.** Only `X.Y.Z` tags (optional `v`) count; pre-releases and other tags give `newer = null` and are never staged.
+- **Client.** `update::http_client` (separate from the redirect-less clients elsewhere): no proxy, at most 5 redirects, each only to an https URL on `github.com`, `api.github.com` or `*.githubusercontent.com` (no explicit port, no user info); every requested URL is checked the same way, and the release-notes link is only shown if it passes that check. Downloads have a 600 s timeout and a 64 MiB limit per file.
+- **Signature.** `SHA256SUMS` is signed with ed25519 (`openssl pkeyutl -sign -rawin`, 64 raw bytes; 128 hex characters are accepted too) and checked with `verify_strict` against `RELEASE_PUBKEY`, pinned in the binary. Phase 1 pins all zeros: `check_staged` refuses everything with "no release key configured" and the dashboard hides the Update button. The key is created and its public half pinned by a person in the manual phase; it never enters the repository or AIWorker.
+- **Staging.** `POST /api/update/install` and `csr update stage` (refuse without key or newer release) download `csr-<X.Y.Z>-<arch>-linux`, `SHA256SUMS`, `SHA256SUMS.sig` from the asset list of the release, run `check_staged`, and write `csr.new` (0755, set explicitly), `SHA256SUMS`, `SHA256SUMS.sig` and last `ready.json {version, asset}` into `<data root>/<network>/update/` (the network's data directory, next to `csr.db`), each through a temp file and rename. Checks and staging are serialised; a second stage while one runs is refused. Staging always asks GitHub afresh (no 1-hour cache).
+- **Password.** `write_needs_password(method, path)` (new in `web/auth.rs`; the list is meant to be merged with the one of `csr-dashboard-security`) lists `/api/update/`: writes there are refused (403) unless a dashboard password is set, because they install software on the host. Without a password, `sudo -u csr csr update stage` does the same. Wallet and registry writes are not added here, to keep existing behaviour.
+- **Root installer.** The runner (user `csr`, `ProtectSystem=strict`) cannot replace `/usr/local/bin/csr`. `csr-update.path` (`PathExists=…/update/ready.json`) starts `csr-update.service` (oneshot, root, `PrivateNetwork=yes`) → `/usr/local/lib/csr/install-update.sh <dir>`. The staged files are untrusted (a compromised runner could change them): the script reads them **as the directory's owner** (`runuser`, so planted symlinks cannot make root read or write other files) into a root-only work directory under `/run`, lets the **installed** binary verify the copies (`csr update verify`: signature with its own pinned key, hash, staged version newer than itself, asset name equal to `csr-<version>-<arch>-linux` so the signed checksum line also binds the version), and installs exactly the verified copies (no check/use race). It keeps `csr.prev`, installs with `install -m 0755 -o root -g root` via a temp name and `mv` (atomic), removes the staged files and restarts `csr`; if the new binary's `csr --version` fails it restores `csr.prev` first. A failed verify moves the staged files to `<dir>/rejected/` (so the path unit does not fire again) and logs to the journal.
+- **`csr --version`.** The installer needs it, so clap's version flag is enabled (`csr version` stays).
+- **Rollback.** Manual: `install -m 0755 /usr/local/bin/csr.prev /usr/local/bin/csr && systemctl restart csr` (docs/install.md). The verify step refuses downgrades, so a rollback never goes through the updater.
+- **Release.** `scripts/release.sh <version>` builds, writes `dist/csr-<v>-<arch>-linux`, the tarball and `SHA256SUMS`, and prints the offline signing command; it reads no key. Steps and key handling: `docs/release.md`.

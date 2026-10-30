@@ -7,6 +7,36 @@ use ckb_types::{bytes::Bytes, core::ScriptHashType, packed, prelude::*};
 use serde_json::{json, Value};
 use std::path::Path;
 
+/// Settings key of the refresh transaction that is not committed yet: `<tx hash>:<block at sending>`.
+pub const REFRESH_PENDING: &str = "refresh_pending";
+/// A pending runner transaction is given up after this many blocks (the keeper's rule).
+pub const SWEEP_PENDING_AFTER_BLOCKS: u64 = crate::keeper::SWEEP_PENDING_AFTER_BLOCKS;
+
+/// Whether a registry refresh is not committed yet.
+pub fn refresh_pending(db: &crate::db::Db) -> bool {
+    db.get_setting(REFRESH_PENDING)
+        .map(|v| v.is_some_and(|s| !s.is_empty()))
+        .unwrap_or(true)
+}
+
+/// Why the runner wallet is in use right now (keeper submission, sweep or registry refresh), read from the
+/// database; `None` when it is free.
+pub fn busy_reason(db: &crate::db::Db) -> Option<String> {
+    if refresh_pending(db) {
+        return Some("an attestation refresh is pending".into());
+    }
+    let submitting = db
+        .runs_in(&[crate::keeper::SUBMITTING])
+        .map(|r| r.len())
+        .unwrap_or(1);
+    let sweep = db
+        .get_setting("sweep_pending")
+        .ok()
+        .flatten()
+        .is_some_and(|v| !v.is_empty());
+    wallet_busy(submitting, sweep)
+}
+
 /// File in the network's data directory that remembers the last sweep.
 const LAST_SWEEP: &str = "last_sweep.json";
 
@@ -47,11 +77,43 @@ fn record_sweep(net_dir: &Path, tx_hash: &str, amount: u64) -> Result<(), String
         .map_err(|e| format!("cannot write {}: {e}", f.display()))
 }
 
+/// Warning when earnings pile up on the hot key and no sweep address is set.
+pub fn sweep_warning(sweep_address: Option<&str>, capacity_shannons: u64, threshold_ckb: u64) -> Option<String> {
+    if sweep_address.is_some() || capacity_shannons < threshold_ckb.saturating_mul(CKB) {
+        return None;
+    }
+    Some(format!(
+        "the runner wallet holds {} CKB and no sweep address is set: earnings stay on the runner's hot key. Set payout.sweep_address in the settings to sweep them to your own wallet",
+        capacity_shannons / CKB
+    ))
+}
+
+/// Why the runner wallet cannot be used for a dashboard action now: a keeper transaction (a run in state
+/// `Submitting`) or a sweep is still pending. `None` when the wallet is free.
+pub fn wallet_busy(submitting_runs: usize, sweep_pending: bool) -> Option<String> {
+    if sweep_pending {
+        Some("a wallet sweep is pending".into())
+    } else if submitting_runs > 0 {
+        Some(format!(
+            "{submitting_runs} job transaction(s) are pending"
+        ))
+    } else {
+        None
+    }
+}
+
 /// `csr wallet status` / `GET /api/wallet`.
 pub async fn status(chain: &Chain, cfg: &Config, net_dir: &Path) -> Result<Value, String> {
+    let capacity = chain.wallet_capacity().await?;
+    let sweep_warning = sweep_warning(
+        cfg.payout.sweep_address(),
+        capacity,
+        cfg.payout.sweep_threshold_ckb,
+    );
     Ok(json!({
         "address": chain.runner_address(),
-        "capacity_shannons": chain.wallet_capacity().await?,
+        "capacity_shannons": capacity,
+        "sweep_warning": sweep_warning,
         "sweep_address": cfg.payout.sweep_address(),
         "sweep_threshold_ckb": cfg.payout.sweep_threshold_ckb,
         "sweep_amount_ckb": cfg.payout.sweep_amount_ckb,
@@ -83,10 +145,19 @@ pub async fn sweep(chain: &Chain, cfg: &Config, net_dir: &Path) -> Result<Value,
     };
     let lock = lock_of(chain.network(), addr)?;
     let have = chain.wallet_capacity().await?;
-    if have < cfg.payout.sweep_threshold_ckb.saturating_mul(CKB) {
+    let threshold = cfg
+        .payout
+        .sweep_threshold_ckb
+        .checked_mul(CKB)
+        .ok_or("payout.sweep_threshold_ckb is too large")?;
+    if have < threshold {
         return Ok(none);
     }
-    let amount = cfg.payout.sweep_amount_ckb * CKB;
+    let amount = cfg
+        .payout
+        .sweep_amount_ckb
+        .checked_mul(CKB)
+        .ok_or("payout.sweep_amount_ckb is too large")?;
     let tx_hash = chain.wallet_send(lock, amount).await?;
     record_sweep(net_dir, &tx_hash, amount)?;
     tracing::info!(

@@ -15,11 +15,13 @@ mod node;
 mod password;
 mod ping;
 mod registry;
+mod renew;
 mod resources;
 mod run;
 mod runtime;
 mod service;
 mod storage;
+mod update;
 mod wallet;
 mod web;
 
@@ -39,7 +41,7 @@ use std::process::ExitCode;
 #[command(
     name = "csr",
     about = "CSR - CKB Service Runner",
-    disable_version_flag = true
+    version
 )]
 struct Cli {
     /// Data root directory (default: $HOME/.csr)
@@ -126,10 +128,36 @@ enum Command {
         #[command(subcommand)]
         action: JobsAction,
     },
+    /// Check for, stage and verify updates (signed GitHub releases)
+    Update {
+        #[command(subcommand)]
+        action: UpdateAction,
+    },
     /// Run the service
     Run {
         #[arg(long)]
         confirm_mainnet: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum UpdateAction {
+    /// Ask GitHub for the latest release and compare it with this version
+    Check {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download and verify the latest release and stage it in <data root>/<network>/update/
+    Stage {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check staged files with this binary's release key and version (no network); exit 0 if valid
+    Verify {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -204,6 +232,11 @@ enum RegisterAction {
         /// The monitor's attestation (file); without it the monitor is asked
         #[arg(long)]
         attestation: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Renew the monitor's attestation of the registry cell (no stake owner consent needed)
+    Refresh {
         #[arg(long)]
         json: bool,
     },
@@ -334,6 +367,23 @@ where
     F: FnOnce(chain::Chain, config::Config, (identity::Identity, PathBuf)) -> Fut,
     Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
 {
+    node_cmd_with(cli, json, false, f)
+}
+
+/// As `node_cmd` for the runner wallet commands, which work before the CSR scripts are deployed.
+fn wallet_cmd<F, Fut>(cli: &Cli, json: bool, f: F) -> ExitCode
+where
+    F: FnOnce(chain::Chain, config::Config, (identity::Identity, PathBuf)) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
+{
+    node_cmd_with(cli, json, true, f)
+}
+
+fn node_cmd_with<F, Fut>(cli: &Cli, json: bool, wallet: bool, f: F) -> ExitCode
+where
+    F: FnOnce(chain::Chain, config::Config, (identity::Identity, PathBuf)) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
+{
     let r = (|| -> Result<serde_json::Value, String> {
         let cfg = load_config(cli)?;
         let net_dir = data_root(cli).join(&cfg.network);
@@ -341,9 +391,12 @@ where
             .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
         let id = identity::Identity::load_or_create(&net_dir)?;
         runtime().block_on(async {
-            let c = chain::Chain::connect(&cfg, &id.service_pubkey)
-                .await?
-                .with_service_key(id.service_key);
+            let c = if wallet {
+                chain::Chain::connect_wallet(&cfg, &id.service_pubkey).await?
+            } else {
+                chain::Chain::connect(&cfg, &id.service_pubkey).await?
+            }
+            .with_service_key(id.service_key);
             f(c, cfg, (id, net_dir)).await
         })
     })();
@@ -381,6 +434,11 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 fn main() -> ExitCode {
+    // Every file the runner creates (data, database, logs, keys) is private to its user, whatever the
+    // caller's umask; this runs before anything is written.
+    unsafe {
+        libc::umask(0o077);
+    }
     let cli = Cli::parse();
     match &cli.command {
         Command::Version => {
@@ -525,17 +583,31 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Update { action } => match action {
+            UpdateAction::Check { json } => {
+                let cache = update::Cache::default();
+                print_result(runtime().block_on(cache.check()), *json)
+            }
+            UpdateAction::Stage { json } => {
+                let r = load_config(&cli).and_then(|cfg| {
+                    let dir = data_root(&cli).join(&cfg.network).join("update");
+                    runtime().block_on(update::Cache::default().stage(&dir))
+                });
+                print_result(r, *json)
+            }
+            UpdateAction::Verify { dir, json } => print_result(update::verify_dir(dir), *json),
+        },
         Command::RunnerCell {
             action: RunnerCellAction::Status { json },
         } => chain_cmd(&cli, *json, |c| async move { c.runner_cell_status().await }),
         Command::Wallet { action } => match action {
-            WalletAction::Status { json } => node_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
+            WalletAction::Status { json } => wallet_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
                 wallet::status(&c, &cfg, &dir).await
             }),
-            WalletAction::Send { to, ckb, json } => node_cmd(&cli, *json, |c, _, _| async move {
+            WalletAction::Send { to, ckb, json } => wallet_cmd(&cli, *json, |c, _, _| async move {
                 wallet::send(&c, to, ckb).await
             }),
-            WalletAction::Sweep { json } => node_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
+            WalletAction::Sweep { json } => wallet_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
                 wallet::sweep(&c, &cfg, &dir).await
             }),
         },
@@ -592,6 +664,10 @@ fn main() -> ExitCode {
                     c.register_create(&att, stake, consent).await
                 })
             }
+            RegisterAction::Refresh { json } => node_cmd(&cli, *json, |c, cfg, (id, net_dir)| async move {
+                let db = db::Db::open(&net_dir.join("csr.db"))?;
+                renew::renew(&c, &cfg, &id.service_key, &id.service_pubkey, &db).await
+            }),
             RegisterAction::Remove { json } => {
                 chain_cmd(&cli, *json, |c| async move { c.register_remove().await })
             }
