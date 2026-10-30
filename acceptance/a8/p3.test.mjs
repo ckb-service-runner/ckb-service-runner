@@ -34,7 +34,8 @@ test('registration paid and owned by the runner wallet, consent of the stake own
   await deploy();
   const o = await owner();
   const r = await runner('a8-reg');
-  await fundRunnerCell(r, 500);
+  // Integration (Oct 2026): the registry cell needs ≈ 540 CKB plus 61 CKB change (docs/testing.md: 700).
+  await fundRunnerCell(r, 700);
   const stake = await deposit(10000);
 
   const m = await csrJson([...r.args, 'register', 'consent-message', '--stake', stake.replace(/[a-f]/g, (c) => c.toUpperCase()).replace('0X', '0x')]);

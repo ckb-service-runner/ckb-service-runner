@@ -12,7 +12,8 @@ test('an Every job runs three times; the runner wallet grows by exactly 3 tips',
   await deploy();
   const hb = await deployService('heartbeat');
   const r = await runner('a8-run', undefined, (c) => { c.runtime.enabled = true; return c; });
-  await fundRunnerCell(r, 500);
+  // Integration (Oct 2026): the registry cell needs ≈ 540 CKB plus 61 CKB change (docs/testing.md: 700).
+  await fundRunnerCell(r, 700);
   await registerWithConsent(r, await deposit(10000));
   await allow(r, hb);
   const before = (await wallet(r)).capacity_shannons;

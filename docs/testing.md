@@ -59,6 +59,10 @@ csr wallet sweep --json                               # one sweep now (needs [pa
 
 `node --test --test-concurrency=1 acceptance/a3c/p2.test.mjs acceptance/a3c/p3.test.mjs` (devnet running, `bash scripts/build-services.sh` done). `p2`: an `every:2` job runs three times, the tips are settled (since A8 they go into the runner wallet, `acceptance/a8/p4.test.mjs`). `p3`: two CSR instances with separate data roots share the devnet node and race for one job; exactly one settles, the other ends in `Lost` at no cost. Manual demo steps: `docs/milestones/A3c.md`.
 
+### Manual checks on the devnet (`scripts/manual-checks.sh`)
+
+`bash scripts/manual-checks.sh` builds the contracts, the services and the debug binaries, starts a fresh devnet, runs `acceptance/manual-checks/devnet.test.mjs` and prints `PASS`/`FAIL` per check (full output in `manual-checks.log`). It covers the manual phases of the Oct 2026 audit that need a real node: the skeleton guard (a test service, `services/c/skeletontest`, whose skeleton spends the registry cell or a runner wallet cell fails before signing; a normal job settles), delete-on-consume (spending a real cell deletes its entry, also with the service disabled), attestation renewal (a devnet monitor answering `POST /v1/attest`: the automatic renewal near the expiry, its error while the monitor is down, `csr register refresh` by hand) and the cell-consumed trigger (a watched job waits until its cell is spent; a normal job runs at once).
+
 ### Manual testnet runbook "with Neuron" (not run by the test suite)
 
 Prerequisites: a synced testnet CKB node (full node with the Indexer module), a funded testnet key, the built contracts.
