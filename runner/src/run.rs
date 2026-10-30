@@ -20,6 +20,8 @@ const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
 const RESOURCE_INTERVAL: Duration = Duration::from_secs(5);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const RENEW_INTERVAL: Duration = Duration::from_secs(30 * 60);
+/// The consumed-cell watch asks for the tip at this pace (a new block is ~8–10 s apart).
+const CONSUMED_INTERVAL: Duration = Duration::from_secs(10);
 const MAINNET_MARKER: &str = ".mainnet-confirmed";
 
 pub fn now() -> i64 {
@@ -105,8 +107,11 @@ impl Sweeper {
         let due = self
             .checked
             .is_none_or(|t| t.elapsed() >= period(SWEEP_INTERVAL));
-        if !self.sweep_warned && cfg.payout.sweep_address().is_none() {
-            if let Ok(c) = crate::chain::Chain::connect(cfg, &state.service_pubkey).await {
+        // At most one wallet look-up per sweep interval (60 s) while the warning is not settled, so that a
+        // node without an indexer is not asked every 2 s.
+        if !self.sweep_warned && due && cfg.payout.sweep_address().is_none() {
+            self.checked = Some(Instant::now());
+            if let Ok(c) = crate::chain::Chain::connect_wallet(cfg, &state.service_pubkey).await {
                 if let Ok(cap) = c.wallet_capacity().await {
                     self.sweep_warned = true;
                     if let Some(w) = crate::wallet::sweep_warning(
@@ -593,8 +598,8 @@ pub async fn run(
     {
         let state = state.clone();
         let mut stop = stop_rx.clone();
-        tokio::spawn(async move {
-            let p = period(DISCOVERY_INTERVAL);
+        let h = tasks.spawn(async move {
+            let p = period(CONSUMED_INTERVAL);
             let mut tick = interval_at(TokioInstant::now() + Duration::from_millis(750), p);
             tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             let mut last_tip: Option<u64> = None;
@@ -622,6 +627,7 @@ pub async fn run(
                 }
             }
         });
+        names.insert(h.id(), "consumed-cell watch");
     }
 
     let app = web::router(state.clone());
