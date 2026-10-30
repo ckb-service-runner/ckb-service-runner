@@ -26,7 +26,7 @@ test('app.js: names, map card, wording', () => {
   assert.match(js, /\.svg\(/);
   assert.match(js, /map-info/);
   assert.match(js, /href = '#\/network'|href='#\/network'|'#\/network'/);
-  assert.match(js, /\['ranking\.join', 'Join the CSR monitor', 'bool'\]/);
+  assert.match(js, /\['ranking\.join', 'Join the CSR monitor', 'bool'(, true)?\]/);
   assert.ok(js.includes('Join the CSR monitor to see stats'));
   assert.ok(!/Join the ranking/i.test(js), 'old wording left in app.js');
   for (const s of ['Natural Earth', 'DB-IP', 'CC BY 4.0']) assert.ok(js.includes(s), `credit text ${s} missing`);

@@ -443,7 +443,7 @@
     ['ranking.join', 'Join the CSR monitor', 'bool', true],
     ['ranking.ping_mode', 'Ping mode', 'select:inbound,outbound,both', true],
     ['ranking.ping_bind', 'Ping bind', 'text', true],
-    ['ranking.public_endpoint', 'Public endpoint (https://host:port, empty = none)', 'text'],
+    ['ranking.public_endpoint', 'Public endpoint (an https or http URL with host and port, empty = none)', 'text'],
     ['monitor.url', 'Monitor URL', 'text'],
     ['monitor.pubkey', 'Monitor pubkey', 'text'],
     ['payout.sweep_address', 'Sweep to address', 'text'],
