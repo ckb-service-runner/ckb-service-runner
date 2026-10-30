@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.1
+- First update delivered through the signed update path (dashboard "Update"); the dashboard session helper `anonymous_count` is test-only (no dead-code warning in release builds).
+
 ## 0.2.0
 - First signed release: `RELEASE_PUBKEY` is set (ed25519, private key offline), so the dashboard "Update" and `csr update stage` accept releases signed with it; `docs/release.md`.
 - Audit fixes, Oct 2026 (PR #1): the AIWorker branches before contracts v3 (skeleton guard, delete-on-consume, keeper robustness, dashboard security, sandbox storage v2, runner fixes, attestation renewal, check-in v1.1, node identity, cell-consumed trigger, update check) and the integration fixes; a spent cell counts as consumed when the node answers `unknown`; devnet manual checks `scripts/manual-checks.sh`.
