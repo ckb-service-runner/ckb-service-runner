@@ -1,6 +1,6 @@
 # CKB Service Runner (CSR) — Implementation Specification v0.2
 
-**Repository:** https://github.com/psawyerberlin/ckb-service-runner
+**Repository:** https://github.com/ckb-service-runner/ckb-service-runner
 **Audience:** Claude Code (implementer), Patrick (reviewer)
 **Status:** Draft — 2026-10-18 (replaces v0.1)
 **Companion documents:** `CSR_CRT_UseCase_OverallDeployment_Plan.md` (overall plan), CSR Network Monitor spec (separate, to follow)

@@ -25,3 +25,9 @@ Contracts v3, phase 1: see `docs/decisions.md`, section "Contracts v3 – one re
 Contracts v3, phase 2: see `docs/decisions.md`, subsection "Contracts v3 Phase 2 – runner and devtools" (v2/v3 deployments side by side with `register create` refused on v2; no separate refresh command; 64-byte runner-owned args still recognised; format of the monitor's v2 reply; checks before broadcasting; endpoint validation; `csr-dev` `--keep-config` and clock rules).
 
 Contracts v3, phase 2 (retry): the previous run failed only because `acceptance/aiworker-contracts-v3/registry_v3_tests.rs` had been deleted; the runner/devtools work was kept as is, and the files under `acceptance/aiworker-contracts-v3/` are left untouched (`chain.rs` only includes the test module).
+## Documents (csr-docs)
+- First transfer: 700 CKB, stated once in README "Runner wallet, stake and registration" (539 CKB registry cell + fee + ≥61 CKB change ≈ 601, with headroom). The v3 contract is not in this repo; the figure uses the layout in `spec/registry.md`.
+- `identity proven` in the dashboard: `identity_proven` from the monitor if present, else `check_type == p2p_verified`.
+- `deployments/testnet.json`: `rpc` and `anyone_can_pay` removed (nothing in the runner reads them; csr-dev falls back to its constant ACP hash).
+- Milestone history: index in `docs/milestones/README.md`; old URLs in `docs/spec/` and `.github/` changed to `ckb-service-runner/ckb-service-runner`; the owner name was dropped from the CRT plan.
+- A7 history in specs is kept between `<!-- history -->` markers.

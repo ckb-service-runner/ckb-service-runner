@@ -1,15 +1,24 @@
 # CSR – CKB Service Runner
 
-CSR is a Rust side application that runs next to a fully synced [CKB](https://github.com/nervosnetwork/ckb) full node.
-Milestone **A1** delivers the `csr` binary with:
+CSR is a Rust side application that runs next to a fully synced [CKB](https://github.com/nervosnetwork/ckb) full node
+and lets the node earn: it is ranked, it runs services and it collects tips. It is one binary, `csr`, with an embedded
+web dashboard (no separate web server, no build step). CSR never edits your `ckb.toml`.
 
-- node monitoring and the **R2 sync guard** (is the node synced, connected and indexed?),
-- a resource monitor (CPU, RAM, disk),
-- an **embedded web dashboard** (Overview, Node, Resources, Settings, Logs) served by `csr` itself – no separate web server, no build step,
-- dashboard authentication (argon2id password, sessions, CSRF protection),
-- the **ping responder** (inbound challenge endpoint and outbound NAT check-in) the CSR Network Monitor uses to rank nodes.
+What the runner does:
 
-CSR never sends a transaction in A1 and never edits your `ckb.toml`.
+- **Full-node check (R2).** Is the node synced, connected and indexed? The RPC must be loopback. The check is read once per block;
+  no new run starts while it fails.
+- **Ranking.** With `ranking.join = true` the CSR Network Monitor pings the node (inbound or outbound), checks it daily over P2P and ranks it.
+- **Node identity.** The service key and the node's P2P key sign a binding, so the monitor can prove that the service key belongs to the node's peer ID.
+- **Services in a RISC-V sandbox (CKB-VM).** Approved services run with a small host interface (`spec/host-interface.md`), encrypted storage and limits.
+- **Jobs and tips.** With `runtime.enabled = true`, `csr run` discovers job cells, runs the approved service, sends the run transaction and collects the **tip**.
+- **Runner wallet.** The plain cells of the runner's own key: it pays the registration and the fees, receives the tips and sweeps surplus to your address.
+- **Registration with a Nervos DAO stake.** A registry cell references a DAO deposit of at least 10,000 CKB that stays in your wallet; you consent once by signing a text.
+
+What it signs and sends: CSR signs with its **service key** only (`<data-root>/<network>/keys/`). It sends the transactions of the
+runner wallet: registration (create, update, refresh), removal of the registration, job settlements (run transactions), sweeps to
+your `sweep_address` and `csr wallet send`. It never signs for your own wallet: the stake owner signs one line of text in
+their wallet (Neuron "Sign message"), nothing else.
 
 ## Install from source
 
@@ -43,12 +52,25 @@ Per-network state lives in `<data-root>/<network>/` (keys, SQLite database, logs
 
 ## Dashboard
 
-Open `http://127.0.0.1:8130/` after `csr run`. Pages: `#/overview`, `#/node`, `#/network`, `#/resources`, `#/settings`, `#/logs`.
-A non-loopback bind requires a password (`csr set-password`). All writes need the session cookie and the CSRF token.
-The JSON API (`/api/status`, `/api/node`, `/api/resources`, `/api/settings`, `/api/events`, …) is documented in `docs/milestones/A1.md`.
+Open `http://127.0.0.1:8130/` after `csr run`. A non-loopback bind requires a password (`csr set-password`). All writes need the session cookie and the CSRF token.
 
-The **CSR monitor** page (`#/network`) shows a world map of the CSR network (2° areas, from the monitor's `/v1/locations`), nodes worldwide/reachable, a per-country bar list, your rank, availability (7/30/365 d), check type and attestation,
-fed by the monitor's public API (`spec/monitor-public-api.md`, cached 5 min; stale data is flagged). See `docs/milestones/A1plus.md`.
+| Page | Content |
+|---|---|
+| Overview (`#/overview`) | status of node, ranking, runtime and wallet |
+| Node (`#/node`) | chain, tip, indexer, tx pool, peers, tip lag |
+| Network (`#/network`) | CSR network map, countries, your rank, availability (7/30/365 d), check type (`peer_connected`, `p2p_verified`, `none`), identity proven, attestation, stake |
+| Resources (`#/resources`) | CPU, RAM, disk, history |
+| Services (`#/services`) | local and on-chain services; approve, revoke, enable, disable |
+| Jobs (`#/jobs`) | discovered jobs and their runs |
+| Earnings (`#/earnings`) | tips and settlements |
+| Wallet & registration (`#/wallet`) | runner address, balance, send, stake, consent text, register / remove |
+| Logs (`#/logs`) | recent events |
+| Settings (`#/settings`) | configuration |
+
+JSON API (`web/routes.rs`): `GET /healthz`, `GET /api/status`, `/api/node`, `/api/network`, `/api/resources`, `/api/resources/history`, `/api/logs`,
+`/api/session`, `POST /api/login`, `GET|PUT /api/settings`, `GET /api/services`, `POST /api/services/{hash}/{verb}`, `GET /api/runner-cell`,
+`/api/wallet`, `POST /api/wallet/send`, `GET /api/registry`, `POST /api/registry/consent-message`, `/api/registry/create`, `/api/registry/remove`,
+`GET /api/jobs`, `/api/jobs/{id}`, `/api/earnings`, `/api/events`. The Network page is fed by the monitor's public API (`spec/monitor-public-api.md`, cached 5 min; stale data is flagged).
 
 ## Ranking (ping responder)
 
@@ -60,29 +82,25 @@ With `ranking.join = true` the CSR Network Monitor can verify that your node is 
 
 Protocol details: `spec/ping-protocol.md`. The monitor URL and key are placeholders until the real monitor exists (see `docs/open-questions.md`).
 
-## Services (A2)
+## Services and jobs
 Build the example services with `bash scripts/build-services.sh`, then
 `csr service run-local --manifest services/manifests/hello-rust.toml --payload 0x0102`.
-Register with `csr service add-local --manifest PATH`, manage with `csr service list|approve|revoke|enable|disable`
-or on the dashboard page `#/services`. Host interface: `spec/host-interface.md`. Details: `docs/milestones/A2.md`.
+Register with `csr service add-local --manifest PATH` or `csr service add-onchain`, manage with `csr service list|approve|revoke|enable|disable`
+or on the dashboard. `csr jobs plan --json` shows the job selection. Host interface: `spec/host-interface.md`; job cells: `spec/job-cell-standard.md`.
 
-## Jobs and earnings (A3c)
-With `runtime.enabled = true`, `csr run` discovers keeper job cells on the chain, runs approved on-chain services (`csr service add-onchain`), submits the job transactions and tracks settlement. `csr jobs plan --json` shows the selection. Dashboard pages `#/jobs` and `#/earnings`. Demo: `docs/milestones/A3c.md`.
+## Runner wallet, stake and registration
 
-## Runner wallet, stake and registration (A8)
-Setup needs one transfer and one signed message, and tips collect in the runner wallet and are swept to your address.
+Setup needs one transfer and one signed message; tips collect in the runner wallet and are swept to your address.
 
-The **runner wallet** is the set of plain cells of the runner's own key; `csr identity` and `csr wallet status` show its **runner address**. Send about 700 CKB there once from any wallet: it pays the registration (the registry cell uses about 540 CKB) and the runner's small fees, and the job **tips** go into it. With `[payout] sweep_address` set, the runner sends `sweep_amount_ckb` (default 1,000) there whenever the wallet holds `sweep_threshold_ckb` (default 1,500); `csr wallet send --to ADDRESS --ckb N` sends by hand.
+**First transfer.** Send **700 CKB** to the runner address (`csr identity`, `csr wallet status`, or the page "Wallet & registration") once, from any wallet. It is computed from
+the registry cell of the v3 registry contract: 8 (capacity) + 97 (dual lock, 64-byte args) + 65 (type, 32-byte args) + 369 (data with a 46-character peer ID) = **539 CKB**, plus the
+fee (below 1 CKB) and a change cell of at least 61 CKB, which makes about 601 CKB; 700 CKB leaves headroom for the runner's later fees. Other documents refer to this section instead of repeating the number.
 
-A registration references a **stake**: a Nervos DAO deposit of at least 10,000 CKB that stays in the operator's wallet. Its owner consents by signing one line of text ("Sign message" in Neuron): `csr register consent-message --stake 0x<tx>:<index>` prints it, `csr register create --stake … --consent 0x<signature>` registers (CSR signs the transaction itself), `csr register remove` returns the registry cell's CKB to the wallet. Dashboard page `#/wallet` ("Wallet & registration"). Details: `spec/registry.md` §4.2 and §9, `docs/decisions.md` (D-A8-1).
+The **runner wallet** is the set of plain cells of the runner's own key. The job **tips** go into it. With `[payout] sweep_address` set, the runner sends `sweep_amount_ckb` (default 1,000) there whenever the wallet holds `sweep_threshold_ckb` (default 1,500); `csr wallet send --to ADDRESS --ckb N` sends by hand.
 
-## Roadmap
+A registration references a **stake**: a Nervos DAO deposit of at least 10,000 CKB that stays in the operator's wallet. Its owner consents by signing one line of text ("Sign message" in Neuron): `csr register consent-message --stake 0x<tx>:<index>` prints it, `csr register create --stake … --consent 0x<signature>` registers (CSR signs the transaction itself), `csr register remove` returns the registry cell's CKB to the wallet. Details: `spec/registry.md` §4.2 and §9, `docs/decisions.md` (D-A8-1).
 
-| Milestone | Content |
-|---|---|
-| **A1** | Runner, R2 guard, resource monitor, dashboard, auth, ping responder (this release) |
-| **A2** | Service runtime: CKB-VM sandbox, host interface, encrypted storage, local runs, Rust/C/JS example services, Services page (`docs/milestones/A2.md`) |
-| A3 | Services, job market and on-chain interaction |
-| A4 | Production hardening, mainnet unlock via the monitor |
+## Documents
 
-See `docs/spec/` for the full specification.
+`docs/architecture.md`, `docs/roadmap.md`, `docs/open-questions.md`, `docs/decisions.md`, `docs/install.md`, `docs/testing.md`, `spec/`,
+and the milestone history in `docs/milestones/` (index in `docs/milestones/README.md`).

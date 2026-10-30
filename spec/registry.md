@@ -94,6 +94,14 @@ such a registry dep with error 10. (The runner keeps a v2 parser to read old cel
 starting with `https://` or `http://`, valid UTF-8, at most **128 bytes**; otherwise error 7. The contract does not
 check the host or port.
 
+**Payout lock.** `payout_lock_hash` is the lock hash of the cells that receive the tips: the runner wallet's
+lock (§9). The runner sweeps surplus to the operator's address; CSR holds no other operator funds.
+
+<!-- history -->
+The v1 table had 6 fields (the third was the lock hash of a float cell, and there was no `stake`). In A7 the
+payout cell was an anyone-can-pay cell of the operator; since A8 it is the runner wallet.
+<!-- /history -->
+
 **Size** (D20 A): with a 48-byte peer ID, empty endpoint and prekeys the data is **280 bytes** (v2: 373). With
 32-byte dual-lock args for a runner-owned cell (instead of `runner ‖ runner`) a registration needs about
 **125 CKB** less (93 + 32 bytes).
@@ -178,7 +186,7 @@ On **creation and on every update** (for each registry output):
 
 6. **Runner key present** (creation, and owner-path updates that change `service_pubkey` or the output's runner
    lock hash): the transaction has an input whose lock hash equals the **output's** runner hash, i.e. the
-   node's runner key cell. This proves possession of the service key (error 17). It is checked after rules 1–5.
+   node's runner wallet cell. This proves possession of the service key (error 17). It is checked after rules 1–5.
 
 ### 4.1 Stake rules
 
@@ -302,7 +310,7 @@ fields) and field sizes (`service_pubkey` 33, `payout_lock_hash` 32, `stake` 36,
 **One registry input and one output per group** (1:1; creation: 0 → 1, destruction: 1 → 0).
 
 **Owner path** (an input with the input's owner hash present): any field may change; rules 1–5 still apply
-to the output. If `service_pubkey` or the runner lock hash changes, rule 6 requires the runner key cell of the
+to the output. If `service_pubkey` or the runner lock hash changes, rule 6 requires the runner wallet cell of the
 **new** runner lock hash (the old service key does not authorise a new one). If `stake`, the owner, `peer_id`,
 `network` or `service_pubkey` changes, the stake rules (§4.1) apply to the output: the stake owner (of the new
 or the kept deposit) must consent again, by input or by signature (**consent rule**, D23 A).
@@ -354,11 +362,11 @@ others.
 ## 6. Worked examples
 
 *Create.* The operator has made a Nervos DAO deposit of at least 10,000 CKB with the owner wallet beforehand
-(the wallet does that; CSR does not). Inputs `[owner wallet cell, runner key cell]`, outputs `[registry cell
+(the wallet does that; CSR does not). Inputs `[owner wallet cell, runner wallet cell]`, outputs `[registry cell
 (dual-lock, type registry, data with fresh attestation, `payout_lock_hash` of the payout cell, `stake` = the
-deposit's out point), change, runner key cell]`, cell deps `[stake deposit, registry code, config cell, …]`
+deposit's out point), change, runner wallet cell]`, cell deps `[stake deposit, registry code, config cell, …]`
 (the stake first, all `code`; the secp256k1 dep group, if any, after it). Both inputs are signed (owner wallet
-by its lock, runner key cell with the service key). The runner key cell may also be the only input if it pays
+by its lock, runner wallet cell with the service key). The runner wallet cell may also be the only input if it pays
 for the registry cell. The deposit is only referenced, not spent: it keeps earning DAO interest.
 
 *Rejected creation:* owner wallet only (17, `registry_create_without_runner_key_rejected`); attacker as owner
@@ -374,7 +382,7 @@ another key's deposit without its consent (21, `registry_create_stake_of_other_o
 a consent signature of another length (22) or for another stake, service key, peer id or network (23,
 `registry_create_consent_for_other_*_rejected`).
 
-*Runner refresh.* Inputs `[registry cell, runner key cell]`, outputs `[registry cell with new `expiry_ms` and
+*Runner refresh.* Inputs `[registry cell, runner wallet cell]`, outputs `[registry cell with new `expiry_ms` and
 `attestation_sig` (and optionally a new `endpoint` or `prekeys`; other fields the same, capacity ≥), runner key
 cell]`, cell deps `[config cell]` (no stake dep needed; `registry_runner_refresh_v3_ok`,
 `registry_runner_changes_endpoint_ok`).
@@ -397,9 +405,9 @@ An owner change keeps the stake only with the stake owner's consent: its cell as
 (`registry_owner_changes_owner_with_stake_owner_input_ok`) or a signature; without → 21
 (`registry_owner_changes_owner_without_stake_consent_rejected`).
 
-*Owner rotates the service key.* Inputs `[registry cell, owner wallet cell, new runner key cell]`, outputs
+*Owner rotates the service key.* Inputs `[registry cell, owner wallet cell, new runner wallet cell]`, outputs
 `[registry cell with new `service_pubkey`, a fresh attestation for it and dual lock `owner ‖ new runner hash`,
-change, new runner key cell]`, cell deps `[stake deposit, …]` and the stake owner's consent (here the owner's
+change, new runner wallet cell]`, cell deps `[stake deposit, …]` and the stake owner's consent (here the owner's
 own deposit, consent by input) (`registry_owner_changes_service_pubkey_with_new_runner_key_ok`). Without the
 new key cell, or with only the old one, → 17.
 
@@ -415,14 +423,17 @@ as long as rule 5 holds.
 **cell dep** (`RegistryV3`; anything else is error 10) and takes its `payout_lock_hash` as the lock of the cell
 that must receive the tip (`job-cell-standard.md`): the net inflow (Σ outputs − Σ inputs) to cells with that
 lock hash must be ≥ the tip, else error 11. It requires (F2) an input with the registry cell's runner hash
-(dual-lock args of 64 or 32 bytes, the node's runner key cell), and (F5, D21 A, D24 A) exactly one config cell
+(dual-lock args of 64 or 32 bytes, the node's runner wallet cell), and (F5, D21 A, D24 A) exactly one config cell
 dep (the `csr-config-type` type hash for the registry's `config_id`) by which the attestation is valid: the
 signature by `monitor_pubkey` over `CSR-ATTEST-v2` with `registry_type_hash` = its own args (error 10),
 `expiry_ms > clock_ms` (error 17) and `expiry_ms − clock_ms ≤ 8 days` (error 18). A registry cell whose
 attestation has expired therefore earns nothing until its runner refreshes it via the runner path. Since
 `payout_lock_hash` can only be changed by the owner path, a compromised runner key cannot redirect tips of an
-operator-owned registration. Since A8 `payout_lock_hash` is the runner wallet itself (§9) and the settlement's
+operator-owned registration. `payout_lock_hash` is the runner wallet itself (§9) and the settlement's
 runner wallet input receives the tip.
+<!-- history -->
+In A7 the payout cell was an ACP cell, so the runner could add the tip without the owner's signature.
+<!-- /history -->
 
 ## 8. Cycles
 
@@ -450,7 +461,7 @@ signature too (D21 A), so a settlement costs one recovery more than in A8 (1,744
 ## 9. Runner wallet (A8)
 
 The **runner wallet** is the set of plain cells (no type, empty data) of the runner's own
-`secp256k1_blake160_sighash_all` lock (args = `blake160(service_pubkey)`; A7's "runner key cell"). Decision
+`secp256k1_blake160_sighash_all` lock (args = `blake160(service_pubkey)`). Decision
 D-A8-1: CSR signs every transaction itself with the service key; the operator only funds the wallet once and
 signs the consent text (§4.2) in its wallet.
 

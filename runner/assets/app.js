@@ -150,7 +150,14 @@
     if (j.stale) c.appendChild(el('p', 'msg stale', 'Stale data: showing the last cached monitor reply. ' + (j.error || '')));
     else if (j.error) c.appendChild(el('p', 'msg err', j.error));
   }
-  function checkType(t) { return t === 'p2p_verified' ? 'P2P-verified' : t === 'challenge_only' ? 'challenge-only' : t; }
+  var CHECK_TYPES = {
+    p2p_verified: 'P2P-verified: passed the monitor\'s daily full-node check',
+    peer_connected: 'Peer connected: your node is a peer of the monitor\'s node (not yet verified)',
+    challenge_only: 'Challenge only: the ping was answered, no P2P check',
+    none: 'None: the monitor has not checked this node'
+  };
+  function checkType(t) { return t == null ? null : (CHECK_TYPES[t] || t); }
+  function identityProven(n) { return n.identity_proven != null ? !!n.identity_proven : n.check_type === 'p2p_verified'; }
   function countryBars(list) {
     var rows = (list || []).slice().sort(function (a, b) { return b.count - a.count || (a.code < b.code ? -1 : 1); });
     var h = 16, w = 400, lw = 34, max = rows.length ? rows[0].count : 1;
@@ -357,6 +364,7 @@
           var a = n.attestation || {};
           dl(cr, [['Rank', rankText(n)], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
             ['Availability 365 d', pct(n.availability.d365)], ['Check type', checkType(n.check_type)],
+            ['Identity proven', identityProven(n) ? 'yes (service key and P2P key bound, full-node check passed)' : 'no'],
             ['Attestation', a.status + (a.expiry ? ' (expires ' + fmtTime(a.expiry) + ')' : '')],
             ['Stake', n.stake ? n.stake.status + (n.stake.capacity_ckb != null ? ' (' + n.stake.capacity_ckb + ' CKB)' : '') : null],
             ['Last check', fmtTime(n.last_check_at)], ['Ping mode', ping.mode], ['Last successful check', fmtTime(ping.last_check_ok_at)]]);

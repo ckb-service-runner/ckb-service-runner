@@ -129,14 +129,12 @@ supported**; use one transaction per job (the job lock also allows only one job 
   reported (a refund transaction never carries a registry dep, a run always does).
 
 Both capacity sums are **net** (outputs − inputs with that lock hash), so a cell of F or of the refund lock
-that is spent and recreated in the same transaction (e.g. the payout cell, or an anyone-can-pay refund cell)
+that is spent and recreated in the same transaction (e.g. the runner wallet cell, or a refund cell)
 counts only with the amount actually added.
 
-The **fee is paid from the job's capacity** (capped by `max_fee_shannons`); the payout cell receives at least the
-tip. The payout cell is a standard anyone-can-pay cell (lock `args` = 20 bytes, no minimum, no type, empty
-data), so a run transaction either adds the tip to the existing cell (inputs `[job, payout cell, runner key
-cell]`; the ACP lock needs no signature when the output has at least the input's capacity and the witness is
-empty) or creates a new cell with the same lock. CSR defines no slashing and no job collateral; applications
+The **fee is paid from the job's capacity** (capped by `max_fee_shannons`); the runner wallet receives at least
+the tip. The wallet cell is a plain `secp256k1_blake160_sighash_all` cell (no type, empty data) that the run
+transaction spends and recreates with the tip added (inputs `[runner wallet cell, job, …]`). CSR defines no slashing and no job collateral; applications
 that need a bond define it in their own contracts.
 
 Rule order (determines the reported code): job inputs (7), data (6), refund path, registry dep (14/10),
@@ -214,17 +212,15 @@ job lock's code (12) is reported.
 
 ## 5. Worked examples
 
-The refund or the recreated job cell sits at the **same index** as the job input; CSR puts the job input at
-index 0 and its refund / recreated job at output 0.
+The refund or the recreated job cell sits at the **same index** as the job input; CSR puts the runner wallet
+cell at index 0 and the job input at index 1, so the refund / recreated job is output 1.
 
-*OnDemand run, single.* Inputs `[job cell (since 0), payout cell, runner key cell]`, outputs `[refund cell
-(capacity − tip − fee), payout cell (+tip), runner key cell]`, cell deps `[registry cell, monitor config cell,
-code deps]`. The runner key cell (lock hash = the registry's runner lock hash) is signed with the service key.
-Since A8 the payout cell is the runner wallet: inputs `[job cell, runner wallet cell]`, outputs `[refund cell,
-runner wallet cell (+tip)]`.
+*OnDemand run, single.* Inputs `[runner wallet cell, job cell (since 0)]`, outputs `[runner wallet cell (+tip),
+refund cell (capacity − tip − fee)]`, cell deps `[registry cell, monitor config cell, code deps]`. The runner
+wallet cell (lock hash = the registry's runner lock hash) is signed with the service key.
 
-*Every(10) run.* Inputs `[job cell (since = relative 10 blocks), payout cell, runner key cell]`, outputs
-`[job cell with `remaining_runs − 1` and capacity ≥ in − tip − max_fee, payout cell (+tip), runner key cell]`.
+*Every(10) run.* Inputs `[runner wallet cell, job cell (since = relative 10 blocks)]`, outputs
+`[runner wallet cell (+tip), job cell with `remaining_runs − 1` and capacity ≥ in − tip − max_fee]`.
 
 *Last Every run.* As above with `remaining_runs == 1`: no recreated job cell, a refund cell at output 0 instead.
 
@@ -245,7 +241,7 @@ since v3 includes `k256`), contracts v3:
 
 | transaction | cycles |
 |-------------|-------:|
-| OnDemand run, `csr-job-lock` alone (no job type; runner key cell and wallet are an always-success cell) | 7,935,959 |
+| OnDemand run, `csr-job-lock` alone (no job type; runner wallet cell and wallet are an always-success cell) | 7,935,959 |
 | OnDemand run, whole tx (job lock + job type + always-success payout + system lock) | 9,629,047 |
 | Every run with recreation, whole tx | 9,685,387 |
 | settlement into the runner wallet, whole tx | 9,622,456 |
