@@ -418,3 +418,6 @@ The project's decision log is `docs/decisions.md` (sections "A3a-fix Phase …")
 `Chain::inputs_capacity` now checks every skeleton input with `check_skeleton_input` (pure function over
 `SkeletonPolicy`) and fails the run before anything is signed if the input is a runner wallet cell, a dual lock
 cell naming the runner lock hash (either half), a job-lock cell, or a registry-typed cell.
+## F-RUN-001 – delete_on_consume in csr run
+- A background task (own `RpcClient`, checks every 2 s, acts when the tip number changes) asks `get_live_cell` for every rule out point; only status `dead` counts as consumed. `live`, `unknown`, RPC errors and missing methods keep the rules. It runs regardless of the runtime state.
+- Deletion log lines go to the tracing log and are appended to `deletions.log` in the storage root, like the CLI does.

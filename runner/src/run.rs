@@ -127,6 +127,49 @@ impl Sweeper {
     }
 }
 
+/// One check of the `delete_on_consume` rules: out points reported `dead` by the node are consumed;
+/// `live`, `unknown`, RPC errors and missing methods keep the rules.
+async fn watch_consumed(client: &RpcClient, root: &Path, key: &[u8; 32]) -> Result<(), String> {
+    let ops = crate::storage::rule_outpoints(root, key)?;
+    if ops.is_empty() {
+        return Ok(());
+    }
+    let mut answers = std::collections::HashMap::new();
+    for op in ops {
+        let params = serde_json::json!([
+            {"tx_hash": format!("0x{}", hex::encode(&op[..32])),
+             "index": format!("0x{:x}", u32::from_le_bytes(op[32..].try_into().unwrap()))},
+            false
+        ]);
+        let answer = match client.call("get_live_cell", params).await {
+            Ok(r) => Ok(r["status"] != "dead"),
+            Err(_) => Err("get_live_cell failed".to_string()),
+        };
+        answers.insert(op, answer);
+    }
+    let mut log = Vec::new();
+    let res = crate::storage::apply_consumed(
+        root,
+        key,
+        &mut |o: &[u8; 36]| answers.get(o).cloned().unwrap_or(Ok(true)),
+        &mut log,
+    );
+    if !log.is_empty() {
+        for line in String::from_utf8_lossy(&log).lines() {
+            tracing::info!("{line}");
+        }
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(root.join("deletions.log"))
+        {
+            let _ = f.write_all(&log);
+        }
+    }
+    res.map(|_| ())
+}
+
 pub async fn run(
     cfg: Config,
     config_path: PathBuf,
@@ -364,6 +407,42 @@ pub async fn run(
                 {
                     Ok(summary) => tracing::debug!("{summary}"),
                     Err(e) => tracing::warn!("job scheduler: {e}"),
+                }
+            }
+        });
+    }
+
+    // Consumed-cell watch: on every new block check the out points of all delete_on_consume rules
+    // (all services, also disabled ones, independent of the runtime) and apply the consumed ones.
+    {
+        let state = state.clone();
+        let mut stop = stop_rx.clone();
+        tokio::spawn(async move {
+            let p = period(DISCOVERY_INTERVAL);
+            let mut tick = interval_at(TokioInstant::now() + Duration::from_millis(750), p);
+            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            let mut last_tip: Option<u64> = None;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {},
+                    _ = stop.changed() => return,
+                }
+                let cfg = state.config.read().unwrap().clone();
+                let client = RpcClient::new(&cfg.node.rpc_url);
+                let tip = match client.call("get_tip_block_number", serde_json::json!([])).await {
+                    Ok(v) => match node::rpc::hex_u64(&v) {
+                        Some(t) => t,
+                        None => continue,
+                    },
+                    Err(_) => continue,
+                };
+                if last_tip == Some(tip) {
+                    continue;
+                }
+                last_tip = Some(tip);
+                let root = state.net_dir.join(&cfg.storage.path);
+                if let Err(e) = watch_consumed(&client, &root, &state.storage_key).await {
+                    tracing::warn!("delete_on_consume check failed: {e}");
                 }
             }
         });

@@ -108,8 +108,10 @@ file named by `HMAC-SHA256(storage.key, "csr-storage-name-v1" ‖ key)` holding
 `nonce(12) ‖ ChaCha20-Poly1305(secret flag ‖ key_len u16 LE ‖ key ‖ value)` (random nonce per
 write, file name as associated data, atomic temp-file + rename). Quotas
 (`storage.per_service_quota_mb`, `storage.total_quota_mb`) count plaintext key + value bytes.
-`delete_on_consume` rules are kept encrypted in `rules.bin`; `csr storage simulate-consumed
---outpoint 0x<64 hex>:<index>` applies them and appends `time service outpoint` (never content) to
+`delete_on_consume` rules are kept encrypted in `rules.bin`. `csr run` checks the out points of all
+rules with `get_live_cell` on every new block and deletes the entries of consumed (`dead`) cells,
+also for disabled services; node errors keep the rules. `csr storage simulate-consumed
+--outpoint 0x<64 hex>:<index>` stays as a manual tool that applies them. Deletions are appended as `time service outpoint` (never content) to
 `service_data/deletions.log`.
 
 ## Limits
