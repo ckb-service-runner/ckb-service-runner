@@ -77,10 +77,11 @@ test('dashboard API: consent message, register create, register remove', async (
   await setPassword(r.args);
   await startCsr([...r.args, 'run'], { healthUrl: `${r.base}/healthz` });
   const s = await loginSession(r.base);
+  // Integration (Oct 2026): with a password set, every /api/* read needs the login session (dashboard-security).
 
-  const rc = (await getJson(`${r.base}/api/runner-cell`)).json;
+  const rc = (await getJson(`${r.base}/api/runner-cell`, { cookie: s.cookie })).json;
   assert.equal(rc.runner_address, secpAddress(r.id.runner_lock_args, 'devnet'));
-  const w = (await getJson(`${r.base}/api/wallet`)).json;
+  const w = (await getJson(`${r.base}/api/wallet`, { cookie: s.cookie })).json;
   assert.equal(w.capacity_shannons, 700 * CKB);
 
   const stake = await deposit(10000);
@@ -100,7 +101,7 @@ test('dashboard API: consent message, register create, register remove', async (
   assert.equal(ok.status, 200, ok.text);
   assert.equal(ok.json.updated, false);
   await waitCommitted(ok.json.tx_hash);
-  const reg = (await getJson(`${r.base}/api/registry`)).json;
+  const reg = (await getJson(`${r.base}/api/registry`, { cookie: s.cookie })).json;
   assert.equal(reg.registered, true);
   assert.equal(reg.stake.status, 'deposited');
   assert.equal(reg.stake.capacity_shannons, 10000 * CKB);

@@ -127,7 +127,8 @@ test('wallet status, send and sweep', async () => {
   await fundRunnerCell(r, 250);
 
   const w = await wallet(r);
-  assert.deepEqual(Object.keys(w).sort(), ['address', 'capacity_shannons', 'last_sweep', 'sweep_address', 'sweep_amount_ckb', 'sweep_threshold_ckb']);
+  // Integration (Oct 2026): csr-runner-fixes added sweep_warning to the wallet status.
+  assert.deepEqual(Object.keys(w).sort(), ['address', 'capacity_shannons', 'last_sweep', 'sweep_address', 'sweep_amount_ckb', 'sweep_threshold_ckb', 'sweep_warning']);
   assert.equal(w.address, r.id.runner_address);
   assert.equal(w.capacity_shannons, 250 * CKB);
   assert.equal(w.sweep_address, target.address);

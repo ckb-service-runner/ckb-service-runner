@@ -60,13 +60,14 @@ test('services registry: approve, disable, enable, revoke', async () => {
 
   await setPassword(env.args);
   await startCsr([...env.args, 'run'], { healthUrl: `${env.base}/healthz` });
-  const list = (await getJson(`${env.base}/api/services`)).json;
+  // Integration (Oct 2026): with a password set, every /api/* read needs the login session (dashboard-security).
+  const s = await loginSession(env.base);
+  const list = (await getJson(`${env.base}/api/services`, { cookie: s.cookie })).json;
   assert.equal(list.length, 2);
   for (const s of list) assert.equal(s.status, 'not_approved');
   assert.ok(list.find((s) => s.code_hash === kv.code_hash).storage_bytes > 0);
 
-  assert.equal((await action(env.base, null, hello, 'approve')).status, 403);
-  const s = await loginSession(env.base);
+  assert.ok([401, 403].includes((await action(env.base, null, hello, 'approve')).status));
   let r = await action(env.base, s, hello, 'approve');
   assert.equal(r.status, 200, r.text);
   assert.equal(r.json.status, 'approved_enabled');
