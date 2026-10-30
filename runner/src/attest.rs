@@ -146,10 +146,7 @@ pub async fn request(
         service_key,
         &proto::binding_message(&peer_id, service_pubkey, &cfg.network),
     );
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let http = crate::network::http_client(Duration::from_secs(15))?;
     let resp = http
         .post(format!("{base}/v1/attest"))
         .json(&json!({
@@ -162,6 +159,7 @@ pub async fn request(
         .send()
         .await
         .map_err(|e| format!("monitor request failed: {}", e.without_url()))?;
+    crate::network::check_no_redirect(&resp)?;
     let status = resp.status();
     let body: Value = resp.json().await.unwrap_or(Value::Null);
     if status.as_u16() != 200 {

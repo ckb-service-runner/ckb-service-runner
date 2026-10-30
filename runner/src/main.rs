@@ -334,6 +334,23 @@ where
     F: FnOnce(chain::Chain, config::Config, (identity::Identity, PathBuf)) -> Fut,
     Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
 {
+    node_cmd_with(cli, json, false, f)
+}
+
+/// As `node_cmd` for the runner wallet commands, which work before the CSR scripts are deployed.
+fn wallet_cmd<F, Fut>(cli: &Cli, json: bool, f: F) -> ExitCode
+where
+    F: FnOnce(chain::Chain, config::Config, (identity::Identity, PathBuf)) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
+{
+    node_cmd_with(cli, json, true, f)
+}
+
+fn node_cmd_with<F, Fut>(cli: &Cli, json: bool, wallet: bool, f: F) -> ExitCode
+where
+    F: FnOnce(chain::Chain, config::Config, (identity::Identity, PathBuf)) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
+{
     let r = (|| -> Result<serde_json::Value, String> {
         let cfg = load_config(cli)?;
         let net_dir = data_root(cli).join(&cfg.network);
@@ -341,9 +358,12 @@ where
             .map_err(|e| format!("cannot create {}: {e}", net_dir.display()))?;
         let id = identity::Identity::load_or_create(&net_dir)?;
         runtime().block_on(async {
-            let c = chain::Chain::connect(&cfg, &id.service_pubkey)
-                .await?
-                .with_service_key(id.service_key);
+            let c = if wallet {
+                chain::Chain::connect_wallet(&cfg, &id.service_pubkey).await?
+            } else {
+                chain::Chain::connect(&cfg, &id.service_pubkey).await?
+            }
+            .with_service_key(id.service_key);
             f(c, cfg, (id, net_dir)).await
         })
     })();
@@ -534,13 +554,13 @@ fn main() -> ExitCode {
             action: RunnerCellAction::Status { json },
         } => chain_cmd(&cli, *json, |c| async move { c.runner_cell_status().await }),
         Command::Wallet { action } => match action {
-            WalletAction::Status { json } => node_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
+            WalletAction::Status { json } => wallet_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
                 wallet::status(&c, &cfg, &dir).await
             }),
-            WalletAction::Send { to, ckb, json } => node_cmd(&cli, *json, |c, _, _| async move {
+            WalletAction::Send { to, ckb, json } => wallet_cmd(&cli, *json, |c, _, _| async move {
                 wallet::send(&c, to, ckb).await
             }),
-            WalletAction::Sweep { json } => node_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
+            WalletAction::Sweep { json } => wallet_cmd(&cli, *json, |c, cfg, (_, dir)| async move {
                 wallet::sweep(&c, &cfg, &dir).await
             }),
         },

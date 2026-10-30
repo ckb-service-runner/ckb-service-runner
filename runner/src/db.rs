@@ -17,6 +17,7 @@ pub struct Sample {
     pub cpu_percent: f64,
     pub ram_free_mb: u64,
     pub tip_lag: Option<u64>,
+    pub disk_free_gb: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,7 +125,8 @@ impl Db {
                  t INTEGER PRIMARY KEY,
                  cpu_percent REAL NOT NULL,
                  ram_free_mb INTEGER NOT NULL,
-                 tip_lag INTEGER
+                 tip_lag INTEGER,
+                 disk_free_gb INTEGER
              );
              CREATE TABLE IF NOT EXISTS services (
                  code_hash TEXT PRIMARY KEY,
@@ -182,6 +184,13 @@ impl Db {
             .is_ok();
         if !has_outpoint {
             conn.execute_batch("ALTER TABLE services ADD COLUMN outpoint TEXT")
+                .map_err(|e| format!("cannot migrate database: {e}"))?;
+        }
+        let has_disk = conn
+            .prepare("SELECT disk_free_gb FROM samples LIMIT 0")
+            .is_ok();
+        if !has_disk {
+            conn.execute_batch("ALTER TABLE samples ADD COLUMN disk_free_gb INTEGER")
                 .map_err(|e| format!("cannot migrate database: {e}"))?;
         }
         Ok(Db {
@@ -560,8 +569,8 @@ impl Db {
     pub fn add_sample(&self, s: &Sample) -> Result<(), String> {
         let c = self.conn.lock().unwrap();
         c.execute(
-            "INSERT OR REPLACE INTO samples (t, cpu_percent, ram_free_mb, tip_lag) VALUES (?1, ?2, ?3, ?4)",
-            params![s.t, s.cpu_percent, s.ram_free_mb as i64, s.tip_lag.map(|v| v as i64)],
+            "INSERT OR REPLACE INTO samples (t, cpu_percent, ram_free_mb, tip_lag, disk_free_gb) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![s.t, s.cpu_percent, s.ram_free_mb as i64, s.tip_lag.map(|v| v as i64), s.disk_free_gb.map(|v| v as i64)],
         )
         .map_err(|e| e.to_string())?;
         c.execute(
@@ -572,11 +581,31 @@ impl Db {
         Ok(())
     }
 
+    /// Per `job_runs.code_hash`: number of settlements and the sum of their tips.
+    pub fn service_totals(&self) -> Result<std::collections::HashMap<String, (u64, u64)>, String> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare(
+                "SELECT j.code_hash, COUNT(*), COALESCE(SUM(s.tip_shannons), 0)
+                 FROM settlements s JOIN job_runs j ON j.id = s.run_id GROUP BY j.code_hash",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)? as u64),
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+
     pub fn samples_since(&self, since: i64) -> Result<Vec<Sample>, String> {
         let c = self.conn.lock().unwrap();
         let mut st = c
             .prepare(
-                "SELECT t, cpu_percent, ram_free_mb, tip_lag FROM samples WHERE t >= ?1 ORDER BY t",
+                "SELECT t, cpu_percent, ram_free_mb, tip_lag, disk_free_gb FROM samples WHERE t >= ?1 ORDER BY t",
             )
             .map_err(|e| e.to_string())?;
         let rows = st
@@ -586,12 +615,17 @@ impl Db {
                     cpu_percent: r.get(1)?,
                     ram_free_mb: r.get::<_, i64>(2)? as u64,
                     tip_lag: r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
+                    disk_free_gb: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
                 })
             })
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 }
+
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-csr-runner-fixes/runner_fixes_tests.rs"]
+mod aiworker_runner_fixes_tests;
 
 #[cfg(test)]
 mod tests {
@@ -603,6 +637,7 @@ mod tests {
             cpu_percent: 1.5,
             ram_free_mb: 100,
             tip_lag: Some(2),
+            disk_free_gb: Some(50),
         }
     }
 

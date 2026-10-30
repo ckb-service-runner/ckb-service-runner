@@ -15,10 +15,7 @@ const FAST_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Loops until `stop` fires; the first check-in happens right away (after the first R2 check).
 pub async fn run(state: Arc<AppState>, mut stop: watch::Receiver<bool>) {
-    let http = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-    {
+    let http = match crate::network::http_client(Duration::from_secs(15)) {
         Ok(h) => h,
         Err(e) => {
             tracing::error!("outbound check-in disabled: {e}");
@@ -39,7 +36,10 @@ pub async fn run(state: Arc<AppState>, mut stop: watch::Receiver<bool>) {
         }
         let enabled = {
             let c = state.config.read().unwrap();
-            c.ranking.join && matches!(c.ranking.ping_mode.as_str(), "outbound" | "both")
+            c.ranking.join
+                && matches!(c.ranking.ping_mode.as_str(), "outbound" | "both")
+                && (crate::network::monitor_key_usable(&crate::network::effective_monitor_key(&c))
+                    || crate::network::monitor_key_problem(&c).is_none())
         };
         if !enabled {
             continue;
@@ -83,6 +83,7 @@ async fn checkin_once(state: &AppState, http: &reqwest::Client) -> Result<(), St
         .send()
         .await
         .map_err(|e| format!("check-in request: {e}"))?;
+    crate::network::check_no_redirect(&resp)?;
     if !resp.status().is_success() {
         return Err(format!("monitor replied {} to check-in", resp.status()));
     }
@@ -106,6 +107,7 @@ async fn checkin_once(state: &AppState, http: &reqwest::Client) -> Result<(), St
             state.release_ping_nonce(&challenge.nonce);
             format!("answer request: {e}")
         })?;
+    crate::network::check_no_redirect(&resp)?;
     if resp.status().as_u16() == 200 {
         state
             .last_check_ok_at

@@ -144,6 +144,7 @@ async fn get(http: &reqwest::Client, url: &str) -> Result<Option<Value>, String>
         .send()
         .await
         .map_err(|e| format!("monitor request failed: {}", e.without_url()))?;
+    crate::network::check_no_redirect(&resp)?;
     let status = resp.status();
     if status.as_u16() == 404 {
         return Ok(None);
@@ -161,12 +162,7 @@ async fn fetch(
     base: &str,
     peer_id: Option<&str>,
 ) -> Result<(NetworkStats, Option<NodeStats>), String> {
-    let http = reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
+    let http = crate::network::http_client(TIMEOUT)?;
     let net = get(&http, &format!("{base}/v1/network"))
         .await?
         .ok_or_else(|| "monitor has no /v1/network".to_string())?;
@@ -232,9 +228,13 @@ async fn refresh(state: &AppState) {
 
 /// Body of `GET /api/network`.
 pub async fn network_json(state: &AppState) -> Value {
-    let (join, mode) = {
+    let (join, mode, key_problem) = {
         let c = state.config.read().unwrap();
-        (c.ranking.join, c.ranking.ping_mode.clone())
+        (
+            c.ranking.join,
+            c.ranking.ping_mode.clone(),
+            crate::network::monitor_key_problem(&c),
+        )
     };
     if !join {
         return json!({"join": false, "message": "Join the CSR monitor to see stats"});
@@ -268,6 +268,7 @@ pub async fn network_json(state: &AppState) -> Value {
         "network": snap.map(|s| json!(s.network)),
         "node": snap.and_then(|s| s.node.as_ref()).map(|n| json!(n)),
         "ping": ping,
+        "warning": key_problem,
     })
 }
 

@@ -58,6 +58,20 @@ pub fn sweep_warning(sweep_address: Option<&str>, capacity_shannons: u64, thresh
     ))
 }
 
+/// Why the runner wallet cannot be used for a dashboard action now: a keeper transaction (a run in state
+/// `Submitting`) or a sweep is still pending. `None` when the wallet is free.
+pub fn wallet_busy(submitting_runs: usize, sweep_pending: bool) -> Option<String> {
+    if sweep_pending {
+        Some("a wallet sweep is pending".into())
+    } else if submitting_runs > 0 {
+        Some(format!(
+            "{submitting_runs} job transaction(s) are pending"
+        ))
+    } else {
+        None
+    }
+}
+
 /// `csr wallet status` / `GET /api/wallet`.
 pub async fn status(chain: &Chain, cfg: &Config, net_dir: &Path) -> Result<Value, String> {
     let capacity = chain.wallet_capacity().await?;

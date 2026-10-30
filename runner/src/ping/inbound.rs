@@ -59,13 +59,12 @@ pub async fn answer_challenge(
 ) -> Result<(Answer, String), Rej> {
     let (monitor_pub, network, mode, rpc_url) = {
         let cfg = state.config.read().unwrap();
-        let key = if cfg.monitor.pubkey.is_empty() {
-            crate::network::NetworkDefaults::for_network(&cfg.network).monitor_pubkey
-        } else {
-            cfg.monitor.pubkey.clone()
-        };
+        if !crate::network::monitor_key_usable(&crate::network::effective_monitor_key(&cfg)) {
+            crate::network::monitor_key_problem(&cfg);
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "no monitor key set"));
+        }
         (
-            key,
+            crate::network::effective_monitor_key(&cfg),
             cfg.network.clone(),
             cfg.ranking.ping_mode.clone(),
             cfg.node.rpc_url.clone(),

@@ -39,12 +39,7 @@ pub struct RpcClient {
 
 impl RpcClient {
     pub fn new(url: &str) -> RpcClient {
-        let http = reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .connect_timeout(TIMEOUT)
-            .no_proxy()
-            .build()
-            .expect("http client");
+        let http = crate::network::http_client(TIMEOUT).expect("http client");
         RpcClient {
             url: url.to_string(),
             http,
@@ -64,6 +59,9 @@ impl RpcClient {
             .send()
             .await
             .map_err(|e| RpcError::Transport(e.without_url().to_string()))?;
+        if resp.status().is_redirection() {
+            return Err(RpcError::Transport("unexpected redirect".into()));
+        }
         if !resp.status().is_success() {
             return Err(RpcError::Transport(format!("HTTP {}", resp.status())));
         }

@@ -121,7 +121,7 @@ impl Sweeper {
         if self.pending.is_none() && (!due || cfg.payout.sweep_address().is_none()) {
             return;
         }
-        let chain = match crate::chain::Chain::connect(cfg, &state.service_pubkey).await {
+        let chain = match crate::chain::Chain::connect_wallet(cfg, &state.service_pubkey).await {
             Ok(c) => c.with_service_key(state.service_key),
             Err(e) => {
                 if !self.warned {
@@ -393,6 +393,7 @@ pub async fn run(
                         cpu_percent: r.cpu.total_percent,
                         ram_free_mb: r.ram.free_mb,
                         tip_lag,
+                        disk_free_gb: Some(r.disk.free_gb),
                     };
                     if let Err(e) = state.db.add_sample(&sample) {
                         tracing::warn!("storing metric sample failed: {e}");

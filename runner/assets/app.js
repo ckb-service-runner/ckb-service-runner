@@ -51,7 +51,7 @@
           pwNotice(j.detail);
           throw new Error(j.detail || 'a dashboard password is required');
         }
-        if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+        if (!r.ok) throw new Error(j.error === 'busy' && j.detail ? 'The runner wallet is busy: ' + j.detail + '. Try again after the next block.' : j.error || 'HTTP ' + r.status);
         return j;
       });
     });
@@ -277,6 +277,7 @@
         dl(cw, [['Nodes worldwide', nw ? nw.nodes_total : null], ['Nodes reachable', nw ? nw.nodes_reachable : null],
           ['Updated', nw ? fmtTime(nw.updated_at) : null], ['Fetched', fmtTime(j.fetched_at)], ['Monitor', j.monitor_url]]);
         var ping = j.ping || {};
+        if (j.warning) cw.insertBefore(el('p', 'msg err', j.warning), cw.children[1] || null);
         if (n) {
           var a = n.attestation || {};
           dl(cr, [['Rank', rankText(n)], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
@@ -317,8 +318,8 @@
   };
 
   pages.resources = function (root) {
-    var c = card('Now'), c1 = card('CPU % (24 h)'), c2 = card('Free RAM MB (24 h)');
-    root.appendChild(c); root.appendChild(c1); root.appendChild(c2);
+    var c = card('Now'), c1 = card('CPU % (24 h)'), c2 = card('Free RAM MB (24 h)'), c3 = card('Free disk GB (24 h)');
+    root.appendChild(c); root.appendChild(c1); root.appendChild(c2); root.appendChild(c3);
     function load() {
       api('/api/resources').then(function (r) {
         while (c.children.length > 1) c.removeChild(c.lastChild);
@@ -331,6 +332,8 @@
         while (c2.children.length > 1) c2.removeChild(c2.lastChild);
         c1.appendChild(chart(h.samples, 'cpu_percent', 'CPU %'));
         c2.appendChild(chart(h.samples, 'ram_free_mb', 'free MB'));
+        while (c3.children.length > 1) c3.removeChild(c3.lastChild);
+        c3.appendChild(chart(h.samples.filter(function (s) { return s.disk_free_gb !== null && s.disk_free_gb !== undefined; }), 'disk_free_gb', 'free GB'));
       }).catch(function () {});
     }
     load();
@@ -342,8 +345,8 @@
     ['node.rpc_url', 'Node RPC URL', 'text', true],
     ['node.node_type', 'Node type', 'select:auto,ckb,neuron'],
     ['dashboard.bind', 'Dashboard bind', 'text', true],
-    ['ranking.join', 'Join the CSR monitor', 'bool'],
-    ['ranking.ping_mode', 'Ping mode', 'select:inbound,outbound,both'],
+    ['ranking.join', 'Join the CSR monitor', 'bool', true],
+    ['ranking.ping_mode', 'Ping mode', 'select:inbound,outbound,both', true],
     ['ranking.ping_bind', 'Ping bind', 'text', true],
     ['monitor.url', 'Monitor URL', 'text'],
     ['monitor.pubkey', 'Monitor pubkey', 'text'],
@@ -546,7 +549,8 @@
     [rinfo, r1, textBox, r2, ask].forEach(function (n) { cr.appendChild(n); });
     root.appendChild(c); root.appendChild(cr); root.appendChild(msg);
     function load() {
-      Promise.all([api('/api/wallet'), api('/api/registry'), api('/api/runner-cell')]).then(function (r) {
+      var none = { registered: false, stake: null, unavailable: true };
+      Promise.all([api('/api/wallet'), api('/api/registry').catch(function (x) { none.error = x.message; return none; }), api('/api/runner-cell').catch(function () { return {}; })]).then(function (r) {
         var w = r[0], ls = w.last_sweep;
         warn.textContent = w.sweep_warning || '';
         warn.style.display = w.sweep_warning ? '' : 'none';
@@ -561,6 +565,11 @@
         reg.textContent = r[1].registered ? 'Update stake' : 'Register';
         rinfo.textContent = '';
         var st = r[1].stake;
+        if (r[1].unavailable) {
+          var mainnet = /not deployed on mainnet/.test(r[1].error || '');
+          rinfo.appendChild(el('p', 'msg', mainnet ? 'The CSR scripts are not deployed on mainnet yet.' : (r[1].error || 'Registry unavailable.')));
+          return;
+        }
         dl(rinfo, [
           ['Registered', r[1].registered ? r[1].outpoint : 'no'],
           ['Attestation expiry (ms)', r[1].attestation_expiry_ms],

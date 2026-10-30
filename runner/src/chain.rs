@@ -555,6 +555,35 @@ impl Chain {
     /// Connects to the configured node; the chain must be the network's chain.
     pub async fn connect(cfg: &Config, service_pubkey: &str) -> Result<Chain, String> {
         let dep = load_deployments(cfg)?;
+        Self::connect_with(cfg, service_pubkey, dep).await
+    }
+
+    /// As `connect`, for the runner wallet only: works on every network, also where the CSR scripts are
+    /// not deployed (the registry and job functions of such a chain must not be used).
+    pub async fn connect_wallet(cfg: &Config, service_pubkey: &str) -> Result<Chain, String> {
+        let none = || Deployed {
+            code_hash: H256::default(),
+            hash_type: ScriptHashType::Data1,
+            code_cell: OutPoint::default(),
+            dep_type: DepType::Code,
+        };
+        let dep = Deployments {
+            dual: none(),
+            registry: none(),
+            job_type: none(),
+            job_lock: none(),
+            registry_type_hash: vec![],
+            config_type_args: vec![],
+            config_type_hash: H256::default(),
+        };
+        Self::connect_with(cfg, service_pubkey, dep).await
+    }
+
+    async fn connect_with(
+        cfg: &Config,
+        service_pubkey: &str,
+        dep: Deployments,
+    ) -> Result<Chain, String> {
         let rpc = RpcClient::new(&cfg.node.rpc_url);
         let info = rpc
             .call("get_blockchain_info", json!([]))

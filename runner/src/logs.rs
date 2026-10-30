@@ -15,9 +15,62 @@ const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 const TAIL_BYTES: u64 = 512 * 1024;
 pub const MAX_LINES: usize = 1000;
 
+/// A log file that moves to `<name>.log.1` (replacing an older one) before a write would take it over
+/// `max_bytes`, and starts a new file.
+pub struct RotatingFile {
+    path: PathBuf,
+    max_bytes: u64,
+    file: File,
+    size: u64,
+}
+
+fn rotated_path(path: &Path) -> PathBuf {
+    let mut old = path.to_path_buf();
+    old.set_extension("log.1");
+    old
+}
+
+impl RotatingFile {
+    pub fn open(path: &Path, max_bytes: u64) -> io::Result<RotatingFile> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let size = file.metadata()?.len();
+        Ok(RotatingFile {
+            path: path.to_path_buf(),
+            max_bytes,
+            file,
+            size,
+        })
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        self.file.flush()?;
+        fs::rename(&self.path, rotated_path(&self.path))?;
+        self.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        self.size = 0;
+        Ok(())
+    }
+}
+
+impl Write for RotatingFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.size > 0 && self.size + buf.len() as u64 > self.max_bytes {
+            self.rotate()?;
+        }
+        let n = self.file.write(buf)?;
+        self.size += n as u64;
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
 #[derive(Clone)]
 struct Tee {
-    file: Arc<Mutex<File>>,
+    file: Arc<Mutex<RotatingFile>>,
 }
 
 struct TeeWriter(Tee);
@@ -55,18 +108,7 @@ pub fn init(path: &Path, level: &str) -> Result<LevelSetter, String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
-    if fs::metadata(path)
-        .map(|m| m.len() > MAX_LOG_BYTES)
-        .unwrap_or(false)
-    {
-        let mut old: PathBuf = path.to_path_buf();
-        old.set_extension("log.1");
-        let _ = fs::rename(path, old);
-    }
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
+    let file = RotatingFile::open(path, MAX_LOG_BYTES)
         .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let (filter, handle) = reload::Layer::new(targets(level));
     tracing_subscriber::registry()
@@ -100,21 +142,46 @@ pub fn valid_level(level: &str) -> bool {
     rank(level).is_some()
 }
 
+/// The last `max` bytes of a file and the offset they start at.
+fn read_tail(path: &Path, max: u64) -> io::Result<(Vec<u8>, u64)> {
+    let mut f = File::open(path)?;
+    let len = f.metadata()?.len();
+    let start = len.saturating_sub(max);
+    let mut buf = Vec::new();
+    f.seek(SeekFrom::Start(start))?;
+    f.read_to_end(&mut buf)?;
+    Ok((buf, start))
+}
+
 /// Last lines of the log with a level at least as severe as `level`
 /// (at most 1,000).
 pub fn tail(path: &Path, level: &str) -> Vec<String> {
     let Some(max) = rank(level) else {
         return vec![];
     };
-    let Ok(mut f) = File::open(path) else {
+    let Ok((buf, start)) = read_tail(path, TAIL_BYTES) else {
         return vec![];
     };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(TAIL_BYTES);
-    let mut buf = Vec::new();
-    if f.seek(SeekFrom::Start(start)).is_err() || f.read_to_end(&mut buf).is_err() {
-        return vec![];
-    }
+    // Just after a rotation the current file is short: continue with the end of the rotated one.
+    let (buf, start) = if start == 0 && (buf.len() as u64) < TAIL_BYTES {
+        match read_tail(&rotated_path(path), TAIL_BYTES - buf.len() as u64) {
+            Ok((mut old, ostart)) if !old.is_empty() => {
+                if ostart > 0 {
+                    match old.iter().position(|b| *b == b'\n') {
+                        Some(i) => {
+                            old.drain(..=i);
+                        }
+                        None => old.clear(),
+                    }
+                }
+                old.extend_from_slice(&buf);
+                (old, 0)
+            }
+            _ => (buf, start),
+        }
+    } else {
+        (buf, start)
+    };
     let text = String::from_utf8_lossy(&buf);
     let mut lines: Vec<&str> = text.lines().collect();
     if start > 0 && !lines.is_empty() {
