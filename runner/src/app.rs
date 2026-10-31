@@ -120,6 +120,8 @@ impl AppState {
             "r2": {"state": node.report.state.as_str(), "reasons": node.report.reasons},
             "runtime": {"state": state, "reason": reason},
             "mainnet_runtime_unlocked": mainnet_runtime_unlocked(),
+            // 0.5.1: registration and service jobs are not available on this network yet (mainnet before 1.x).
+            "registration_locked": crate::network::registration_locked(&cfg.network),
             "node_identity": self.identity_status.read().unwrap().state,
             "update": self.update.cached_json(),
             "ranking": {

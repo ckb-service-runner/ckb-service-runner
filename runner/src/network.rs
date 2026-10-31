@@ -78,3 +78,22 @@ pub fn check_no_redirect(resp: &reqwest::Response) -> Result<(), String> {
 pub fn mainnet_runtime_unlocked() -> bool {
     false
 }
+
+/// Shown and returned while registration is not available on mainnet (0.5.1).
+pub const MAINNET_LOCKED_MSG: &str = "Mainnet: node dashboard and ranking only. Registration and service jobs start with CSR 1.x, once the network has 20 ranked runners and 4 months of monitor history. Nothing needs to be funded now.";
+
+/// `Some(message)` while registration, renewal and consent are not available on this network: mainnet before
+/// the runtime is unlocked (the CSR scripts are not deployed there yet).
+pub fn registration_locked(network: &str) -> Option<&'static str> {
+    (network == "mainnet" && !mainnet_runtime_unlocked()).then_some(MAINNET_LOCKED_MSG)
+}
+
+#[cfg(test)]
+mod lock_tests {
+    #[test]
+    fn registration_locked_only_on_mainnet() {
+        assert!(super::registration_locked("mainnet").is_some());
+        assert!(super::registration_locked("testnet").is_none());
+        assert!(super::registration_locked("devnet").is_none());
+    }
+}

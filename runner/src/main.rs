@@ -642,6 +642,16 @@ fn main() -> ExitCode {
                 wallet::sweep(&c, &cfg, &dir).await
             }),
         },
+        Command::Register { action }
+            if !matches!(action, RegisterAction::Status { .. } | RegisterAction::VerifyConsent { .. })
+                && load_config(&cli)
+                    .ok()
+                    .and_then(|c| network::registration_locked(&c.network))
+                    .is_some() =>
+        {
+            eprintln!("{}", network::MAINNET_LOCKED_MSG);
+            ExitCode::from(1)
+        }
         Command::Register { action } => match action {
             RegisterAction::Status { json } => {
                 chain_cmd(&cli, *json, |c| async move { c.register_status().await })

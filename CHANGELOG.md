@@ -1,6 +1,9 @@
 # Changelog
 
 ## 0.5.1
+- **Mainnet notices** (until 1.x): the Wallet & registration page shows "Mainnet: dashboard and ranking only" instead of the funding text and the stake, sign, register, renew and Auto renew controls; the runner address, balance and "Send" stay, so CKB sent there by mistake can be returned. Overview, Jobs and Earnings show the same notice; the CSR network card shows the **Phase 2 gate progress** from the monitor (ranked runners of 20, days of history of 120, ASN and country shares).
+- The server refuses registration on mainnet before 1.x: `POST /api/registry/{consent-message,create,refresh,remove}` answer 409 `{"error": "mainnet_locked", "detail": …}`, `GET /api/registry` answers `{"locked": true, "message": …}`, `csr register …` (except `status` and `verify-consent`) exits 1 with the same message. `/api/status` has `registration_locked` (the message, or `null`). `/api/network` has `gate` (`GET /v1/{network}/summary` of the monitor).
+- The mainnet dashboard uses its own session cookie `csr_session_mainnet` (testnet keeps `csr_session`), so both dashboards on one host can be logged in at the same time in one browser.
 - Installer: the node identity uses the key of the node's own folder first (the `ckb.toml` that serves the instance's RPC port), instead of asking about every key on the disk; a key that belongs to another node or cannot be read is removed from the config and the next one is tried. Keys of running nodes (`ckb run -C <dir>`) and of disks mounted under `/mnt` or `/media` are found.
 
 ## 0.5.0

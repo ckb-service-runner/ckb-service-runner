@@ -14,6 +14,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const COOKIE: &str = "csr_session";
+/// Mainnet instance: its own cookie name, so that a testnet and a mainnet dashboard on the same host (different
+/// ports; browsers keep cookies per host, not per port) can be logged in at the same time (0.5.1).
+const COOKIE_MAINNET: &str = "csr_session_mainnet";
+
+/// The session cookie name of a network.
+pub fn cookie_name(network: &str) -> &'static str {
+    if network == "mainnet" {
+        COOKIE_MAINNET
+    } else {
+        COOKIE
+    }
+}
 const SESSION_TTL: Duration = Duration::from_secs(24 * 3600);
 pub const LOGIN_FAILURES_PER_CLIENT: u32 = 5;
 pub const LOGIN_FAILURES_GLOBAL: u32 = 50;
@@ -66,8 +78,14 @@ pub fn origin_allowed(origin: Option<&str>, host: &str) -> bool {
     }
 }
 
+/// The testnet/devnet cookie (kept for the tests and callers that predate the per-network name).
+#[allow(dead_code)]
 pub fn cookie_header(id: &str, secure: bool) -> String {
-    let mut c = format!("{COOKIE}={id}; HttpOnly; SameSite=Strict; Path=/");
+    cookie_header_named(COOKIE, id, secure)
+}
+
+pub fn cookie_header_named(name: &str, id: &str, secure: bool) -> String {
+    let mut c = format!("{name}={id}; HttpOnly; SameSite=Strict; Path=/");
     if secure {
         c.push_str("; Secure");
     }
@@ -232,31 +250,36 @@ fn ct_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |x, (p, q)| x | (p ^ q)) == 0
 }
 
-fn cookie_value(headers: &HeaderMap) -> Option<String> {
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
     headers
         .get_all(header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
-        .filter_map(|p| p.trim().strip_prefix("csr_session="))
+        .filter_map(|p| p.trim().strip_prefix(prefix.as_str()))
         .map(String::from)
         .next()
 }
 
-fn set_cookie(id: &str, headers: &HeaderMap) -> (header::HeaderName, HeaderValue) {
+fn set_cookie(name: &str, id: &str, headers: &HeaderMap) -> (header::HeaderName, HeaderValue) {
     let secure = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("https"));
     (
         header::SET_COOKIE,
-        HeaderValue::from_str(&cookie_header(id, secure)).unwrap(),
+        HeaderValue::from_str(&cookie_header_named(name, id, secure)).unwrap(),
     )
 }
 
 impl AppState {
+    fn cookie(&self) -> &'static str {
+        cookie_name(&self.config.read().unwrap().network)
+    }
+
     fn session(&self, headers: &HeaderMap) -> Option<(String, Session)> {
-        let id = cookie_value(headers)?;
+        let id = cookie_value(headers, self.cookie())?;
         let s = self.sessions.get(&id, Instant::now())?;
         Some((id, s))
     }
@@ -347,7 +370,7 @@ pub async fn session(State(s): St, headers: HeaderMap) -> Response {
         "password_required": s.password_required(),
     }));
     if fresh {
-        ([set_cookie(&id, &headers)], body).into_response()
+        ([set_cookie(s.cookie(), &id, &headers)], body).into_response()
     } else {
         body.into_response()
     }
@@ -390,7 +413,7 @@ pub async fn login(
     // New session id and CSRF token on privilege change.
     let (id, sess) = s.sessions.create(true, Instant::now());
     tracing::info!("dashboard login ok");
-    ([set_cookie(&id, &headers)], Json(json!({"csrf_token": sess.csrf}))).into_response()
+    ([set_cookie(s.cookie(), &id, &headers)], Json(json!({"csrf_token": sess.csrf}))).into_response()
 }
 
 #[cfg(test)]
@@ -399,6 +422,18 @@ mod aiworker_dashboard_security_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cookie_name_per_network() {
+        assert_eq!(cookie_name("mainnet"), "csr_session_mainnet");
+        assert_eq!(cookie_name("testnet"), "csr_session");
+        assert_eq!(cookie_name("devnet"), "csr_session");
+        assert!(cookie_header_named("csr_session_mainnet", "abc", false).starts_with("csr_session_mainnet=abc;"));
+        let mut h = HeaderMap::new();
+        h.insert(header::COOKIE, HeaderValue::from_static("csr_session=t; csr_session_mainnet=m"));
+        assert_eq!(cookie_value(&h, "csr_session").as_deref(), Some("t"));
+        assert_eq!(cookie_value(&h, "csr_session_mainnet").as_deref(), Some("m"));
+    }
 
     #[test]
     fn update_writes_need_a_password() {

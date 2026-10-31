@@ -739,3 +739,13 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
   The mainnet key (`/mnt/ps_data/…`, its own disk) was not found because `find -xdev` from `/mnt` does not enter other
   filesystems: `find_keys` now lists the keys of running `ckb run -C <dir>` processes first and searches each
   `/mnt/*` and `/media/*` as its own root.
+
+## 0.5.1 – mainnet notices, locked registration, per-network cookie (31 Oct 2026)
+
+- Requested by the owner after the first look at the mainnet dashboard (it asked for 700 CKB and showed Auto renew).
+  `network::registration_locked(network)` = mainnet while `mainnet_runtime_unlocked()` is false; it gates the four
+  registry write routes (409 `mainnet_locked`), `GET /api/registry` (`locked: true`), the `csr register` CLI (except
+  `status`, `verify-consent`) and the dashboard notices. The wallet stays usable (send back CKB sent by mistake).
+- `/api/network` passes on the monitor's Phase 2 `gate` (`GET /v1/{network}/summary`; ignored when absent or malformed).
+- Session cookie per network: `csr_session_mainnet` on mainnet, `csr_session` elsewhere (browsers share cookies across
+  ports of one host). Existing testnet sessions and tests are unaffected.
