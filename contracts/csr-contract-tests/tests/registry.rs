@@ -8,6 +8,8 @@ use csr_contract_tests::*;
 
 const CLOCK_MS: u64 = 1_760_000_000_000;
 const EXPIRY_MS: u64 = CLOCK_MS + 7 * 24 * 3600 * 1000;
+/// The lifetime cap of an attestation beyond the monitor clock (decision D24 A).
+const CAP_MS: u64 = 8 * 86_400_000;
 const WALLET: u64 = 1000 * CKB;
 const FEE: u64 = 100_000;
 const KEY_CELL: u64 = 100 * CKB;
@@ -39,8 +41,8 @@ fn setup() -> S {
     let owner = env.new_key();
     let service = env.new_key();
     let monitor = env.new_key();
-    let (config, config_hash) = env.config_cell(&monitor.pubkey, CLOCK_MS, monitor.lock.clone());
-    let reg_type = env.registry_type_script(&config_hash);
+    let (config, config_id) = env.config_cell(&monitor.pubkey, CLOCK_MS, monitor.lock.clone());
+    let reg_type = env.registry_type_script(&config_id);
     let dual = env.dual_lock_script(&owner.lock_hash(), &service.lock_hash());
     let payout = env.always_success_script(b"payout");
     let stake = env.stake(owner.lock.clone());
@@ -49,8 +51,10 @@ fn setup() -> S {
         service_pubkey: service.pubkey,
         payout_lock_hash: payout.calc_script_hash().unpack(),
         network: 2,
-        prekeys: Vec::new(),
         stake: stake.clone(),
+        endpoint: Vec::new(),
+        prekeys: Vec::new(),
+        registry_type_hash: reg_type.calc_script_hash().unpack(),
     };
     S { env, owner, service, monitor, config, reg_type, dual, stake, fields }
 }
@@ -164,7 +168,7 @@ impl S {
 // --- creation -----------------------------------------------------------------------------------
 
 #[test]
-fn registry_create_with_valid_attestation_ok() {
+fn registry_v3_create_ok() {
     let mut s = setup();
     let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
     let dual = s.dual.clone();
@@ -217,8 +221,8 @@ fn registry_create_without_runner_key_rejected() {
 #[test]
 fn registry_create_with_copied_attestation_rejected() {
     // The attacker copies the victim's (public) attestation and registers the victim's peer_id and service key
-    // with the attacker as owner (and stake) and the attacker's payout cell; the attacker's own key cell is no
-    // runner key.
+    // with the attacker as owner (and stake) and the attacker's payout cell. Since `CSR-ATTEST-v2` the signature
+    // covers the stake, so it no longer verifies for the attacker's deposit (before: the missing runner key).
     let mut s = setup();
     let attacker = s.env.new_key();
     let victim_attestation = s.fields.attestation_fields(EXPIRY_MS).sign(&s.monitor);
@@ -229,7 +233,7 @@ fn registry_create_with_copied_attestation_rejected() {
     let lock = s.env.dual_lock_script(&attacker.lock_hash(), &s.service.lock_hash());
     let (reg_type, config) = (s.reg_type.clone(), s.config.clone());
     let tx = s.env.registry_create_tx(&attacker, Some(&attacker), lock, reg_type, data, Some(&config));
-    assert_script_error(s.env.verify_signed(tx, &[&attacker]), "Outputs[0].Type", 17);
+    assert_script_error(s.env.verify_signed(tx, &[&attacker]), "Outputs[0].Type", 10);
 }
 
 #[test]
@@ -303,14 +307,14 @@ fn registry_create_config_from_other_monitor_rejected() {
 
 #[test]
 fn registry_create_attestation_for_other_pubkey_rejected() {
-    // The monitor attested another service key; the registry claims ours.
+    // The monitor attested another service key; the registry claims ours: the signature does not verify.
     let mut s = setup();
     let other = s.env.new_key();
     let mut att = s.fields.attestation_fields(EXPIRY_MS);
     att.service_pubkey = other.pubkey;
     let data = s.fields.data(&att.sign(&s.monitor));
     let dual = s.dual.clone();
-    assert_script_error(s.create(data, dual), "Outputs[0].Type", 11);
+    assert_script_error(s.create(data, dual), "Outputs[0].Type", 10);
 }
 
 #[test]
@@ -320,7 +324,7 @@ fn registry_create_attestation_for_other_peer_id_rejected() {
     att.peer_id = b"12D3KooWSomebodyElse".to_vec();
     let data = s.fields.data(&att.sign(&s.monitor));
     let dual = s.dual.clone();
-    assert_script_error(s.create(data, dual), "Outputs[0].Type", 11);
+    assert_script_error(s.create(data, dual), "Outputs[0].Type", 10);
 }
 
 #[test]
@@ -429,7 +433,7 @@ fn registry_two_outputs_in_group_rejected() {
 // --- runner path --------------------------------------------------------------------------------
 
 #[test]
-fn registry_runner_refreshes_attestation_ok() {
+fn registry_runner_refresh_v3_ok() {
     let mut s = setup();
     let data = s.fields.signed_data(&s.monitor, EXPIRY_MS + 3_600_000);
     let (cap, dual) = (s.reg_cap(), s.dual.clone());
@@ -537,7 +541,9 @@ fn registry_owner_changes_service_pubkey_with_new_runner_key_ok() {
     let data = f.signed_data(&s.monitor, EXPIRY_MS + 3_600_000);
     let lock = s.env.dual_lock_script(&s.owner.lock_hash(), &new_service.lock_hash());
     let cap = s.reg_cap();
-    s.spend_with(true, Some((cap, lock, data)), Some(&new_service)).expect("owner rotates service key");
+    // a new service key needs the stake rules again (D23 A); the stake owner (= the owner) is an input
+    let stake = s.stake.clone();
+    s.spend_with_deps(true, Some((cap, lock, data)), Some(&new_service), vec![stake]).expect("owner rotates service key");
 }
 
 #[test]
@@ -601,11 +607,14 @@ fn mol_table(fields: &[&[u8]]) -> Vec<u8> {
     out
 }
 
-/// Field slices of a molecule table.
-fn mol_fields(t: &[u8]) -> Vec<&[u8]> {
-    let u = |at: usize| u32::from_le_bytes(t[at..at + 4].try_into().unwrap()) as usize;
-    let n = u(4) / 4 - 1;
-    (0..n).map(|i| &t[u(4 + 4 * i)..if i + 1 < n { u(8 + 4 * i) } else { t.len() }]).collect()
+/// The old message `blake2b-256("CSR-ATTEST-v1" ‖ molecule(AttestationBody))` (peer_id, service_pubkey,
+/// network, expiry_ms; no stake, no registry type hash).
+fn v1_message(f: &RegistryFields, expiry_ms: u64) -> [u8; 32] {
+    let peer_id = mol_bytes(&f.peer_id);
+    let body = mol_table(&[peer_id.as_slice(), &f.service_pubkey, &[f.network], &expiry_ms.to_le_bytes()]);
+    let mut msg = b"CSR-ATTEST-v1".to_vec();
+    msg.extend_from_slice(&body);
+    ckb_testtool::ckb_hash::blake2b_256(msg)
 }
 
 fn hex(b: &[u8]) -> String {
@@ -618,39 +627,119 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 #[test]
-fn registry_v1_data_rejected() {
-    // The v1 table (6 fields: no stake) with a valid attestation.
+fn registry_v2_data_rejected() {
+    // The v2 table (7 fields: nested attestation, stake last) with a valid v1-style attestation copy.
     let mut s = setup();
-    let v2 = s.fields.signed_data(&s.monitor, EXPIRY_MS);
-    let fields = mol_fields(&v2);
-    assert_eq!(fields.len(), 7);
-    let v1 = mol_table(&fields[..6]);
+    let f = &s.fields;
+    let expiry = EXPIRY_MS.to_le_bytes();
+    let peer_id = mol_bytes(&f.peer_id);
+    let att_sig = sign_digest(&s.monitor, &v1_message(f, EXPIRY_MS));
+    let attestation = mol_table(&[peer_id.as_slice(), &f.service_pubkey, &[f.network], &expiry, &att_sig]);
+    let v2 = mol_table(&[
+        peer_id.as_slice(),
+        &f.service_pubkey,
+        &f.payout_lock_hash,
+        &[f.network],
+        &attestation,
+        mol_bytes(&[]).as_slice(),
+        f.stake.as_slice(),
+    ]);
     let dual = s.dual.clone();
-    let tx = s.create_tx(v1.into(), dual, true);
+    let tx = s.create_tx(v2.into(), dual, true);
     let stake = s.stake.clone();
     let tx = with_deps_first(tx, vec![cell_dep(&stake)]);
     assert_script_error(s.verify_create(tx), "Outputs[0].Type", 7);
 }
 
 #[test]
-fn registry_v2_data_matches_monitor_vector() {
-    // The cross-check vector of the CSR Network Monitor (`spec/registry.md` §2).
-    const VECTOR: &str = "7501000020000000540000007500000095000000960000004d0100005101000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27777777777777777777777777777777777777777777777777777777777777777701b7000000180000004c0000006d0000006e0000007600000030000000516d5465737450656572313233343536373839306162636465666768696a6b6c6d6e6f707172737475767778797a414202466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f270100505c18a301000004d5db9878eceb46d700d0c55677777b3b1d2a401773b24dae15789c071ef7d36794160555e176e0b1ca6b997892e7c9ce7320b2a2016e3102c46a495421ed5f01000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a03000000";
-    let peer_id = b"QmTestPeer1234567890abcdefghijklmnopqrstuvwxyzAB".to_vec();
-    let service_pubkey: [u8; 33] =
-        unhex("0x02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").try_into().unwrap();
-    let signature: [u8; 65] = unhex("0x04d5db9878eceb46d700d0c55677777b3b1d2a401773b24dae15789c071ef7d36794160555e176e0b1ca6b997892e7c9ce7320b2a2016e3102c46a495421ed5f01").try_into().unwrap();
-    let stake = OutPoint::new_builder().tx_hash(Byte32::from([0x5a; 32])).index(3u32).build();
-    let fields = RegistryFields {
-        peer_id,
-        service_pubkey,
+fn registry_v3_wrong_version_rejected() {
+    let mut s = setup();
+    let att = s.fields.attestation_fields(EXPIRY_MS).sign(&s.monitor);
+    let data = s.fields.data_with_version(2, &att);
+    let dual = s.dual.clone();
+    assert_script_error(s.create(data, dual), "Outputs[0].Type", 7);
+}
+
+/// The shared vector of the spec author (`acceptance/aiworker-contracts-v3/registry-v3.json`, the monitor's
+/// encoder); also used by the runner and `monitor-v3`.
+const VECTOR_JSON: &str = include_str!("../../../acceptance/aiworker-contracts-v3/registry-v3.json");
+
+/// String or number value of `key` in the flat vector JSON object.
+fn vector(key: &str) -> String {
+    let pat = format!("\"{key}\":");
+    let at = VECTOR_JSON.find(&pat).unwrap_or_else(|| panic!("vector key {key}")) + pat.len();
+    let rest = VECTOR_JSON[at..].trim_start();
+    if let Some(r) = rest.strip_prefix('"') {
+        r[..r.find('"').unwrap()].to_string()
+    } else {
+        rest[..rest.find(|c: char| c == ',' || c == '}' || c.is_whitespace()).unwrap()].to_string()
+    }
+}
+
+/// Registry fields of the vector (`payout_lock_hash` 0x77…, no prekeys).
+fn vector_fields(endpoint: &[u8]) -> RegistryFields {
+    let (tx, index) = vector("stake").split_once(':').map(|(a, b)| (unhex(a), b.parse::<u32>().unwrap())).unwrap();
+    RegistryFields {
+        peer_id: vector("peer_id").into_bytes(),
+        service_pubkey: unhex(&vector("service_pubkey")).try_into().unwrap(),
         payout_lock_hash: [0x77; 32],
-        network: 1,
+        network: vector("network").parse().unwrap(),
+        stake: OutPoint::new_builder().tx_hash(Byte32::from_slice(&tx).unwrap()).index(index).build(),
+        endpoint: endpoint.to_vec(),
         prekeys: Vec::new(),
-        stake,
-    };
-    let att = fields.attestation_fields(1_800_000_000_000).with_signature(signature);
-    assert_eq!(hex(&fields.data(&att)), VECTOR);
+        registry_type_hash: unhex(&vector("registry_type_hash")).try_into().unwrap(),
+    }
+}
+
+#[test]
+fn registry_v3_data_matches_vector() {
+    let expiry_ms: u64 = vector("expiry_ms").parse().unwrap();
+    let signature: [u8; 65] = unhex(&vector("attestation_signature")).try_into().unwrap();
+    let monitor_pubkey: [u8; 33] = unhex(&vector("monitor_pubkey")).try_into().unwrap();
+
+    // 1. the test builder produces the vector bytes (body, message, both registry data forms)
+    let f = vector_fields(b"");
+    let att = f.attestation_fields(expiry_ms);
+    assert_eq!(hex(att.body().as_slice()), vector("attestation_body_v2"));
+    assert_eq!(hex(&att.message()), vector("attestation_message_v2"));
+    let data = f.data(&att.with_signature(signature));
+    assert_eq!(data.len().to_string(), vector("registry_v3_no_endpoint_len"));
+    assert_eq!(hex(&data), vector("registry_v3_no_endpoint"));
+    let fe = vector_fields(vector("endpoint").as_bytes());
+    let data_e = fe.data(&fe.attestation_fields(expiry_ms).with_signature(signature));
+    assert_eq!(data_e.len().to_string(), vector("registry_v3_with_endpoint_len"));
+    assert_eq!(hex(&data_e), vector("registry_v3_with_endpoint"));
+
+    // 2. the contract's own parser and attestation check (csr-registry/src/attest.rs) accept the vector: the
+    //    signature verifies against the vector's monitor key (clock 1 day before expiry)
+    for d in [&data, &data_e] {
+        let r = attest::parse_v3(d).expect("contract parses the vector");
+        assert_eq!(hex(&r.message(&f.registry_type_hash)), vector("attestation_message_v2"));
+        assert_eq!(attest::recover(&r.message(&f.registry_type_hash), r.attestation_sig), Some(monitor_pubkey));
+        attest::check_attestation(&r, &f.registry_type_hash, &monitor_pubkey, expiry_ms - 86_400_000).expect("valid");
+        assert_eq!(
+            attest::check_attestation(&r, &[0x4f; 32], &monitor_pubkey, expiry_ms - 86_400_000),
+            Err(attest::AttestError::Signature)
+        );
+    }
+
+    // 3. in the VM: the vector's monitor (secret 0x…51) as the config cell's key, the vector entry (with
+    //    endpoint) registered under this test deployment's registry type hash
+    let mut s = setup();
+    let secret: [u8; 32] = unhex(&vector("monitor_secret")).try_into().unwrap();
+    let monitor = s.env.key_from_secret(&secret);
+    assert_eq!(monitor.pubkey, monitor_pubkey);
+    let (config, config_id) = s.env.config_cell(&monitor.pubkey, expiry_ms - 86_400_000, monitor.lock.clone());
+    let reg_type = s.env.registry_type_script(&config_id);
+    let service = Key { privkey: s.service.privkey.clone(), pubkey: s.service.pubkey, lock: s.service.lock.clone() };
+    let mut g = vector_fields(vector("endpoint").as_bytes());
+    g.service_pubkey = service.pubkey;
+    g.stake = s.stake.clone();
+    g.registry_type_hash = reg_type.calc_script_hash().unpack();
+    let data = g.signed_data(&monitor, expiry_ms);
+    let dual = s.dual.clone();
+    let tx = s.env.registry_create_tx(&s.owner, Some(&service), dual, reg_type, data, Some(&config));
+    s.env.verify_signed(tx, &[&s.owner, &service]).expect("vector monitor key accepted by the contract");
 }
 
 // --- stake (DAO deposit) --------------------------------------------------------------------------
@@ -1090,8 +1179,10 @@ fn example_fields() -> RegistryFields {
         service_pubkey: unhex("02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27").try_into().unwrap(),
         payout_lock_hash: [0; 32],
         network: 1,
-        prekeys: Vec::new(),
         stake: OutPoint::new_builder().tx_hash(Byte32::from([0x5a; 32])).index(3u32).build(),
+        endpoint: Vec::new(),
+        prekeys: Vec::new(),
+        registry_type_hash: [0; 32],
     }
 }
 
@@ -1196,7 +1287,8 @@ fn registry_create_owned_by_runner_ok() {
     let data = f.signed_data(&s.monitor, EXPIRY_MS);
     let sig = f.consent_signature(&staker);
     let (reg_type, config) = (s.reg_type.clone(), s.config.clone());
-    let tx = s.env.registry_create_runner_owned_tx(&s.service, reg_type, data, &config, Some(&sig));
+    let lock = s.runner_owned_lock();
+    let tx = s.env.registry_create_runner_owned_tx(&s.service, lock, reg_type, data, &config, Some(&sig));
     let cycles = s.env.verify_signed(tx, &[&s.service]).expect("runner-owned registration");
     println!("runner-owned registration with consent: {cycles} cycles (whole transaction incl. system lock)");
 }
@@ -1278,4 +1370,294 @@ fn dual_lock_runner_key_cell_ok() {
         vec![(output(100 * CKB + KEY_CELL - FEE, s.service.lock.clone(), None), Bytes::new())],
     );
     s.env.verify_signed(tx, &[&s.service]).expect("runner unlocks dual lock");
+}
+
+// --- contracts v3: attestation v2, lifetime cap, endpoint, consent on identity changes (D20–D24) ----------
+
+#[test]
+fn registry_attest_v1_signature_rejected() {
+    // A valid monitor signature over the v1 message (no stake, no registry type hash).
+    let mut s = setup();
+    let sig = sign_digest(&s.monitor, &v1_message(&s.fields, EXPIRY_MS));
+    let data = s.fields.data(&s.fields.attestation_fields(EXPIRY_MS).with_signature(sig));
+    let dual = s.dual.clone();
+    assert_script_error(s.create(data, dual), "Outputs[0].Type", 10);
+}
+
+#[test]
+fn registry_attest_v2_other_stake_rejected() {
+    // The monitor attested this node with another deposit; the attestation is used with this one.
+    let mut s = setup();
+    let owner_lock = s.owner.lock.clone();
+    let other = s.env.stake(owner_lock);
+    let mut att = s.fields.attestation_fields(EXPIRY_MS);
+    att.stake = other;
+    let data = s.fields.data(&att.sign(&s.monitor));
+    let dual = s.dual.clone();
+    assert_script_error(s.create(data, dual), "Outputs[0].Type", 10);
+}
+
+#[test]
+fn registry_attest_v2_other_registry_type_rejected() {
+    // An attestation for another registry deployment (same code, other config args → other type hash).
+    let mut s = setup();
+    let other_id = s.env.fresh_id();
+    let other_type = s.env.registry_type_script(&other_id);
+    let mut att = s.fields.attestation_fields(EXPIRY_MS);
+    att.registry_type_hash = other_type.calc_script_hash().unpack();
+    assert_ne!(att.registry_type_hash, s.fields.registry_type_hash);
+    let data = s.fields.data(&att.sign(&s.monitor));
+    let dual = s.dual.clone();
+    assert_script_error(s.create(data, dual), "Outputs[0].Type", 10);
+}
+
+#[test]
+fn registry_attestation_lifetime_over_cap_rejected() {
+    // expiry_ms − clock_ms = 8 days is accepted, 8 days + 1 ms is not (error 24), on creation and on refresh.
+    let mut s = setup();
+    let data = s.fields.signed_data(&s.monitor, CLOCK_MS + CAP_MS);
+    let dual = s.dual.clone();
+    s.create(data, dual).expect("exactly at the cap");
+    let data = s.fields.signed_data(&s.monitor, CLOCK_MS + CAP_MS + 1);
+    let dual = s.dual.clone();
+    assert_script_error(s.create(data, dual), "Outputs[0].Type", 24);
+    let data = s.fields.signed_data(&s.monitor, CLOCK_MS + CAP_MS + 1);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    assert_script_error(s.spend(false, Some((cap, dual, data))), "Inputs[0].Type", 24);
+}
+
+#[test]
+fn registry_attestation_network_mismatch_rejected() {
+    // The monitor attested the node for testnet (1); the cell says devnet (2).
+    let mut s = setup();
+    let mut att = s.fields.attestation_fields(EXPIRY_MS);
+    att.network = 1;
+    let data = s.fields.data(&att.sign(&s.monitor));
+    let dual = s.dual.clone();
+    assert_script_error(s.create(data, dual), "Outputs[0].Type", 10);
+    // an unknown network byte is no v3 data
+    let mut f = s.fields.clone();
+    f.network = 3;
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let dual = s.dual.clone();
+    assert_script_error(s.create(data, dual), "Outputs[0].Type", 7);
+}
+
+#[test]
+fn registry_create_with_endpoint_ok() {
+    let mut s = setup();
+    let mut f = s.fields.clone();
+    f.endpoint = b"http://203.0.113.7:8131".to_vec();
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let dual = s.dual.clone();
+    s.create(data, dual).expect("http endpoint");
+    f.endpoint = [b"https://".as_slice(), &[b'a'; 120]].concat();
+    assert_eq!(f.endpoint.len(), 128);
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let dual = s.dual.clone();
+    s.create(data, dual).expect("128-byte endpoint");
+}
+
+#[test]
+fn registry_endpoint_invalid_rejected() {
+    let mut s = setup();
+    let bad: [Vec<u8>; 4] = [
+        b"ftp://203.0.113.7:21".to_vec(),
+        b"203.0.113.7:8131".to_vec(),
+        [b"https://".as_slice(), &[b'a'; 121]].concat(),
+        b"https://\xff\xfe:1".to_vec(),
+    ];
+    for e in bad {
+        let mut f = s.fields.clone();
+        f.endpoint = e;
+        let data = f.signed_data(&s.monitor, EXPIRY_MS);
+        let dual = s.dual.clone();
+        assert_script_error(s.create(data, dual), "Outputs[0].Type", 7);
+    }
+}
+
+#[test]
+fn registry_runner_changes_endpoint_ok() {
+    // The runner path may set the endpoint (and pays for the larger cell).
+    let mut s = setup();
+    let mut f = s.fields.clone();
+    f.endpoint = b"https://203.0.113.7:8131".to_vec();
+    let data = f.signed_data(&s.monitor, EXPIRY_MS + 3_600_000);
+    let cap = s.reg_cap() + 24 * CKB;
+    let dual = s.dual.clone();
+    s.spend(false, Some((cap, dual, data))).expect("runner sets the endpoint");
+}
+
+#[test]
+fn registry_runner_changes_peer_id_rejected() {
+    let mut s = setup();
+    let mut f = s.fields.clone();
+    f.peer_id = b"12D3KooWAnotherPeer".to_vec();
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    assert_script_error(s.spend(false, Some((cap, dual, data))), "Inputs[0].Type", 14);
+}
+
+impl S {
+    /// Makes the live registration's stake a staker's deposit (the staker is neither the owner nor an input).
+    /// Returns (staker, deposit).
+    fn with_staker(&mut self) -> (Key, OutPoint) {
+        let (k, stake) = self.staker();
+        self.fields.stake = stake.clone();
+        (k, stake)
+    }
+}
+
+#[test]
+fn registry_owner_changes_peer_id_without_consent_rejected() {
+    let mut s = setup();
+    let (_, stake) = s.with_staker();
+    let mut f = s.fields.clone();
+    f.peer_id = b"12D3KooWAnotherPeer".to_vec();
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    // without the stake dep the stake rules fail first
+    assert_script_error(s.spend(true, Some((cap, dual.clone(), data.clone()))), "Inputs[0].Type", 18);
+    assert_script_error(s.spend_with_deps(true, Some((cap, dual, data)), None, vec![stake]), "Inputs[0].Type", 21);
+}
+
+#[test]
+fn registry_owner_changes_network_without_consent_rejected() {
+    let mut s = setup();
+    let (staker, stake) = s.with_staker();
+    let mut f = s.fields.clone();
+    f.network = 1;
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    assert_script_error(s.spend_with_deps(true, Some((cap, dual.clone(), data.clone())), None, vec![stake.clone()]), "Inputs[0].Type", 21);
+    // the old consent (for the old network) does not do
+    let old = s.fields.consent_signature(&staker);
+    assert_script_error(s.spend_full(true, Some((cap, dual, data)), None, vec![stake], Some((&old, false))), "Inputs[0].Type", 23);
+}
+
+#[test]
+fn registry_owner_changes_service_pubkey_without_consent_rejected() {
+    let mut s = setup();
+    let (_, stake) = s.with_staker();
+    let new_service = s.env.new_key();
+    let mut f = s.fields.clone();
+    f.service_pubkey = new_service.pubkey;
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let lock = s.env.dual_lock_script(&s.owner.lock_hash(), &new_service.lock_hash());
+    let cap = s.reg_cap();
+    assert_script_error(s.spend_with_deps(true, Some((cap, lock, data)), Some(&new_service), vec![stake]), "Inputs[0].Type", 21);
+}
+
+#[test]
+fn registry_owner_changes_peer_id_with_consent_ok() {
+    let mut s = setup();
+    let (staker, stake) = s.with_staker();
+    let mut f = s.fields.clone();
+    f.peer_id = b"12D3KooWAnotherPeer".to_vec();
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let sig = f.consent_signature(&staker);
+    let (cap, dual) = (s.reg_cap(), s.dual.clone());
+    s.spend_full(true, Some((cap, dual, data)), None, vec![stake], Some((&sig, false))).expect("new peer id with consent");
+}
+
+#[test]
+fn registry_owner_changes_endpoint_needs_no_consent_ok() {
+    let mut s = setup();
+    s.with_staker();
+    let mut f = s.fields.clone();
+    f.endpoint = b"https://node.example.org:8131".to_vec();
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let (cap, dual) = (s.reg_cap() + 30 * CKB, s.dual.clone());
+    s.spend(true, Some((cap, dual, data))).expect("endpoint and payout are no identity fields");
+}
+
+#[test]
+fn registry_runner_owned_short_args_ok() {
+    // Owner = runner with 32-byte dual-lock args: created with the stake owner's consent, refreshed by the
+    // runner, and the dual lock opens with the runner key cell.
+    let mut s = setup();
+    let (staker, stake) = s.staker();
+    let f = RegistryFields { payout_lock_hash: s.service.lock_hash(), stake, ..s.fields.clone() };
+    let data = f.signed_data(&s.monitor, EXPIRY_MS);
+    let sig = f.consent_signature(&staker);
+    let short = s.env.dual_lock_script_short(&s.service.lock_hash());
+    let long = s.runner_owned_lock();
+    let (reg_type, config) = (s.reg_type.clone(), s.config.clone());
+    let tx = s.env.registry_create_runner_owned_tx(&s.service, short.clone(), reg_type.clone(), data.clone(), &config, Some(&sig));
+    s.env.verify_signed(tx, &[&s.service]).expect("runner-owned registration, 32-byte args");
+    // 32 bytes less than `runner ‖ runner`: 32 CKB less capacity
+    assert_eq!(min_capacity(&long, Some(&reg_type), data.len()) - min_capacity(&short, Some(&reg_type), data.len()), 32 * CKB);
+
+    // refresh
+    let cap = min_capacity(&short, Some(&reg_type), data.len());
+    let reg = s.env.cell(cap, short.clone(), Some(reg_type.clone()), data);
+    let w = s.env.runner_wallet_cell(&s.service, WALLET);
+    let new = f.signed_data(&s.monitor, EXPIRY_MS + 3_600_000);
+    let tx = tx_with(
+        vec![s.env.input(&w, 0), s.env.input(&reg, 0)],
+        vec![(output(cap, short.clone(), Some(reg_type)), new), (output(WALLET - FEE, s.service.lock.clone(), None), Bytes::new())],
+    )
+    .as_advanced_builder()
+    .cell_dep(cell_dep(&config))
+    .build();
+    s.env.verify_signed(tx, &[&s.service]).expect("refresh with 32-byte args");
+
+    // without the runner key cell the dual lock stays shut
+    let c = s.env.cell(100 * CKB, short, None, Bytes::new());
+    let anyone = s.env.always_success_script(b"thief");
+    let tx = tx_with(vec![s.env.input(&c, 0)], vec![(output(100 * CKB, anyone, None), Bytes::new())]);
+    assert_script_error(s.env.verify(tx), "Inputs[0].Lock", 6);
+}
+
+#[test]
+fn registry_short_args_runner_mismatch_rejected() {
+    // 32-byte args that are not the system lock of `service_pubkey`.
+    let mut s = setup();
+    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
+    let lock = s.env.dual_lock_script_short(&s.owner.lock_hash());
+    assert_script_error(s.create(data, lock), "Outputs[0].Type", 13);
+}
+
+#[test]
+fn registry_type_args_length_rejected() {
+    let mut s = setup();
+    for len in [31usize, 33, 0] {
+        let op = s.env.registry.clone();
+        let reg_type = s.env.script(&op, Bytes::from(vec![7u8; len]));
+        let mut f = s.fields.clone();
+        f.registry_type_hash = reg_type.calc_script_hash().unpack();
+        let data = f.signed_data(&s.monitor, EXPIRY_MS);
+        let (dual, config) = (s.dual.clone(), s.config.clone());
+        let tx = s.env.registry_create_tx(&s.owner, Some(&s.service), dual, reg_type, data, Some(&config));
+        assert_script_error(s.env.verify_signed(tx, &[&s.owner, &s.service]), "Outputs[0].Type", 5);
+    }
+}
+
+#[test]
+fn registry_short_config_data_rejected() {
+    // A config cell (right type script) with 40 bytes of data.
+    let mut s = setup();
+    let (cell, data) = s.env.ctx.get_cell(&s.config).unwrap();
+    let short = s.env.ctx.create_cell(cell, data.slice(0..40));
+    let data = s.fields.signed_data(&s.monitor, EXPIRY_MS);
+    let dual = s.dual.clone();
+    let tx = s.create_tx(data, dual, false).as_advanced_builder().cell_dep(cell_dep(&short)).build();
+    assert_script_error(s.verify_create(tx), "Outputs[0].Type", 9);
+}
+
+#[test]
+fn registry_config_without_config_type_rejected() {
+    // A Type ID cell with the right data but not `csr-config-type`, and `csr-config-type` with hash type data1.
+    let mut s = setup();
+    let (cell, data) = s.env.ctx.get_cell(&s.config).unwrap();
+    let id: [u8; 32] = cell.type_().to_opt().unwrap().args().raw_data().as_ref().try_into().unwrap();
+    let wrong_hash_type = s.env.ctx.build_script_with_hash_type(&s.env.config_type, ScriptHashType::Data1, Bytes::copy_from_slice(&id)).unwrap();
+    let other = s.env.always_success_script(&id);
+    for t in [wrong_hash_type, other] {
+        let c = s.env.ctx.create_cell(cell.clone().as_builder().type_(Some(t).pack()).build(), data.clone());
+        let reg = s.fields.signed_data(&s.monitor, EXPIRY_MS);
+        let dual = s.dual.clone();
+        let tx = s.create_tx(reg, dual, false).as_advanced_builder().cell_dep(cell_dep(&c)).build();
+        assert_script_error(s.verify_create(tx), "Outputs[0].Type", 8);
+    }
 }

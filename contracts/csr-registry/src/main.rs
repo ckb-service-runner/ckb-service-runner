@@ -1,7 +1,10 @@
-//! `csr-registry` type script, args = `config_type_hash (32)`. See `spec/registry.md`.
+//! `csr-registry` type script, args = `config_id (32)`: the args of the monitor config cell's `csr-config-type`
+//! script. Data: `RegistryV3`. See `spec/registry.md`.
 #![no_std]
 #![no_main]
 
+#[allow(dead_code)]
+mod attest;
 mod consent;
 mod mol;
 
@@ -9,12 +12,13 @@ use alloc::vec::Vec;
 use ckb_std::ckb_constants::{CellField, Source};
 use ckb_std::error::SysError;
 use ckb_std::syscalls;
-use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+use attest::{AttestError, RegistryV3, HASH_TYPE_DATA1, HASH_TYPE_DATA2};
+use k256::ecdsa::Signature;
 
 ckb_std::entry!(program_entry);
 ckb_std::default_alloc!();
 
-include!(concat!(env!("OUT_DIR"), "/dual_lock_code_hash.rs"));
+include!(concat!(env!("OUT_DIR"), "/code_hashes.rs"));
 
 const ERR_ARGS_LEN: i8 = 5;
 const ERR_GROUP_COUNT: i8 = 6;
@@ -22,7 +26,7 @@ const ERR_DATA: i8 = 7;
 const ERR_CONFIG_DEP: i8 = 8;
 const ERR_CONFIG_DATA: i8 = 9;
 const ERR_SIGNATURE: i8 = 10;
-const ERR_ATTEST_MISMATCH: i8 = 11;
+// 11 (attestation copy does not match the entry) is unused since v3: the monitor signs the cell's own fields.
 const ERR_EXPIRED: i8 = 12;
 const ERR_LOCK: i8 = 13;
 const ERR_RUNNER_FIELD: i8 = 14;
@@ -38,6 +42,8 @@ const ERR_STAKE_NO_CONSENT: i8 = 21;
 const ERR_CONSENT_SIGNATURE: i8 = 22;
 /// Stake rule 4: the consent signature was not made by the stake owner over this registration's text.
 const ERR_CONSENT_MISMATCH: i8 = 23;
+/// `expiry_ms − clock_ms` is over 8 days (decision D24 A).
+const ERR_LIFETIME_CAP: i8 = 24;
 
 /// Minimum capacity of the stake deposit: 10,000 CKB.
 const MIN_STAKE: u64 = 1_000_000_000_000;
@@ -47,9 +53,6 @@ const DAO_TYPE_CODE_HASH: [u8; 32] = hex32("82d76d1b75fe2fd9a27dfbaa65a039221a38
 const CELL_DEP_SIZE: usize = 37;
 const DEP_TYPE_CODE: u8 = 0;
 
-/// Domain separator of the attestation message.
-const ATTEST_DOMAIN: &[u8] = b"CSR-ATTEST-v1";
-
 /// `secp256k1_blake160_sighash_all` as deployed in the genesis block of every CKB chain (hash type `type`).
 const SECP_TYPE_HASH: [u8; 32] = hex32("9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8");
 /// Data hash of the same binary (ckb-system-scripts 0.5.4), referenced with hash type data/data1/data2.
@@ -57,8 +60,6 @@ const SECP_DATA_HASH: [u8; 32] = hex32("709f3fda12f561cfacf92273c57a98fede188a3f
 
 const HASH_TYPE_DATA: u8 = 0;
 const HASH_TYPE_TYPE: u8 = 1;
-const HASH_TYPE_DATA1: u8 = 2;
-const HASH_TYPE_DATA2: u8 = 4;
 
 const fn hex32(s: &str) -> [u8; 32] {
     const fn nib(c: u8) -> u8 {
@@ -174,75 +175,6 @@ fn group_count(src: Source) -> Result<usize, i8> {
     }
 }
 
-/// Parsed `Registry` data (field slices are raw molecule encodings).
-struct Registry<'a> {
-    peer_id: &'a [u8],
-    service_pubkey: &'a [u8],
-    payout_lock_hash: &'a [u8],
-    network: &'a [u8],
-    att_peer_id: &'a [u8],
-    att_service_pubkey: &'a [u8],
-    att_network: &'a [u8],
-    att_expiry: &'a [u8],
-    att_signature: &'a [u8; 65],
-    /// Out point of the stake deposit cell (`tx_hash (32) ‖ index (u32 LE)`).
-    stake: &'a [u8; 36],
-}
-
-fn parse_registry(d: &[u8]) -> Option<Registry<'_>> {
-    let [peer_id, service_pubkey, payout_lock_hash, network, attestation, prekeys, stake] = mol::table::<7>(d)?;
-    mol::bytes(peer_id)?;
-    mol::fixed::<33>(service_pubkey)?;
-    mol::fixed::<32>(payout_lock_hash)?;
-    if mol::fixed::<1>(network)?[0] > 2 {
-        return None;
-    }
-    mol::bytes(prekeys)?;
-    let [att_peer_id, att_service_pubkey, att_network, att_expiry, att_signature] = mol::table::<5>(attestation)?;
-    mol::bytes(att_peer_id)?;
-    mol::fixed::<33>(att_service_pubkey)?;
-    mol::fixed::<1>(att_network)?;
-    mol::fixed::<8>(att_expiry)?;
-    Some(Registry {
-        peer_id,
-        service_pubkey,
-        payout_lock_hash,
-        network,
-        att_peer_id,
-        att_service_pubkey,
-        att_network,
-        att_expiry,
-        att_signature: mol::fixed::<65>(att_signature)?,
-        stake: mol::fixed::<36>(stake)?,
-    })
-}
-
-/// Message signed by the monitor: blake2b-256("CSR-ATTEST-v1" ‖ molecule(AttestationBody)).
-fn attestation_message(r: &Registry) -> [u8; 32] {
-    let fields = [r.att_peer_id, r.att_service_pubkey, r.att_network, r.att_expiry];
-    let mut header = [0u8; 20];
-    let mut off = header.len();
-    for (i, f) in fields.iter().enumerate() {
-        header[4 + 4 * i..8 + 4 * i].copy_from_slice(&(off as u32).to_le_bytes());
-        off += f.len();
-    }
-    header[0..4].copy_from_slice(&(off as u32).to_le_bytes());
-    blake2b_256(&[ATTEST_DOMAIN, &header, fields[0], fields[1], fields[2], fields[3]])
-}
-
-/// Recovers the compressed public key from a 65-byte `r ‖ s ‖ recovery_id` signature (low-S required).
-fn recover(msg: &[u8; 32], sig: &[u8; 65]) -> Option<[u8; 33]> {
-    recover_parts(msg, &sig[..64], sig[64])
-}
-
-/// Recovers the compressed public key from `r ‖ s` (64 bytes, low-S) and a recovery id 0–3.
-fn recover_parts(msg: &[u8; 32], rs: &[u8], recid: u8) -> Option<[u8; 33]> {
-    let recid = RecoveryId::from_byte(recid)?;
-    let signature = Signature::from_slice(rs).ok()?;
-    let vk = VerifyingKey::recover_from_prehash(msg, &signature, recid).ok()?;
-    vk.to_encoded_point(true).as_bytes().try_into().ok()
-}
-
 /// Lock hash of a system lock script referencing the sighash code with `args = blake160`.
 fn secp_lock_hash(code_hash: &[u8; 32], hash_type: u8, blake160: &[u8]) -> [u8; 32] {
     // Script table: total 73, offsets 16/48/49, code_hash, hash_type, args (Bytes of 20).
@@ -269,17 +201,15 @@ fn is_sighash_lock_of(lock_hash: &[u8], blake160: &[u8]) -> bool {
     candidates.iter().any(|(c, t)| secp_lock_hash(c, *t, blake160)[..] == *lock_hash)
 }
 
-/// Rule 5: the lock is `csr-dual-lock` and its runner hash is the system lock of `service_pubkey`.
+/// Rule 5: the lock is `csr-dual-lock` (args 32 or 64 bytes) and its runner hash is the system lock of
+/// `service_pubkey`.
 fn check_lock(lock: &[u8], service_pubkey: &[u8]) -> Result<(), i8> {
-    let (code_hash, hash_type, args) = mol::script(lock).ok_or(ERR_LOCK)?;
+    let (code_hash, hash_type, _) = mol::script(lock).ok_or(ERR_LOCK)?;
     if *code_hash != DUAL_LOCK_CODE_HASH || !(hash_type == HASH_TYPE_DATA1 || hash_type == HASH_TYPE_DATA2) {
         return Err(ERR_LOCK);
     }
-    if args.len() != 64 {
-        return Err(ERR_LOCK);
-    }
     let b160 = &blake2b_256(&[service_pubkey])[..20];
-    if is_sighash_lock_of(&args[32..64], b160) {
+    if is_sighash_lock_of(runner_hash(lock)?, b160) {
         Ok(())
     } else {
         Err(ERR_LOCK)
@@ -287,11 +217,12 @@ fn check_lock(lock: &[u8], service_pubkey: &[u8]) -> Result<(), i8> {
 }
 
 /// Rules 1–5 for a registry output.
-fn check_output(config_type_hash: &[u8], r: &Registry, lock: &[u8]) -> Result<(), i8> {
-    // 1. exactly one config cell dep
+fn check_output(config_id: &[u8; 32], r: &RegistryV3, lock: &[u8]) -> Result<(), i8> {
+    // 1. exactly one config cell dep: type `csr-config-type` (data2) with args `config_id`
+    let config_type_hash = attest::config_type_hash(&CONFIG_TYPE_CODE_HASH, config_id);
     let mut config = None;
     for_each_hash(Source::CellDep, CellField::TypeHash, |i, h| {
-        if h.map_or(false, |h| h[..] == *config_type_hash) {
+        if h.map_or(false, |h| *h == config_type_hash) {
             if config.is_some() {
                 return Err(ERR_CONFIG_DEP);
             }
@@ -300,27 +231,16 @@ fn check_output(config_type_hash: &[u8], r: &Registry, lock: &[u8]) -> Result<()
         Ok(true)
     })?;
     let config = cell_data(config.ok_or(ERR_CONFIG_DEP)?, Source::CellDep)?;
-    if config.len() < 41 {
-        return Err(ERR_CONFIG_DATA);
-    }
-    let monitor_pubkey = &config[0..33];
-    let clock_ms = u64::from_le_bytes(config[33..41].try_into().unwrap());
+    let (monitor_pubkey, clock_ms) = attest::config_fields(&config).ok_or(ERR_CONFIG_DATA)?;
 
-    // 2. signed by the monitor
-    let msg = attestation_message(r);
-    match recover(&msg, r.att_signature) {
-        Some(pk) if pk[..] == *monitor_pubkey => {}
-        _ => return Err(ERR_SIGNATURE),
-    }
-    // 3. attestation is about this registry entry
-    if r.att_peer_id != r.peer_id || r.att_service_pubkey != r.service_pubkey || r.att_network != r.network {
-        return Err(ERR_ATTEST_MISMATCH);
-    }
-    // 4. not expired
-    let expiry = u64::from_le_bytes(r.att_expiry.try_into().unwrap());
-    if expiry <= clock_ms {
-        return Err(ERR_EXPIRED);
-    }
+    // 2.–4. signed by the monitor over this entry and this registry deployment, not expired, within the cap
+    let mut own_hash = [0u8; 32];
+    syscalls::load_script_hash(&mut own_hash, 0).map_err(sys)?;
+    attest::check_attestation(r, &own_hash, monitor_pubkey, clock_ms).map_err(|e| match e {
+        AttestError::Signature => ERR_SIGNATURE,
+        AttestError::Expired => ERR_EXPIRED,
+        AttestError::LifetimeOverCap => ERR_LIFETIME_CAP,
+    })?;
     // 5. lock
     check_lock(lock, r.service_pubkey)
 }
@@ -330,13 +250,20 @@ fn owner_present(lock: &[u8]) -> Result<bool, i8> {
     input_with_lock_hash(owner_hash(lock)?)
 }
 
-/// Runner hash (`args[32..64]`) of a registry cell's dual lock.
-fn runner_hash(lock: &[u8]) -> Result<&[u8], i8> {
+/// `(owner, runner)` hashes of a registry cell's dual lock (args 32 bytes: owner = runner; or 64 bytes).
+fn lock_hashes(lock: &[u8]) -> Result<(&[u8], &[u8]), i8> {
     let (_, _, args) = mol::script(lock).ok_or(ERR_LOCK)?;
-    if args.len() != 64 {
-        return Err(ERR_LOCK);
-    }
-    Ok(&args[32..64])
+    attest::dual_lock_hashes(args).ok_or(ERR_LOCK)
+}
+
+/// Runner hash of a registry cell's dual lock.
+fn runner_hash(lock: &[u8]) -> Result<&[u8], i8> {
+    Ok(lock_hashes(lock)?.1)
+}
+
+/// Owner hash of a registry cell's dual lock.
+fn owner_hash(lock: &[u8]) -> Result<&[u8], i8> {
+    Ok(lock_hashes(lock)?.0)
 }
 
 /// Rule 6: the runner key cell of the output's runner lock is an input (proves possession of the service key).
@@ -386,7 +313,7 @@ fn raw_cell_deps() -> Result<Vec<u8>, i8> {
 /// Stake rules 1–4 (`spec/registry.md` §4.1): the registry's `stake` is a code cell dep at a position where its
 /// raw index equals its `Source::CellDep` index, it is a Nervos DAO deposit of at least `MIN_STAKE`, and its
 /// owner (the deposit's lock hash, not necessarily the registry owner) consents.
-fn check_stake(r: &Registry) -> Result<(), i8> {
+fn check_stake(r: &RegistryV3) -> Result<(), i8> {
     let stake = r.stake;
     // 1. position j: the stake entry is code and so is every entry before it
     let deps = raw_cell_deps()?;
@@ -435,7 +362,7 @@ fn bytes_opt(b: &[u8]) -> Option<Option<&[u8]>> {
 
 /// Stake rule 4: an input with the stake owner's lock hash, or a signature of the stake owner over the consent
 /// text in `WitnessArgs.output_type` of the registry output's witness.
-fn check_consent(r: &Registry, stake_owner: &[u8; 32]) -> Result<(), i8> {
+fn check_consent(r: &RegistryV3, stake_owner: &[u8; 32]) -> Result<(), i8> {
     if input_with_lock_hash(stake_owner)? {
         return Ok(());
     }
@@ -446,9 +373,8 @@ fn check_consent(r: &Registry, stake_owner: &[u8; 32]) -> Result<(), i8> {
     Signature::from_slice(&rs).map_err(|_| ERR_CONSENT_SIGNATURE)?;
 
     let peer_id = mol::bytes(r.peer_id).ok_or(ERR_DATA)?;
-    let service_pubkey: &[u8; 33] = r.service_pubkey.try_into().map_err(|_| ERR_DATA)?;
-    let digest = consent::consent_digest(r.network[0], r.stake, service_pubkey, peer_id).ok_or(ERR_DATA)?;
-    let pubkey = recover_parts(&digest, &rs, recid).ok_or(ERR_CONSENT_MISMATCH)?;
+    let digest = consent::consent_digest(r.network, r.stake, r.service_pubkey, peer_id).ok_or(ERR_DATA)?;
+    let pubkey = attest::recover_parts(&digest, &rs, recid).ok_or(ERR_CONSENT_MISMATCH)?;
     if is_sighash_lock_of(stake_owner, &blake2b_256(&[&pubkey])[..20]) {
         Ok(())
     } else {
@@ -456,18 +382,10 @@ fn check_consent(r: &Registry, stake_owner: &[u8; 32]) -> Result<(), i8> {
     }
 }
 
-/// Owner hash (`args[0..32]`) of a registry cell's dual lock.
-fn owner_hash(lock: &[u8]) -> Result<&[u8], i8> {
-    let (_, _, args) = mol::script(lock).ok_or(ERR_LOCK)?;
-    args.get(0..32).ok_or(ERR_LOCK)
-}
-
 fn run() -> Result<(), i8> {
     let script = load_all(|b, o| syscalls::load_script(b, o))?;
-    let (_, _, config_type_hash) = mol::script(&script).ok_or(ERR_ARGS_LEN)?;
-    if config_type_hash.len() != 32 {
-        return Err(ERR_ARGS_LEN);
-    }
+    let (_, _, config_id) = mol::script(&script).ok_or(ERR_ARGS_LEN)?;
+    let config_id: &[u8; 32] = config_id.try_into().map_err(|_| ERR_ARGS_LEN)?;
     let n_in = group_count(Source::GroupInput)?;
     let n_out = group_count(Source::GroupOutput)?;
 
@@ -478,20 +396,25 @@ fn run() -> Result<(), i8> {
     }
 
     let out_data = cell_data(0, Source::GroupOutput)?;
-    let out = parse_registry(&out_data).ok_or(ERR_DATA)?;
+    let out = attest::parse_v3(&out_data).ok_or(ERR_DATA)?;
     let out_lock = cell_lock(0, Source::GroupOutput)?;
 
     // Rule 6 applies on creation and whenever the owner changes the service key / runner lock;
-    // the stake rules on creation and whenever the owner changes the stake or the owner.
+    // the stake rules (with the consent) on creation and whenever the owner changes the stake, the owner,
+    // `peer_id`, `network` or `service_pubkey` (decision D23 A).
     let mut need_runner_key = n_in == 0;
     let mut need_stake = n_in == 0;
     if n_in == 1 {
         let in_lock = cell_lock(0, Source::GroupInput)?;
+        let in_data = cell_data(0, Source::GroupInput)?;
         if owner_present(&in_lock)? {
-            let in_data = cell_data(0, Source::GroupInput)?;
-            let (new_key, new_stake) = match parse_registry(&in_data) {
-                Some(inp) => (inp.service_pubkey != out.service_pubkey, inp.stake != out.stake),
-                None => (true, true),
+            let (new_key, new_identity, new_stake) = match attest::parse_v3(&in_data) {
+                Some(inp) => (
+                    inp.service_pubkey != out.service_pubkey,
+                    inp.peer_id != out.peer_id || inp.network != out.network,
+                    inp.stake != out.stake,
+                ),
+                None => (true, true, true),
             };
             let new_runner = match (runner_hash(&in_lock), runner_hash(&out_lock)) {
                 (Ok(a), Ok(b)) => a != b,
@@ -502,11 +425,11 @@ fn run() -> Result<(), i8> {
                 _ => true,
             };
             need_runner_key = new_key || new_runner;
-            need_stake = new_stake || new_owner;
+            need_stake = new_stake || new_owner || new_key || new_identity;
         } else {
-            // runner path: only attestation and prekeys may change (no stake check: `stake` stays fixed)
-            let in_data = cell_data(0, Source::GroupInput)?;
-            let inp = parse_registry(&in_data).ok_or(ERR_DATA)?;
+            // runner path: only expiry_ms, attestation_sig, endpoint and prekeys may change (no stake check:
+            // `stake` stays fixed)
+            let inp = attest::parse_v3(&in_data).ok_or(ERR_DATA)?;
             if inp.peer_id != out.peer_id
                 || inp.service_pubkey != out.service_pubkey
                 || inp.payout_lock_hash != out.payout_lock_hash
@@ -523,7 +446,7 @@ fn run() -> Result<(), i8> {
             }
         }
     }
-    check_output(config_type_hash, &out, &out_lock)?;
+    check_output(config_id, &out, &out_lock)?;
     if need_runner_key {
         check_runner_key(&out_lock)?;
     }

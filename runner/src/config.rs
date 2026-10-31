@@ -54,6 +54,9 @@ pub struct RankingCfg {
     pub join: bool,
     pub ping_mode: String,
     pub ping_bind: String,
+    /// Public URL of the ping listener (`https://host:port` or `http://host:port`, at most 128 bytes),
+    /// written into the registry cell (`endpoint`) so that the monitor can call the runner; empty = none.
+    pub public_endpoint: String,
 }
 
 fn check_monitor(name: &str, m: &MonitorCfg) -> Result<(), String> {
@@ -188,6 +191,7 @@ impl Default for RankingCfg {
             join: true,
             ping_mode: "inbound".into(),
             ping_bind: "0.0.0.0:8131".into(),
+            public_endpoint: String::new(),
         }
     }
 }
@@ -247,6 +251,36 @@ fn range(what: &str, v: u64, lo: u64, hi: u64) -> Result<(), String> {
     } else {
         Err(format!("{what} must be in {lo}..={hi}, got {v}"))
     }
+}
+
+/// Longest `endpoint` the registry accepts (`spec/registry.md` §2).
+pub const MAX_ENDPOINT_LEN: usize = 128;
+
+/// `ranking.public_endpoint`: empty, or an `https://host:port` / `http://host:port` URL of at most 128
+/// bytes without user info, path, query or fragment.
+fn check_public_endpoint(e: &str) -> Result<(), String> {
+    if e.is_empty() {
+        return Ok(());
+    }
+    let bad = |why: &str| format!("ranking.public_endpoint {why}, got \"{e}\"");
+    if e.len() > MAX_ENDPOINT_LEN {
+        return Err(bad("must be at most 128 bytes"));
+    }
+    if !e.starts_with("https://") && !e.starts_with("http://") {
+        return Err(bad("must start with https:// or http://"));
+    }
+    let u = url::Url::parse(e).map_err(|err| bad(&format!("is not a valid URL ({err})")))?;
+    if u.host_str().unwrap_or("").is_empty()
+        || !u.username().is_empty()
+        || u.password().is_some()
+        || u.query().is_some()
+        || u.fragment().is_some()
+        || e.ends_with('/')
+        || !matches!(u.path(), "" | "/")
+    {
+        return Err(bad("must be scheme://host:port only"));
+    }
+    Ok(())
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -402,6 +436,7 @@ impl Config {
             .ping_bind
             .parse::<SocketAddr>()
             .map_err(|e| format!("ranking.ping_bind is not a valid address: {e}"))?;
+        check_public_endpoint(&self.ranking.public_endpoint)?;
 
         if !self.monitors.is_empty() && self.monitor != MonitorCfg::default() {
             return Err("set either [monitor] or [[monitors]], not both".into());
@@ -565,6 +600,33 @@ mod tests {
         assert!(err("[node]\nrpc_url = \"https://127.0.0.1:8114\"").contains("localhost"));
         Config::parse("[node]\nrpc_url = \"http://[::1]:8114\"").unwrap();
         Config::parse("[node]\nrpc_url = \"http://localhost:8114\"").unwrap();
+    }
+
+    #[test]
+    fn public_endpoint_rules() {
+        assert_eq!(Config::parse("").unwrap().ranking.public_endpoint, "");
+        for ok in [
+            "https://203.0.113.7:8131",
+            "http://node.example.org:8131",
+            "https://[2001:db8::1]:8131",
+        ] {
+            Config::parse(&format!("[ranking]\npublic_endpoint = \"{ok}\"")).unwrap();
+        }
+        let long = format!("https://{}.org:8131", "a".repeat(120));
+        for bad in [
+            "ftp://h:1",
+            "203.0.113.7:8131",
+            "https://h:8131/path",
+            "https://h:8131?x=1",
+            "https://user@h:8131",
+            "https://",
+            long.as_str(),
+        ] {
+            assert!(
+                err(&format!("[ranking]\npublic_endpoint = \"{bad}\"")).contains("public_endpoint"),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

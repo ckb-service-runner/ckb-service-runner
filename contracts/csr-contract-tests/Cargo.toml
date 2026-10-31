@@ -8,3 +8,4 @@ publish = false
 ckb-testtool = "1.1.1"
 csr-schemas = { path = "../csr-schemas" }
 blake2b-ref = "0.3"
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }

@@ -285,7 +285,15 @@ impl Chain {
                     hasher.update(&(i as u64).to_le_bytes());
                     let mut id = [0u8; 32];
                     hasher.finalize(&mut id);
-                    Some(type_id_script(&id))
+                    // `type_` names the Type ID script (e.g. `csr-config-type`); without it the built-in one.
+                    Some(match &o.type_ {
+                        Some(t) => t
+                            .clone()
+                            .as_builder()
+                            .args(Bytes::copy_from_slice(&id).pack())
+                            .build(),
+                        None => type_id_script(&id),
+                    })
                 } else {
                     o.type_.clone()
                 };

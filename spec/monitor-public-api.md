@@ -25,7 +25,7 @@ Availability values are fractions 0..1. Clients ignore unknown extra fields.
   number of ranked nodes. `"provisional"` (boolean) is added; older monitors send none, CSR treats that as `false`.
 - Unranked example: `{"peer_id":"Qm…","rank":null,"of":42,"provisional":true,"availability":{"d7":null,"d30":null,"d365":null},"check_type":"none","attestation":{"status":"none","expiry":null},"last_check_at":0,"stake":{"status":"none","capacity_ckb":null,"outpoint":null}}`
 - `availability` values (`d7`, `d30`, `d365`) may be `null`.
-- `check_type`: `p2p_verified` or `challenge_only`; `none` for a node known only from its registry cell.
+- `check_type`: `p2p_verified` (passed the daily full-node check; the node's identity is proven), `peer_connected` (the node is a peer of the monitor's node), `challenge_only` (older monitors) or `none`. An optional `identity_proven` boolean overrides the dashboard's inference from `check_type`.
 - `stake` and `attestation` are always present, also for unranked nodes.
 - `attestation.status`: `none`, `valid` or `expired`; `expiry` is a unix timestamp or `null`.
 - `stake` (optional; older monitors omit it, CSR then shows nothing): the registration's referenced Nervos DAO

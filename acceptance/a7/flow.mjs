@@ -64,9 +64,10 @@ export async function createPayout(r, ckb) {
   return signAndSubmit(r, out);
 }
 
-export async function attestFile(r, peer) {
+// Integration (Oct 2026): CSR-ATTEST-v2 (contracts v3) signs the stake, so csr-dev attest needs it.
+export async function attestFile(r, peer, stake) {
   const att = path.join(r.dir, `att-${peer}.json`);
-  const a = await csrDev(['attest', '--peer-id', peer, '--service-pubkey', r.id.service_pubkey, '--network', 'devnet', '--out', att]);
+  const a = await csrDev(['attest', '--peer-id', peer, '--stake', stake, '--service-pubkey', r.id.service_pubkey, '--network', 'devnet', '--out', att]);
   assert.equal(a.code, 0, a.stderr);
   return att;
 }

@@ -197,7 +197,7 @@ async function startDevnetMonitor(port, expiryMs) {
       if (req.method !== 'POST' || req.url !== '/v1/attest') { res.statusCode = 404; res.end('{"error":"not_found"}'); return; }
       const j = JSON.parse(body);
       const out = path.join(ROOT, 'target', `mc-att-${Date.now()}.json`);
-      const a = await csrDev(['attest', '--peer-id', j.peer_id, '--service-pubkey', j.service_pubkey, '--network', 'devnet',
+      const a = await csrDev(['attest', '--peer-id', j.peer_id, ...(j.stake ? ['--stake', j.stake] : []), '--service-pubkey', j.service_pubkey, '--network', 'devnet',
         '--expiry-ms', String(expiryMs()), '--out', out]);
       if (a.code !== 0) { res.statusCode = 500; res.end(JSON.stringify({ error: a.stderr })); return; }
       res.statusCode = 200;

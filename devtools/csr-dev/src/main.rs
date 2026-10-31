@@ -25,7 +25,8 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const CONTRACTS: [(&str, &str); 4] = [
+const CONTRACTS: [(&str, &str); 5] = [
+    ("config_type", "csr-config-type"),
     ("dual_lock", "csr-dual-lock"),
     ("registry", "csr-registry"),
     ("job_type", "csr-job-type"),
@@ -58,7 +59,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Deploy the four CSR scripts, the monitor config cell and (devnet) the anyone-can-pay lock
+    /// Deploy the five CSR scripts (contracts v3), the monitor config cell (type `csr-config-type`) and
+    /// (devnet) the anyone-can-pay lock
     DeployContracts {
         #[arg(long, default_value = "deployments/devnet.json")]
         out: PathBuf,
@@ -68,7 +70,8 @@ enum Command {
         /// Vendored anyone-can-pay binary (devnet only; its SHA-256 is checked)
         #[arg(long, default_value = "devtools/vendor/anyone_can_pay")]
         acp: PathBuf,
-        /// Keep the config cell (and monitor key) of this deployments file instead of creating one
+        /// Keep the config cell (and monitor key) of this deployments file instead of creating one; only
+        /// a config cell of type `csr-config-type` with the same binary (a contracts v3 deployment)
         #[arg(long)]
         keep_config: Option<PathBuf>,
         /// With --keep-config: keep every CSR contract whose binary is unchanged (same data hash as
@@ -89,10 +92,13 @@ enum Command {
         #[arg(long, default_value = "deployments/devnet.json")]
         deployments: PathBuf,
     },
-    /// Sign a registry attestation with the monitor key
+    /// Sign a registry attestation (`CSR-ATTEST-v2`) with the monitor key
     Attest {
         #[arg(long)]
         peer_id: String,
+        /// The registration's Nervos DAO deposit: 0x<tx hash>:<index>
+        #[arg(long)]
+        stake: String,
         #[arg(long)]
         service_pubkey: String,
         #[arg(long, value_parser = ["devnet", "testnet", "mainnet"])]
@@ -232,15 +238,27 @@ fn config_data(pubkey: &[u8], clock_ms: u64) -> Vec<u8> {
     d
 }
 
+/// The config cell's type script: `csr-config-type` (`scripts.config_type`, hash type data2) with the
+/// Type ID args; the built-in Type ID script in a contracts v2 file (no `scripts.config_type`).
 fn config_type_script(dep: &Value) -> Result<Script, String> {
     let args = dep["config_cell"]["type_args"]
         .as_str()
         .ok_or("deployments file has no config_cell.type_args")?;
-    Ok(chain::type_id_script(&hex_arg(
-        args,
-        32,
-        "config_cell.type_args",
-    )?))
+    let args = hex_arg(args, 32, "config_cell.type_args")?;
+    if dep["scripts"]["config_type"].is_null() {
+        return Ok(chain::type_id_script(&args));
+    }
+    let (code_hash, _) = dep_script(dep, "config_type")?;
+    Ok(config_type_with(&code_hash, &args))
+}
+
+/// `csr-config-type` with code hash `code_hash` (its data hash), hash type data2 and `args`.
+fn config_type_with(code_hash: &[u8], args: &[u8]) -> Script {
+    Script::new_builder()
+        .code_hash(packed::Byte32::from_slice(code_hash).expect("32 bytes"))
+        .hash_type(packed::Byte::new(ScriptHashType::Data2 as u8))
+        .args(Bytes::copy_from_slice(args).pack())
+        .build()
 }
 
 /// Deploys a binary as a code cell of the funder; returns `(data hash, tx hash)`.
@@ -300,6 +318,14 @@ fn deploy(
         if !k["config_cell"].is_object() || k["monitor_pubkey"].as_str().is_none() {
             return Err("--keep-config: the file has no config_cell / monitor_pubkey".into());
         }
+        if k["scripts"]["config_type"].is_null() {
+            return Err(
+                "--keep-config: the config cell of this file is a plain Type ID cell (contracts v2); \
+                 contracts v3 need a new config cell of type csr-config-type (deploy without \
+                 --keep-config)"
+                    .into(),
+            );
+        }
     }
     let mut bins = Vec::new();
     for (name, file) in CONTRACTS {
@@ -311,6 +337,36 @@ fn deploy(
             )
         })?;
         bins.push((name, bin));
+    }
+    if let Some(k) = &kept {
+        // The registry and the job lock embed the csr-config-type code hash: a kept config cell must be of
+        // the type of this build.
+        let bin = &bins
+            .iter()
+            .find(|(n, _)| *n == "config_type")
+            .expect("listed")
+            .1;
+        let kept_hash = k["scripts"]["config_type"]["code_hash"]
+            .as_str()
+            .unwrap_or("");
+        if !kept_hash.eq_ignore_ascii_case(&h(data_hash(bin))) {
+            return Err(format!(
+                "--keep-config: the kept config cell is of csr-config-type {kept_hash}, but this build's \
+                 csr-config-type is {}; deploy without --keep-config (a new config cell)",
+                h(data_hash(bin))
+            ));
+        }
+        let script = config_type_script(k)?;
+        if !h(script.calc_script_hash().as_slice())
+            .eq_ignore_ascii_case(k["config_cell"]["type_hash"].as_str().unwrap_or(""))
+        {
+            return Err(
+                "--keep-config: config_cell.type_hash does not match csr-config-type".into(),
+            );
+        }
+        if chain.cell_by_type(&script)?.is_none() {
+            return Err("--keep-config: the kept config cell is not live".into());
+        }
     }
     let mut scripts = serde_json::Map::new();
     let mut hashes = std::collections::HashMap::new();
@@ -333,34 +389,39 @@ fn deploy(
             json!({"code_hash": code_hash, "hash_type": "data2", "tx_hash": tx_hash, "index": 0}),
         );
     }
-    scripts.insert("anyone_can_pay".into(), deploy_acp(ctx, acp)?);
-    let (config_cell, config_type_hash, monitor_pubkey) = match kept {
+    // The runner reads no anyone-can-pay entry since A8; the devnet keeps it for the older tests (F-RUN-021).
+    if chain.devnet {
+        scripts.insert("anyone_can_pay".into(), deploy_acp(ctx, acp)?);
+    }
+    let (config_cell, config_id, monitor_pubkey) = match kept {
         Some(k) => {
-            let th = hex_arg(
-                k["config_cell"]["type_hash"].as_str().unwrap_or(""),
+            let id = hex_arg(
+                k["config_cell"]["type_args"].as_str().unwrap_or(""),
                 32,
-                "config_cell.type_hash",
+                "config_cell.type_args",
             )?;
             (
                 k["config_cell"].clone(),
-                th,
+                id,
                 k["monitor_pubkey"].as_str().unwrap_or("").to_string(),
             )
         }
         None => {
-            // Monitor config cell: Type ID, data = pubkey || clock_ms || reserved, lock = monitor key.
+            // Monitor config cell: type csr-config-type (args = Type ID), data = pubkey || clock_ms ||
+            // reserved, lock = monitor key.
             let clock = chain.tip_timestamp()?;
             let data = config_data(&ctx.monitor.pubkey, clock);
+            let code = hex_arg(&hashes["config_type"], 32, "hash")?;
             let tx = chain.build_funded(
                 &ctx.funder,
                 vec![Out {
                     capacity: CONFIG_CELL_CKB * CKB,
                     lock: ctx.monitor.lock(),
-                    type_: None,
+                    type_: Some(config_type_with(&code, &[0u8; 32])),
                     data,
                     type_id: true,
                 }],
-                vec![],
+                vec![dep_script(&json!({"scripts": scripts.clone()}), "config_type")?.1],
             )?;
             let type_script = tx
                 .output(0)
@@ -375,7 +436,7 @@ fn deploy(
                     "tx_hash": tx_hash,
                     "index": 0,
                 }),
-                config_type_hash.as_slice().to_vec(),
+                type_script.args().raw_data().to_vec(),
                 h(ctx.monitor.pubkey),
             )
         }
@@ -386,16 +447,20 @@ fn deploy(
                 .map_err(|e| e.to_string())?,
         )
         .hash_type(packed::Byte::new(ScriptHashType::Data2 as u8))
-        .args(Bytes::copy_from_slice(&config_type_hash).pack())
+        // contracts v3: the registry's args are the config id (`spec/registry.md` §2)
+        .args(Bytes::copy_from_slice(&config_id).pack())
         .build();
-    let d = json!({
+    let mut d = json!({
+        "contracts": "v3",
         "network": chain.network_name(),
-        "rpc": chain.rpc.url,
         "scripts": scripts,
         "config_cell": config_cell,
         "registry_type_hash": h(registry_type.calc_script_hash().as_slice()),
         "monitor_pubkey": monitor_pubkey,
     });
+    if chain.devnet {
+        d["rpc"] = json!(chain.rpc.url); // a local URL: never in the shipped testnet file (F-RUN-021)
+    }
     write_json(out, &d)?;
     Ok(json!({"file": out, "deployments": d, "reused": reused}))
 }
@@ -468,10 +533,18 @@ fn clock_update(ctx: &Ctx, path: &Path) -> Result<Value, String> {
         return Err("config cell data is malformed".into());
     }
     let type_script = config_type_script(&dep)?;
-    let clock = chain.tip_timestamp()?;
+    // csr-config-type lets clock_ms only grow or stay (D24 A).
+    let old_clock = u64::from_le_bytes(data[33..41].try_into().unwrap());
+    let clock = chain.tip_timestamp()?.max(old_clock);
     let mut new_data = data.clone();
     new_data[33..41].copy_from_slice(&clock.to_le_bytes());
     let secp = chain.secp_dep()?;
+    // contracts v3: the config cell's type script runs, so its code cell is a dep.
+    let type_dep = if dep["scripts"]["config_type"].is_null() {
+        None
+    } else {
+        Some(dep_script(&dep, "config_type")?.1)
+    };
     let build = |cap: u64| {
         let out = packed::CellOutput::new_builder()
             .capacity(Pack::<packed::Uint64>::pack(&cap))
@@ -479,6 +552,7 @@ fn clock_update(ctx: &Ctx, path: &Path) -> Result<Value, String> {
             .type_(Some(type_script.clone()).pack())
             .build();
         ckb_types::core::TransactionBuilder::default()
+            .cell_deps(type_dep.clone())
             .cell_dep(secp.clone())
             .input(packed::CellInput::new(cell.out_point.clone(), 0))
             .output(out)
@@ -498,12 +572,19 @@ fn clock_update(ctx: &Ctx, path: &Path) -> Result<Value, String> {
     Ok(json!({"clock_ms": clock, "tx_hash": tx_hash}))
 }
 
-/// Molecule `AttestationBody` and the signed message (`spec/registry.md` §3).
-fn attestation_message(peer_id: &[u8], pubkey: &[u8], network: u8, expiry_ms: u64) -> [u8; 32] {
+/// Molecule `AttestationBodyV2` and the signed `CSR-ATTEST-v2` message (`spec/registry.md` §3).
+fn attestation_message(
+    peer_id: &[u8],
+    pubkey: &[u8],
+    network: u8,
+    expiry_ms: u64,
+    stake: &[u8; 36],
+    registry_type_hash: &[u8; 32],
+) -> [u8; 32] {
     let p = peer_id.len() as u32;
     let mut body = Vec::new();
-    body.extend_from_slice(&(20 + 4 + p + 33 + 1 + 8).to_le_bytes());
-    for off in [20, 24 + p, 57 + p, 58 + p] {
+    body.extend_from_slice(&(142 + p).to_le_bytes());
+    for off in [28, 32 + p, 65 + p, 66 + p, 74 + p, 110 + p] {
         body.extend_from_slice(&off.to_le_bytes());
     }
     body.extend_from_slice(&p.to_le_bytes());
@@ -511,18 +592,33 @@ fn attestation_message(peer_id: &[u8], pubkey: &[u8], network: u8, expiry_ms: u6
     body.extend_from_slice(pubkey);
     body.push(network);
     body.extend_from_slice(&expiry_ms.to_le_bytes());
+    body.extend_from_slice(stake);
+    body.extend_from_slice(registry_type_hash);
     let mut hasher = new_blake2b();
-    hasher.update(b"CSR-ATTEST-v1");
+    hasher.update(b"CSR-ATTEST-v2");
     hasher.update(&body);
     let mut out = [0u8; 32];
     hasher.finalize(&mut out);
     out
 }
 
+/// `0x<tx hash>:<index>` → the 36 bytes of a molecule `OutPoint`.
+fn stake_arg(s: &str) -> Result<[u8; 36], String> {
+    let bad = || format!("bad --stake '{s}': expected 0x<64 hex tx hash>:<index>");
+    let (tx, i) = s.trim().split_once(':').ok_or_else(bad)?;
+    let tx = hex_arg(tx, 32, "--stake tx hash").map_err(|_| bad())?;
+    let i: u32 = i.parse().map_err(|_| bad())?;
+    let mut out = [0u8; 36];
+    out[..32].copy_from_slice(&tx);
+    out[32..].copy_from_slice(&i.to_le_bytes());
+    Ok(out)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn attest(
     ctx: &Ctx,
     peer_id: &str,
+    stake: &str,
     pubkey: &str,
     network: Option<&str>,
     expiry: Option<u64>,
@@ -530,6 +626,21 @@ fn attest(
     deployments: &Path,
 ) -> Result<Value, String> {
     let pk = hex_arg(pubkey, 33, "service pubkey")?;
+    let stake_bytes = stake_arg(stake)?;
+    let dep = read_json(deployments)?;
+    if dep["scripts"]["config_type"].is_null() {
+        return Err(format!(
+            "{} is a contracts v2 deployment; CSR-ATTEST-v2 needs a v3 deployment (deploy-contracts)",
+            deployments.display()
+        ));
+    }
+    let registry_type_hash: [u8; 32] = hex_arg(
+        dep["registry_type_hash"].as_str().unwrap_or(""),
+        32,
+        "registry_type_hash",
+    )?
+    .try_into()
+    .expect("32 bytes");
     let network = network.unwrap_or(ctx.chain.network_name());
     let net_id = match network {
         "mainnet" => 0u8,
@@ -539,7 +650,6 @@ fn attest(
     let expiry_ms = match expiry {
         Some(e) => e,
         None => {
-            let dep = read_json(deployments)?;
             let (_, data, _) = ctx
                 .chain
                 .cell_by_type(&config_type_script(&dep)?)?
@@ -550,7 +660,14 @@ fn attest(
             u64::from_le_bytes(data[33..41].try_into().unwrap()) + WEEK_MS
         }
     };
-    let msg = attestation_message(peer_id.as_bytes(), &pk, net_id, expiry_ms);
+    let msg = attestation_message(
+        peer_id.as_bytes(),
+        &pk,
+        net_id,
+        expiry_ms,
+        &stake_bytes,
+        &registry_type_hash,
+    );
     let (rec, compact) = Secp256k1::new()
         .sign_ecdsa_recoverable(&Message::from_digest(msg), &ctx.monitor.sk)
         .serialize_compact();
@@ -562,6 +679,8 @@ fn attest(
         "network": network,
         "network_id": net_id,
         "expiry_ms": expiry_ms,
+        "stake": format!("{}:{}", h(&stake_bytes[..32]), u32::from_le_bytes(stake_bytes[32..].try_into().unwrap())),
+        "registry_type_hash": h(registry_type_hash),
         "signature": h(sig),
         "monitor_pubkey": h(ctx.monitor.pubkey),
     });
@@ -921,6 +1040,7 @@ fn run(cli: &Cli) -> Result<Value, String> {
         Command::ClockUpdate { deployments } => clock_update(&ctx, deployments),
         Command::Attest {
             peer_id,
+            stake,
             service_pubkey,
             network,
             expiry_ms,
@@ -929,6 +1049,7 @@ fn run(cli: &Cli) -> Result<Value, String> {
         } => attest(
             &ctx,
             peer_id,
+            stake,
             service_pubkey,
             network.as_deref(),
             *expiry_ms,
@@ -1031,9 +1152,36 @@ mod tests {
     #[test]
     fn attestation_message_depends_on_every_field() {
         let pk = [2u8; 33];
-        let m = attestation_message(b"Qm1", &pk, 2, 10);
-        assert_ne!(m, attestation_message(b"Qm2", &pk, 2, 10));
-        assert_ne!(m, attestation_message(b"Qm1", &pk, 1, 10));
-        assert_ne!(m, attestation_message(b"Qm1", &pk, 2, 11));
+        let (st, rt) = ([5u8; 36], [4u8; 32]);
+        let m = attestation_message(b"Qm1", &pk, 2, 10, &st, &rt);
+        assert_ne!(m, attestation_message(b"Qm2", &pk, 2, 10, &st, &rt));
+        assert_ne!(m, attestation_message(b"Qm1", &pk, 1, 10, &st, &rt));
+        assert_ne!(m, attestation_message(b"Qm1", &pk, 2, 11, &st, &rt));
+        assert_ne!(m, attestation_message(b"Qm1", &pk, 2, 10, &[6u8; 36], &rt));
+        assert_ne!(m, attestation_message(b"Qm1", &pk, 2, 10, &st, &[3u8; 32]));
+    }
+
+    #[test]
+    fn attestation_message_matches_the_shared_vector() {
+        let v: Value = serde_json::from_str(include_str!(
+            "../../../acceptance/aiworker-contracts-v3/registry-v3.json"
+        ))
+        .unwrap();
+        let hx = |k: &str| hex::decode(v[k].as_str().unwrap()).unwrap();
+        let mut stake = [0x5au8; 36];
+        stake[32..].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(stake_arg(v["stake"].as_str().unwrap()).unwrap(), stake);
+        let m = attestation_message(
+            v["peer_id"].as_str().unwrap().as_bytes(),
+            &hx("service_pubkey"),
+            1,
+            1_800_000_000_000,
+            &stake,
+            &hx("registry_type_hash").try_into().unwrap(),
+        );
+        assert_eq!(
+            hex::encode(m),
+            v["attestation_message_v2"].as_str().unwrap()
+        );
     }
 }

@@ -1,7 +1,7 @@
 # CSR / CRT / Use Case — Overall Deployment Plan
 
 **Status:** draft v0.1 — 2026-10-18
-**Owner:** Patrick (psawyerberlin)
+**Owner:** Patrick
 **Repos:** `ckb-service-runner` (CSR + Network Monitor), `ckb-revocable-timelock` (CRT), dead man switch (to be created)
 
 ---

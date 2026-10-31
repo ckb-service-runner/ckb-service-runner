@@ -20,3 +20,14 @@ See docs/decisions.md, "Sandbox storage, phase 1".
 
 See `docs/decisions.md`, section "Node identity – runner" (D6 A, D12 A and the "Phase 1 implementation notes"): single configured monitor (no `Config::monitors()` here), own base58 instead of `bs58` (offline build), erase-on-drop instead of a `zeroize` setup that does not exist here, the extra `unknown` identity state, `add_node` gated on `ranking.join` only, 10-minute retries after failures.
 csr-update-check phase 1: see `docs/decisions.md`, section "csr-update-check – the mainnet gate is switched on by a release (D5 B)".
+Contracts v3, phase 1: see `docs/decisions.md`, section "Contracts v3 – one redeploy before mainnet (D20–D24)", subsection "Contracts v3 Phase 1 – contracts" (registry args = config Type ID with the config type hash computed from the embedded `csr-config-type` code hash; `csr-config-type` referenced with hash type data2 because `ckb_std::type_id` brings A-extension atomics; how the shared vector is checked "inside the contract"; job lock signature failures map to error 10; order of the same-index checks; the test-only job-lock variant build; the test crate's fallback `build.rs`).
+
+Contracts v3, phase 2: see `docs/decisions.md`, subsection "Contracts v3 Phase 2 – runner and devtools" (v2/v3 deployments side by side with `register create` refused on v2; no separate refresh command; 64-byte runner-owned args still recognised; format of the monitor's v2 reply; checks before broadcasting; endpoint validation; `csr-dev` `--keep-config` and clock rules).
+
+Contracts v3, phase 2 (retry): the previous run failed only because `acceptance/aiworker-contracts-v3/registry_v3_tests.rs` had been deleted; the runner/devtools work was kept as is, and the files under `acceptance/aiworker-contracts-v3/` are left untouched (`chain.rs` only includes the test module).
+## Documents (csr-docs)
+- First transfer: 700 CKB, stated once in README "Runner wallet, stake and registration" (539 CKB registry cell + fee + ≥61 CKB change ≈ 601, with headroom). The v3 contract is not in this repo; the figure uses the layout in `spec/registry.md`.
+- `identity proven` in the dashboard: `identity_proven` from the monitor if present, else `check_type == p2p_verified`.
+- `deployments/testnet.json`: `rpc` and `anyone_can_pay` removed (nothing in the runner reads them; csr-dev falls back to its constant ACP hash).
+- Milestone history: index in `docs/milestones/README.md`; old URLs in `docs/spec/` and `.github/` changed to `ckb-service-runner/ckb-service-runner`; the owner name was dropped from the CRT plan.
+- A7 history in specs is kept between `<!-- history -->` markers.

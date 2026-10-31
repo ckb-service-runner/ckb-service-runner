@@ -10,36 +10,37 @@ vector Bytes <byte>;
 
 // --- registry ---------------------------------------------------------------
 
-// Fields that are signed by the monitor. `expiry_ms` is the attestation expiry.
-table AttestationBody {
-    peer_id:        Bytes,
-    service_pubkey: Byte33,
-    network:        byte,
-    expiry_ms:      Uint64,
-}
-
-table Attestation {
-    peer_id:        Bytes,
-    service_pubkey: Byte33,
-    network:        byte,
-    expiry_ms:      Uint64,
-    signature:      Signature,
-}
-
 // Out point of a live cell (same layout as `OutPoint` in blockchain.mol).
 struct OutPoint {
     tx_hash: Byte32,
     index:   Uint32,
 }
 
-table Registry {
+// Fields signed by the monitor (`CSR-ATTEST-v2`, decision D21 A):
+// message = blake2b_ckb("CSR-ATTEST-v2" ‖ molecule(AttestationBodyV2)). `expiry_ms` is the attestation expiry,
+// `stake` the registry cell's stake, `registry_type_hash` the hash of the registry cell's own type script.
+table AttestationBodyV2 {
+    peer_id:            Bytes,
+    service_pubkey:     Byte33,
+    network:            byte,
+    expiry_ms:          Uint64,
+    stake:              OutPoint,
+    registry_type_hash: Byte32,
+}
+
+// Registry cell data v3 (decision D20 A). The attestation is not a nested copy: the monitor signs the
+// cell's own `peer_id`, `service_pubkey`, `network`, `expiry_ms` and `stake` (plus the registry type hash).
+table RegistryV3 {
+    version:          byte,         // 3
     peer_id:          Bytes,
     service_pubkey:   Byte33,
     payout_lock_hash: Byte32,       // lock hash of the operator's payout cell
-    network:          byte,
-    attestation:      Attestation,
-    prekeys:          Bytes,
+    network:          byte,         // 0 mainnet, 1 testnet, 2 devnet
     stake:            OutPoint,     // the operator's Nervos DAO deposit cell
+    expiry_ms:        Uint64,       // attestation expiry (monitor clock, ms)
+    attestation_sig:  Signature,    // r ‖ s ‖ recid by the monitor over AttestationBodyV2
+    endpoint:         Bytes,        // UTF-8 "https://host:port" / "http://host:port", may be empty, ≤ 128 bytes
+    prekeys:          Bytes,
 }
 
 // --- job --------------------------------------------------------------------

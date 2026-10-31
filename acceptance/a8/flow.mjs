@@ -55,7 +55,7 @@ export async function registerWithConsent(r, stake) {
   const peer = await peerId();
   assert.equal(m.json.message, consentText({ network: 'devnet', stake, servicePubkey: r.id.service_pubkey, peerId: peer }));
   const sig = await signMessage(m.json.message);
-  const att = await attestFile(r, peer);
+  const att = await attestFile(r, peer, stake);
   const reg = await runCsr([...r.args, 'register', 'create', '--stake', stake, '--consent', sig.signature, '--attestation', att, '--json'],
     { timeoutMs: 180000 });
   assert.equal(reg.code, 0, reg.stderr);
