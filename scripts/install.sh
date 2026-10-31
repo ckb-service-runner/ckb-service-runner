@@ -17,6 +17,7 @@
 #   --key PATH       the node's P2P key (<ckb data dir>/network/secret_key); default: search for it
 #   --no-identity    skip the node-identity proof
 #   --inbound        ping_mode "inbound" (needs TCP 8131 reachable from the internet); default "outbound"
+#   --no-runtime     write [runtime] enabled = false; default true (runs only services you approve)
 #   --no-password    do not ask for a dashboard password
 #   --rpc URL        node RPC (loopback only); default http://127.0.0.1:8114
 #   -y, --yes        do not ask questions (takes the first key found; no password)
@@ -35,6 +36,7 @@ RPC_GIVEN=0
 KEY=""
 IDENTITY=1
 PING_MODE="outbound"
+RUNTIME=true
 PASSWORD=1
 YES=0
 TMP=""
@@ -62,6 +64,7 @@ parse_args() {
       --key) KEY="${2:?--key needs a path}"; shift ;;
       --no-identity) IDENTITY=0 ;;
       --inbound) PING_MODE="inbound" ;;
+      --no-runtime) RUNTIME=false ;;
       --no-password) PASSWORD=0 ;;
       --rpc) RPC="${2:?--rpc needs a URL}"; RPC_GIVEN=1; shift ;;
       -y|--yes) YES=1 ;;
@@ -163,8 +166,9 @@ setup_user_and_config() {
   sed -i \
     -e "s|^rpc_url = \"[^\"]*\"|rpc_url = \"$RPC\"|" \
     -e "s|^ping_mode = \"[^\"]*\"|ping_mode = \"$PING_MODE\"|" \
+    -e "/^\[runtime\]/,/^\[/ s|^enabled = [a-z]*|enabled = $RUNTIME|" \
     "$CONF"
-  ok "wrote $CONF (testnet, ping_mode = \"$PING_MODE\")"
+  ok "wrote $CONF (testnet, ping_mode = \"$PING_MODE\", runtime enabled = $RUNTIME)"
 }
 
 find_keys() { # prints candidate P2P key files, one per line
@@ -288,6 +292,7 @@ summary() {
   printf '  Dashboard     http://127.0.0.1:8130  (on this machine)\n'
   printf '  From another  ssh -L 8130:127.0.0.1:8130 %s@%s   then open http://127.0.0.1:8130\n' "${SUDO_USER:-user}" "$(hostname)"
   printf '  Identity      %s\n' "${id:-unknown}"
+  printf '  Runtime       %s\n' "$(sed -n '/^\[runtime\]/,/^\[/ s/^enabled = //p' "$CONF" | sed 's/ .*//; s/^true$/on (runs only services you approve on the Services page)/; s/^false$/off (switch it on in the dashboard)/')"
   printf '  Logs          sudo journalctl -u csr -f\n'
   printf '  Config        %s  (then: sudo systemctl restart csr)\n' "$CONF"
   printf '\n  Next (optional): register to run service jobs. See the dashboard page "Wallet & registration"\n'
