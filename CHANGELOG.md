@@ -1,7 +1,7 @@
 # Changelog
 
 ## 0.5.1
-- Installer: the node identity uses the key of the node's own folder first (the `ckb.toml` that serves the instance's RPC port), instead of asking about every key on the disk; a key that belongs to another node or cannot be read is removed from the config and the next one is tried.
+- Installer: the node identity uses the key of the node's own folder first (the `ckb.toml` that serves the instance's RPC port), instead of asking about every key on the disk; a key that belongs to another node or cannot be read is removed from the config and the next one is tried. Keys of running nodes (`ckb run -C <dir>`) and of disks mounted under `/mnt` or `/media` are found.
 
 ## 0.5.0
 - **Mainnet as a node dashboard** (D29–D39): the installer finds every CKB node on the machine and installs one instance per network: `csr@testnet` (`/var/lib/csr/csr-testnet.toml`, dashboard 8130, ping 8131) and `csr@mainnet` (`csr-mainnet.toml`, dashboard 8140, ping 8141), each with its own update helper `csr-update@<network>.path`. `--rpc` may be given twice. An older install (`csr.toml`, `csr.service`) is migrated to `csr-<network>.toml` and `csr@<network>`, keeping its settings and ports. On mainnet the Service Runtime stays inactive until 1.x.

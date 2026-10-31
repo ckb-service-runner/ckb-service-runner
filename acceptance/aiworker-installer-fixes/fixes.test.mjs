@@ -111,3 +111,20 @@ test('a mismatched or unreadable key is cleared and the next one is tried', () =
   assert.match(body, /unreadable\)[\s\S]{0,120}clear_key_in_config/);
   assert.match(body, /keys_for_node "\$RPC"/);
 });
+
+test('running_node_dirs reads -C of running ckb processes', async () => {
+  const r = await sh(`ps() { printf '%s\\n' '/usr/local/bin/ckb run -C /mnt/ps_data/02_NervosNetwork/BlockChainData' 'ckb run --config-dir /x/testnet' 'vim ckb run -C /nope' '/usr/bin/ckb-light-client run -C /light'; }; running_node_dirs`);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(r.stdout.trim().split('\n'), ['/mnt/ps_data/02_NervosNetwork/BlockChainData', '/x/testnet']);
+});
+
+test('find_keys lists the running nodes first, each key once, and searches each disk under /mnt', async () => {
+  const d = tmp();
+  const key = path.join(d, 'node', 'data', 'network', 'secret_key');
+  fs.mkdirSync(path.dirname(key), { recursive: true });
+  fs.writeFileSync(key, 'x');
+  const r = await sh(`running_node_dirs() { echo "${path.join(d, 'node')}"; echo /does/not/exist; }; find() { echo "${key}"; echo /other/data/network/secret_key; }; find_keys`);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(r.stdout.trim().split('\n'), [key, '/other/data/network/secret_key']);
+  assert.match(fs.readFileSync(INSTALL, 'utf8'), /\/mnt\/\* \/media\/\*/);
+});

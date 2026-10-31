@@ -736,3 +736,6 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
   including the AIWorker devnet keys, and a rejected key stayed in the config (identity "unreadable"). Now the key whose
   `ckb.toml` serves the instance's RPC URL is the only candidate when there is one (`keys_for_node`); a `mismatch` or
   `unreadable` key is removed from the config (`clear_key_in_config`) and the next candidate is tried.
+  The mainnet key (`/mnt/ps_data/…`, its own disk) was not found because `find -xdev` from `/mnt` does not enter other
+  filesystems: `find_keys` now lists the keys of running `ckb run -C <dir>` processes first and searches each
+  `/mnt/*` and `/media/*` as its own root.

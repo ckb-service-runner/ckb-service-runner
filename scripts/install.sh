@@ -286,10 +286,21 @@ dashboard_port() { # the port of [dashboard] bind in csr-NET.toml
   sed -n '/^\[dashboard\]/,/^\[/ s/^bind = "[^"]*:\([0-9]*\)".*/\1/p' "$DATA/csr-$1.toml" | head -1
 }
 
-find_keys() { # prints candidate P2P key files, one per line
-  local roots=() r
-  for r in /var/lib /home /root /opt /srv /data /mnt /media /usr/local; do [ -d "$r" ] && roots+=("$r"); done
-  find "${roots[@]}" -xdev -maxdepth 8 -type f -path '*/network/secret_key' 2>/dev/null | sort -u
+running_node_dirs() { # the -C <dir> of every running `ckb run`
+  ps -eo args= 2>/dev/null | awk '$1 ~ /(^|\/)ckb$/ && $2 == "run" {
+    for (i = 3; i < NF; i++) if ($i == "-C" || $i == "--config-dir") print $(i + 1) }'
+}
+
+find_keys() { # prints candidate P2P key files, one per line: running nodes first, then a disk search
+  local roots=() r d
+  for r in /var/lib /home /root /opt /srv /data /mnt /media /mnt/* /media/* /usr/local; do [ -d "$r" ] && roots+=("$r"); done
+  {
+    while IFS= read -r d; do
+      if [ -n "$d" ] && [ -f "$d/data/network/secret_key" ]; then echo "$d/data/network/secret_key"; fi
+    done < <(running_node_dirs)
+    # each disk mounted under /mnt or /media is its own root (-xdev would not enter it from /mnt)
+    find "${roots[@]}" -xdev -maxdepth 8 -type f -path '*/network/secret_key' 2>/dev/null | sort -u
+  } | awk '!seen[$0]++'
 }
 
 set_key_in_config() { # set_key_in_config PATH
