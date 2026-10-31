@@ -671,3 +671,34 @@ Contracts v3, phase 2 (retry): the previous run failed only because `acceptance/
 - `deployments/testnet.json`: `rpc` and `anyone_can_pay` removed (nothing in the runner reads them; csr-dev falls back to its constant ACP hash).
 - Milestone history: index in `docs/milestones/README.md`; old URLs in `docs/spec/` and `.github/` changed to `ckb-service-runner/ckb-service-runner`; the owner name was dropped from the CRT plan.
 - A7 history in specs is kept between `<!-- history -->` markers.
+
+## Mainnet dashboard release (D29–D39, 31 Oct 2026)
+
+Taken by the project owner. CSR goes to mainnet now as a **node dashboard only**; the Service Runtime stays
+testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mon-rank-without-stake` and
+`csr-mainnet-dashboard`.
+
+- **D29 – Ranking never needs a stake.** Every runner that joins the ranking is ranked, on every network,
+  registered or not. A registration (DAO stake + registry cell) is needed **only to activate the Service Runtime**
+  (job assignment). The monitor keeps publishing the stake as `stake_status` and sets a `FLAG_STAKED` bit in the
+  epoch leaves, so apps (CRT) pick only staked runners for jobs. Replaces the stake-only ranking of
+  fix-monitor-stake-ranking (registry mode).
+- **D30 – Node identity proof stays mandatory for ranking** (P2P key, `require_identity_proof`).
+- **D31 – Network is auto-detected, no toggle.** The installer reads the chain of each local node and writes
+  `network` itself; the dashboard shows the network but cannot change it. A machine running a testnet and a
+  mainnet node gets **both instances** installed.
+- **D32 – Two instances per machine are supported**: `csr@testnet` and `csr@mainnet` (systemd template), one
+  shared data root (`/var/lib/csr/<network>/` is already separate per network), configs `csr-<network>.toml`,
+  dashboards 8130 (testnet) and 8140 (mainnet), ping listeners 8131 and 8141.
+- **D33 – Mainnet monitor**: its own instance on pswsl beside the testnet monitor, reached through the Strato
+  VPS like testnet, with its own signing key.
+- **D34 – Mainnet monitor URL and public key ship in `config/networks/mainnet.toml`** with the release.
+- **D35 – Versions**: the mainnet dashboard ships as v0.x, the same version line as testnet. **v1.x is reserved
+  for the release that unlocks the mainnet runtime** (D5 B: the gate is switched on by a signed release).
+- **D36 – Phase 2 gate** (mainnet runtime): at least **4 months** (120 days) of monitor history and **≥ 20
+  ranked runners**, with the existing diversity limits (largest ASN share ≤ 25 %, largest country share ≤ 50 %).
+  Was 12 months / 60 runners. Monitor `gate_min_days = 120`, `gate_min_runners = 20`.
+- **D37 – `MIN_STAKE` stays 10,000 CKB on testnet and mainnet** (closes open point (1) of D-A7-1).
+- **D38 – External contract review**: decided later, before the 1.x release.
+- **D39 – Testnet tester support**: no job simulator on mainnet; mainnet carries real use only. Whether to
+  sponsor the testnet stake of the first testers is still open.
