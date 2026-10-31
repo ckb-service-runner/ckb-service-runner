@@ -250,9 +250,13 @@ impl Renewer {
         if self.checked.is_some_and(|t| t.elapsed() < every) {
             return;
         }
+        // Auto renew is its own setting (on by default), independent of the service runtime; the
+        // node must be synced for the refresh transaction.
         let r2 = state.node.read().unwrap().report.state;
-        let (rt, _) = crate::app::runtime_state(cfg.runtime.enabled, &cfg.network, r2);
-        if rt == "off" || crate::wallet::busy_reason(&state.db).is_some() {
+        if !cfg.registry.auto_renew
+            || r2 != crate::node::r2::R2State::Synced
+            || crate::wallet::busy_reason(&state.db).is_some()
+        {
             return;
         }
         let chain = match crate::chain::Chain::connect(cfg, &state.service_pubkey).await {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+- New dashboard look (ckbdash style) with a light and a dark theme (the theme button stays in the header).
+- Overview: node card (tip, behind, tip age, peers, sync bar, epoch, explorer link), CSR monitor card with rank, score and its terms, Wallet & registration card (balance, stake, attestation expiry, next renewal), service runtime card (job counts, tips; the Runtime switch now saves the setting), last 24 hours sparklines, machine bars, CSR network card, update card. A warning card when the attestation expires within 3 days without automatic renewal.
+- Node page: the node card with tip hash and node ID, node identity, tip lag history, peers and tx pool.
+- Auto renew (`[registry] auto_renew`, on by default): the attestation is renewed 2 days before it expires whether the service runtime is on or off (before: only with the runtime on). Switch and renewal timeline on the Wallet & registration page; also in Settings.
+- API: `/api/status` has `hostname` and `links` (explorer and node list URLs come from the runner, the assets keep no external URLs); `/api/node` has `epoch_index`, `epoch_length`, `tip_timestamp_ms`, `node_id`, `rpc_url`; `/api/registry` has `auto_renew` and `next_renewal_ms`; `/api/network` passes on the monitor's `score` and `metrics`.
+
 ## 0.3.1
 - Dashboard: elements marked `hidden` stay hidden (the "Remove the registration? Yes, remove / Cancel" confirmation was always visible because `.row` set `display:flex`).
 - A new registration (`csr register create`, dashboard "Register") clears the error of an earlier attestation renewal.

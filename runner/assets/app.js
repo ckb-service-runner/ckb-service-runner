@@ -187,81 +187,323 @@
 
   var pages = {};
 
+  // ---- shared pieces of the v0.4.0 pages ----
+  function fmtInt(n) { return typeof n === 'number' ? n.toLocaleString('en-US') : '–'; }
+  function fmtAgo(ms) {
+    if (typeof ms !== 'number') return '–';
+    var s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm';
+    return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+  }
+  function fmtLeft(ms) {
+    var s = Math.round((ms - Date.now()) / 1000);
+    if (s <= 0) return 'expired';
+    var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
+    return d ? d + ' d ' + h + ' h' : h + ' h ' + Math.floor((s % 3600) / 60) + ' m';
+  }
+  function fmtDate(ms) {
+    return typeof ms === 'number' ? new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '–';
+  }
+  function ckbShort(sh) {
+    if (typeof sh !== 'number') return '–';
+    return (sh / 1e8).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  }
+  function head(c, title, badge, cls) {
+    var h = el('div', 'card-head');
+    h.appendChild(el('h2', '', title));
+    if (badge) h.appendChild(el('span', 'pill ' + (cls || ''), badge));
+    c.appendChild(h);
+    return h;
+  }
+  function tile(label, value, unit, cls) {
+    var t = el('div', 'tile');
+    t.appendChild(el('p', 'lbl', label));
+    var b = el('p', 'big' + (cls ? ' ' + cls : ''), value);
+    if (unit) { b.appendChild(document.createTextNode(' ')); b.appendChild(el('small', '', unit)); }
+    t.appendChild(b);
+    return t;
+  }
+  function kv(c, pairs) {
+    var box = el('div');
+    pairs.forEach(function (p) {
+      var r = el('div', 'kv');
+      r.appendChild(el('span', '', p[0]));
+      var v = el('span', p[2] || '');
+      if (p[1] instanceof Node) v.appendChild(p[1]); else v.textContent = p[1] === null || p[1] === undefined ? '–' : String(p[1]);
+      r.appendChild(v);
+      box.appendChild(r);
+    });
+    c.appendChild(box);
+    return box;
+  }
+  function bar(fraction, cls) {
+    var b = el('div', 'bar' + (cls ? ' ' + cls : ''));
+    var s = el('span');
+    s.style.width = Math.max(0, Math.min(100, fraction * 100)).toFixed(1) + '%';
+    b.appendChild(s);
+    return b;
+  }
+  function metric(c, label, value, fraction, cls) {
+    var m = el('div', 'metric');
+    var r = el('div', 'mrow');
+    r.appendChild(el('span', '', label));
+    r.appendChild(el('span', 'mono', value));
+    m.appendChild(r);
+    m.appendChild(bar(fraction, cls));
+    c.appendChild(m);
+  }
+  // A 24 h sparkline of one sample field; `now` is the value shown at the right.
+  function spark(samples, key, label, now) {
+    var row = el('div', 'spark');
+    row.appendChild(el('span', '', label));
+    var pts = samples.filter(function (s) { return typeof s[key] === 'number'; });
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 240 40');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.setAttribute('role', 'img');
+    if (pts.length >= 2) {
+      var t0 = pts[0].t, t1 = pts[pts.length - 1].t, lo = Infinity, hi = -Infinity;
+      pts.forEach(function (s) { lo = Math.min(lo, s[key]); hi = Math.max(hi, s[key]); });
+      var span = hi - lo || 1;
+      var line = pts.map(function (s) {
+        return ((s.t - t0) / Math.max(1, t1 - t0) * 240).toFixed(1) + ',' + (36 - (s[key] - lo) / span * 30).toFixed(1);
+      }).join(' ');
+      var area = document.createElementNS(NS, 'polyline');
+      area.setAttribute('class', 'area'); area.setAttribute('points', '0,40 ' + line + ' 240,40');
+      var pl = document.createElementNS(NS, 'polyline');
+      pl.setAttribute('class', 'line'); pl.setAttribute('points', line);
+      svg.appendChild(area); svg.appendChild(pl);
+      svg.setAttribute('aria-label', label + ', last 24 hours, from ' + Math.round(lo) + ' to ' + Math.round(hi));
+    } else {
+      svg.setAttribute('aria-label', label + ': no data yet');
+    }
+    row.appendChild(svg);
+    row.appendChild(el('span', '', now));
+    return row;
+  }
+  function links() { return (state.status && state.status.links) || {}; }
+  function linkBtn(text, href) {
+    var a = el('a', 'btn', text + ' ↗'); a.href = href; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    return a;
+  }
+  // The CKB node card shared by Overview and Node: tiles, sync bar, facts.
+  function nodeHero(c, n, s, full) {
+    c.textContent = '';
+    var net = (s && s.network) || '';
+    var synced = n.tip_lag === 0 || (typeof n.tip_lag === 'number' && n.tip_lag <= 2);
+    var r2 = s && s.r2 ? s.r2.state : (synced ? 'Synced' : 'Syncing');
+    var hh = el('div', 'hero-head');
+    var left = el('div');
+    left.appendChild(el('p', 'eyebrow', 'CKB full node'));
+    left.appendChild(el('h2', '', 'CKB ' + (net ? net.charAt(0).toUpperCase() + net.slice(1) : 'node')));
+    left.appendChild(el('p', 'hero-sub', [n.node_type || 'ckb', n.node_version, n.rpc_url].filter(Boolean).join(' · ')));
+    hh.appendChild(left);
+    hh.appendChild(el('span', 'pill ' + r2, r2.toUpperCase()));
+    c.appendChild(hh);
+    var tiles = el('div', 'tiles');
+    var tipT = tile('Tip block', fmtInt(n.tip_number));
+    var ex = links().explorer;
+    if (typeof n.tip_number === 'number' && ex) {
+      var b = tipT.querySelector('.big'); b.textContent = '';
+      var a = el('a', '', fmtInt(n.tip_number)); a.href = ex + '/block/' + n.tip_number; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      b.appendChild(a);
+    }
+    tiles.appendChild(tipT);
+    tiles.appendChild(tile('Behind', typeof n.tip_lag === 'number' ? fmtInt(n.tip_lag) : '–', 'blocks', n.tip_lag === 0 ? 'good' : ''));
+    tiles.appendChild(tile('Tip age', fmtAgo(n.tip_timestamp_ms)));
+    var peers = (n.peers_in || 0) + (n.peers_out || 0);
+    tiles.appendChild(tile('Peers', n.peers_in == null ? '–' : String(peers), n.peers_in == null ? '' : n.peers_in + '↓ ' + n.peers_out + '↑'));
+    c.appendChild(tiles);
+    var frac = typeof n.best_known === 'number' && n.best_known > 0 && typeof n.tip_number === 'number' ? n.tip_number / n.best_known : 0;
+    c.appendChild(bar(frac, synced ? '' : 'warn'));
+    var f = el('div', 'facts');
+    function fact(label, value) { var sp = el('span', '', label + ' '); sp.appendChild(el('b', '', value)); f.appendChild(sp); }
+    if (typeof n.epoch === 'number') fact('Epoch', fmtInt(n.epoch) + (typeof n.epoch_index === 'number' ? ' · ' + fmtInt(n.epoch_index) + '/' + fmtInt(n.epoch_length) : ''));
+    fact('Best known', fmtInt(n.best_known));
+    fact('Indexer lag', n.indexer_lag == null ? '–' : fmtInt(n.indexer_lag));
+    if (n.tx_pool && n.tx_pool.pending != null) fact('Tx pool', n.tx_pool.pending + ' pending · ' + n.tx_pool.proposed + ' proposed');
+    var idn = n.identity && n.identity.state;
+    if (idn) fact('Node identity', idn);
+    c.appendChild(f);
+    if (full) {
+      var g = el('div', 'facts mono');
+      if (n.tip_hash) g.appendChild(el('span', '', 'Tip hash ' + n.tip_hash));
+      if (n.node_id) g.appendChild(el('span', '', 'Node ID ' + n.node_id));
+      c.appendChild(g);
+    }
+    if (n.identity && n.identity.message && idn !== 'proven') c.appendChild(el('p', idn === 'unknown' ? 'msg' : 'msg err', n.identity.message));
+    if (n.net_rpc_hint) c.appendChild(el('p', 'msg err', n.net_rpc_hint));
+    var lk = el('div', 'links'), L = links();
+    if (L.explorer) lk.appendChild(linkBtn('Explorer', L.explorer + (typeof n.tip_number === 'number' ? '/block/' + n.tip_number : '')));
+    if (L.nodes_list) lk.appendChild(linkBtn('nodes.ckb.dev', L.nodes_list));
+    if (lk.children.length) c.appendChild(lk);
+  }
+
   pages.overview = function (root) {
+    var heroC = el('section', 'card accent hero');
     var g = el('div', 'grid');
-    var cs = card('Network'), cn = card('Node'), cr = card('Runtime'), cres = card('Resources');
-    var cf = card('Wallet'), ck = card('CSR monitor'), cw = card('Attestation'), cu = card('Update');
-    [cs, cn, cr, cres, cf, ck, cu].forEach(function (c) { g.appendChild(c); });
-    root.appendChild(g);
+    var ck = card('CSR monitor'), cw = el('section', 'card'), cr = el('section', 'card');
+    var ch = el('section', 'card'), cres = el('section', 'card');
+    var cn = el('section', 'card'), cu = card('Update');
+    var cx = el('section', 'card'); cx.hidden = true;
+    [ck, cw, cr].forEach(function (c) { g.appendChild(c); });
+    var g2 = el('div', 'grid'); [ch, cres].forEach(function (c) { g2.appendChild(c); });
+    var g3 = el('div', 'grid'); [cn, cu].forEach(function (c) { g3.appendChild(c); });
+    [cx, heroC, g, g2, g3].forEach(function (x) { root.appendChild(x); });
     var upd = updateCard(cu);
-    function paint() {
+    var last = { node: null };
+
+    function paintStatus() {
       var s = state.status;
       if (!s) return;
       upd.notice(s.update);
-      [cs, cn, cr, ck].forEach(function (c) { while (c.children.length > 1) c.removeChild(c.lastChild); });
-      dl(cs, [['Network', s.network], ['Version', s.version], ['Uptime', fmtUp(s.uptime_s)], ['Peer ID', s.peer_id], ['Service key', s.service_pubkey]]);
-      dl(cn, [['R2 state', pill(s.r2.state)], ['Reasons', (s.r2.reasons || []).join('; ') || 'none']]);
-      dl(cr, [['State', pill(s.runtime.state)], ['Reason', s.runtime.reason], ['Mainnet unlock', s.mainnet_runtime_unlocked ? 'yes' : 'no']]);
-      var locked = s.network === 'mainnet' && !s.mainnet_runtime_unlocked;
-      var tg = el('label', 'runtime-toggle' + (locked ? ' disabled' : ''));
-      var cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.id = 'runtime-toggle'; cb.checked = s.runtime.state === 'active'; cb.disabled = locked;
-      tg.appendChild(cb); tg.appendChild(document.createTextNode(' Runtime'));
-      cr.appendChild(tg);
-      if (locked) cr.appendChild(el('p', 'msg', 'Services start on mainnet in Phase 2'));
-      var r = s.ranking || {};
-      dl(ck, [['Join', r.join ? 'yes' : 'no'], ['Mode', r.ping_mode], ['Last check ok', r.last_check_ok_at ? new Date(r.last_check_ok_at * 1000).toLocaleString() : 'never']]);
-      if (r.join) {
-        var rk = el('div');
-        ck.appendChild(rk);
-        api('/api/network').then(function (j) {
-          var n = j.node;
-          dl(rk, [['Rank', n ? rankText(n) : 'not ranked'], ['Availability 30 d', n ? pct(n.availability.d30) : '–']]);
-          if (j.stale) rk.appendChild(el('p', 'msg stale', 'stale'));
-          var ol = el('a', '', 'Open CSR monitor'); ol.href = '#/network'; rk.appendChild(ol);
-        }).catch(function () {});
-      } else {
-        ck.appendChild(el('p', '', 'Join the CSR monitor to see stats'));
-      }
+      if (last.node) nodeHero(heroC, last.node, s, false);
     }
-    function payoutCard() {
-      api('/api/earnings').then(function (e) {
-        while (cf.children.length > 1) cf.removeChild(cf.lastChild);
-        dl(cf, [['Balance', ckb((e.wallet || {}).capacity_shannons)], ['Tips earned', ckb(e.tips_shannons)], ['Settlements', e.settlements.length]]);
-        var a = el('a', '', 'Wallet & registration'); a.href = '#/wallet'; cf.appendChild(a);
-        api('/api/wallet').then(function (w) {
-          if (w.sweep_warning) cf.insertBefore(el('p', 'msg err', w.sweep_warning), a);
-        }).catch(function () {});
+    function loadNode() {
+      api('/api/node').then(function (n) { last.node = n; nodeHero(heroC, n, state.status, false); }).catch(function () {});
+    }
+    function loadMonitor() {
+      api('/api/network').then(function (j) {
+        ck.textContent = '';
+        var n = j.node;
+        var CT = { p2p_verified: 'P2P VERIFIED', peer_connected: 'PEER CONNECTED', challenge_only: 'CHALLENGE ONLY' };
+        var hd = head(ck, 'CSR monitor', n ? (CT[n.check_type] || null) : null, n && n.check_type === 'p2p_verified' ? 'ok' : '');
+        if (n && hd.lastChild && hd.lastChild.title !== undefined) hd.lastChild.title = checkType(n.check_type) || '';
+        if (!j.join) {
+          ck.appendChild(el('p', 'note', j.message || 'Join the CSR monitor to see stats'));
+          cn.textContent = '';
+          head(cn, 'CSR network');
+          cn.appendChild(el('p', 'note', 'Join the CSR monitor (Settings) to see the network, your rank and your score. Being ranked is needed to get jobs.'));
+          return;
+        }
+        stale(ck, j);
+        var big = el('div', 'row');
+        var rank = el('p', 'big xl good', n && typeof n.rank === 'number' ? '#' + n.rank : '–');
+        big.appendChild(rank);
+        var sub = el('p', 'note', n && typeof n.rank === 'number' ? 'of ' + n.of + ' ranked runners' : (n && n.provisional ? 'provisional: ranked after 7 days' : 'not ranked yet'));
+        if (n && typeof n.score === 'number') { sub.appendChild(el('br')); sub.appendChild(document.createTextNode('score ')); sub.appendChild(el('b', 'mono', n.score.toFixed(1))); sub.appendChild(document.createTextNode(' / 100')); }
+        big.appendChild(sub);
+        ck.appendChild(big);
+        var m = n && n.metrics;
+        if (m) {
+          metric(ck, 'Availability, 30 days', pct(m.a30), m.a30);
+          metric(ck, 'In sync, 30 days', pct(m.s30), m.s30);
+          metric(ck, 'P2P checks, 30 days', pct(m.f30), m.f30);
+          metric(ck, 'Age (full at 1 year)', m.age_days + ' days', m.t);
+        } else if (n) {
+          metric(ck, 'Availability, 30 days', pct(n.availability.d30), n.availability.d30 || 0);
+        }
+        var ol = el('a', '', 'Open the CSR monitor →'); ol.href = '#/network'; ck.appendChild(ol);
+        // network card
+        cn.textContent = '';
+        head(cn, 'CSR network');
+        var nw = j.network;
+        var tl = el('div', 'tiles sep');
+        tl.appendChild(tile('Runners', nw ? fmtInt(nw.nodes_total) : '–'));
+        tl.appendChild(tile('Reachable', nw ? fmtInt(nw.nodes_reachable) : '–'));
+        tl.appendChild(tile('Countries', nw && nw.countries ? String(nw.countries.length) : '–'));
+        cn.appendChild(tl);
+        var p = el('p', 'note', 'Monitor ' + (j.monitor_url || '–') + ' · last successful check ' + ((j.ping && j.ping.last_check_ok_at) ? fmtAgo(j.ping.last_check_ok_at * 1000) + ' ago' : 'never') + '.');
+        p.style.marginTop = '.7rem';
+        cn.appendChild(p);
+        if (j.monitor_url) { var lk = el('div', 'links'); lk.style.marginTop = '.7rem'; lk.appendChild(linkBtn('CSR monitor', j.monitor_url)); cn.appendChild(lk); }
       }).catch(function () {});
     }
-    function expiryWarning() {
-      api('/api/registry').then(function (r) {
-        if (cw.parentNode) cw.parentNode.removeChild(cw);
-        var exp = r.attestation_expiry_ms;
-        if (!r.registered || !exp) return;
-        var left = exp - Date.now();
-        if (left > 2 * 86400000) return;
-        var t = left <= 0 ? 'The attestation has expired (' : 'The attestation expires within 2 days (';
+    function loadWallet() {
+      var werr = null;
+      Promise.all([api('/api/wallet').catch(function (x) { werr = x.message; return {}; }), api('/api/registry').catch(function () { return null; }),
+        api('/api/earnings').catch(function () { return null; }), api('/api/jobs').catch(function () { return null; })]).then(function (r) {
+        var w = r[0], reg = r[1], e = r[2], jobs = (r[3] && r[3].jobs) || [];
         cw.textContent = '';
-        cw.appendChild(el('h2', '', 'Attestation'));
-        cw.appendChild(el('p', 'msg err', t + new Date(exp).toLocaleString() + ').' + (r.renewal_error ? ' Last renewal error: ' + r.renewal_error : '')));
-        var wl = el('a', '', 'Wallet & registration'); wl.href = '#/wallet'; cw.appendChild(wl);
-        g.insertBefore(cw, g.firstChild);
+        var auto = reg && reg.auto_renew !== false;
+        head(cw, 'Wallet & registration', reg && reg.registered ? (auto ? 'AUTO RENEW ON' : 'AUTO RENEW OFF') : 'NOT REGISTERED', reg && reg.registered ? (auto ? 'ok' : 'warn') : 'warn');
+        var bal = el('div');
+        bal.appendChild(el('p', 'lbl', 'Runner wallet'));
+        var b = el('p', 'big lg', ckbShort(w.capacity_shannons)); b.appendChild(document.createTextNode(' ')); b.appendChild(el('small', '', 'CKB'));
+        bal.appendChild(b);
+        cw.appendChild(bal);
+        if (werr) cw.appendChild(el('p', 'msg err', 'Wallet unavailable: ' + werr));
+        if (w.sweep_warning) cw.appendChild(el('p', 'msg err', w.sweep_warning));
+        var rows = [];
+        if (reg && reg.registered) {
+          var st = reg.stake;
+          rows.push(['Stake', st ? ckbShort(st.capacity_shannons) + ' CKB · ' + st.status : '–', 'mono']);
+          rows.push(['Attestation valid until', fmtDate(reg.attestation_expiry_ms) + ' (' + fmtLeft(reg.attestation_expiry_ms) + ')']);
+          rows.push([auto ? 'Next renewal' : 'Auto renew', auto ? fmtDate(reg.next_renewal_ms) + ', automatic' : 'off: renew by hand']);
+        } else {
+          rows.push(['Registration', 'none: register on the Wallet page']);
+        }
+        if (!werr) rows.push(['Sweep', w.sweep_address ? fmtInt(w.sweep_amount_ckb) + ' CKB when ' + fmtInt(w.sweep_threshold_ckb) + ' CKB' : 'not set']);
+        kv(cw, rows);
+        if (reg && reg.renewal_error) cw.appendChild(el('p', 'msg err', 'Last renewal error: ' + reg.renewal_error));
+        var a = el('a', '', 'Wallet & registration →'); a.href = '#/wallet'; cw.appendChild(a);
+        // attention card: expiry close and no automatic renewal, or an error
+        var exp = reg && reg.registered ? reg.attestation_expiry_ms : null;
+        var close = typeof exp === 'number' && exp - Date.now() < 3 * 86400000;
+        if (close && (!auto || reg.renewal_error || exp < Date.now())) {
+          cx.textContent = '';
+          head(cx, 'Attestation', exp < Date.now() ? 'EXPIRED' : 'EXPIRES SOON', 'bad');
+          cx.appendChild(el('p', 'msg err', (exp < Date.now() ? 'The attestation has expired (' : 'The attestation expires on ') + fmtDate(exp) + (exp < Date.now() ? ').' : '.') +
+            (auto ? '' : ' Auto renew is off.') + (reg.renewal_error ? ' Last renewal error: ' + reg.renewal_error : '')));
+          var wl = el('a', '', 'Wallet & registration →'); wl.href = '#/wallet'; cx.appendChild(wl);
+          cx.hidden = false;
+        } else {
+          cx.hidden = true;
+        }
+        // runtime card
+        var s = state.status || {};
+        cr.textContent = '';
+        var rt = (s.runtime && s.runtime.state) || 'off';
+        head(cr, 'Service runtime', rt.toUpperCase(), rt);
+        function count(states) { return jobs.filter(function (j) { return states.indexOf(j.state) >= 0; }).length; }
+        var tl = el('div', 'tiles sep three');
+        tl.appendChild(tile('Running', String(count(['Running', 'Submitting', 'Completed'])), '', 'sm'));
+        tl.appendChild(tile('Waiting', String(count(['Discovered', 'Queued', 'Scheduled', 'Paused'])), '', 'sm'));
+        tl.appendChild(tile('Settled', String(count(['Settled'])), '', 'sm'));
+        cr.appendChild(tl);
+        kv(cr, [['Tips earned', e ? ckbShort(e.tips_shannons) + ' CKB' : '–', 'mono'], ['Settlements', e ? String(e.settlements.length) : '–'],
+          ['Reason', (s.runtime && s.runtime.reason) || 'running']]);
+        var locked = s.network === 'mainnet' && !s.mainnet_runtime_unlocked;
+        var tg = el('label', 'runtime-toggle' + (locked ? ' disabled' : ''));
+        var cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.id = 'runtime-toggle'; cb.checked = rt === 'on' || rt === 'active'; cb.disabled = locked;
+        tg.appendChild(cb); tg.appendChild(document.createTextNode(' Service runtime on'));
+        cb.addEventListener('change', function () {
+          cb.disabled = true;
+          api('/api/settings', { method: 'PUT', body: { runtime: { enabled: cb.checked } } })
+            .then(function () { poll(); loadWallet(); })
+            .catch(function (x) { cb.checked = !cb.checked; cr.appendChild(el('p', 'msg err', x.message)); })
+            .then(function () { cb.disabled = locked; });
+        });
+        cr.appendChild(tg);
+        if (!jobs.length) cr.appendChild(el('p', 'note', locked ? 'Services start on mainnet in Phase 2.' : 'No jobs yet. The node earns once apps such as CRT post jobs.'));
       }).catch(function () {});
     }
-    function res() {
-      api('/api/resources').then(function (r) {
-        while (cres.children.length > 1) cres.removeChild(cres.lastChild);
-        dl(cres, [
-          ['CPU (total / csr / ckb)', r.cpu.total_percent + '% / ' + r.cpu.csr_percent + '% / ' + (r.cpu.ckb_percent === null ? '–' : r.cpu.ckb_percent + '%')],
-          ['RAM free', r.ram.free_mb + ' / ' + r.ram.total_mb + ' MB'],
-          ['Disk free', r.disk.free_gb + ' / ' + r.disk.total_gb + ' GB']]);
+    function loadHistory() {
+      Promise.all([api('/api/resources/history'), api('/api/resources')]).then(function (r) {
+        var h = r[0].samples || [], now = r[1];
+        ch.textContent = '';
+        head(ch, 'Last 24 hours');
+        var lastLag = h.length ? h[h.length - 1].tip_lag : null;
+        ch.appendChild(spark(h, 'tip_lag', 'Tip lag (blocks)', lastLag == null ? '–' : String(lastLag)));
+        ch.appendChild(spark(h, 'cpu_percent', 'CPU %', now.cpu.total_percent + '%'));
+        ch.appendChild(spark(h, 'ram_free_mb', 'Free RAM (MB)', fmtInt(now.ram.free_mb)));
+        cres.textContent = '';
+        head(cres, 'Machine');
+        var ramUsed = now.ram.total_mb - now.ram.free_mb, diskUsed = now.disk.total_gb - now.disk.free_gb;
+        metric(cres, 'CPU (csr ' + now.cpu.csr_percent + '%' + (now.cpu.ckb_percent == null ? '' : ', ckb ' + now.cpu.ckb_percent + '%') + ')', now.cpu.total_percent + '%', now.cpu.total_percent / 100, now.cpu.total_percent > 85 ? 'warn' : '');
+        metric(cres, 'RAM used (csr ' + now.ram.csr_mb + ' MB)', (ramUsed / 1024).toFixed(1) + ' / ' + (now.ram.total_mb / 1024).toFixed(1) + ' GB', ramUsed / Math.max(1, now.ram.total_mb));
+        metric(cres, 'Disk used', fmtInt(diskUsed) + ' / ' + fmtInt(now.disk.total_gb) + ' GB', diskUsed / Math.max(1, now.disk.total_gb), now.disk.free_gb < 20 ? 'warn' : '');
+        var ra = el('a', '', 'Resources →'); ra.href = '#/resources'; cres.appendChild(ra);
       }).catch(function () {});
     }
-    onStatus = paint; paint(); res(); payoutCard(); expiryWarning();
-    timers.push(setInterval(payoutCard, 10000));
-    timers.push(setInterval(res, 5000));
-    timers.push(setInterval(expiryWarning, 60000));
+    onStatus = paintStatus; paintStatus();
+    loadNode(); loadMonitor(); loadWallet(); loadHistory();
+    timers.push(setInterval(loadNode, 10000));
+    timers.push(setInterval(loadWallet, 15000));
+    timers.push(setInterval(loadHistory, 30000));
+    timers.push(setInterval(loadMonitor, 60000));
   };
 
   // Update card: daily notice (from /api/status), "Check for update" and, with a newer signed
@@ -390,22 +632,44 @@
   }
 
   pages.node = function (root) {
-    var c = card('Node'), ct = card('Tip lag (24 h)'), cp = card('Tx pool & peers');
-    root.appendChild(c); root.appendChild(ct); root.appendChild(cp);
+    var hero = el('section', 'card accent hero');
+    var g = el('div', 'grid');
+    var ci = el('section', 'card'), chs = el('section', 'card');
+    g.appendChild(ci); g.appendChild(chs);
+    var cpeer = el('section', 'card');
+    [hero, g, cpeer].forEach(function (x) { root.appendChild(x); });
     function load() {
       api('/api/node').then(function (n) {
-        while (c.children.length > 1) c.removeChild(c.lastChild);
-        while (cp.children.length > 1) cp.removeChild(cp.lastChild);
-        dl(c, [['Chain', n.chain], ['Version', n.node_version], ['Type', n.node_type], ['Tip', n.tip_number], ['Tip hash', n.tip_hash],
-          ['Best known', n.best_known], ['Tip lag', n.tip_lag], ['Epoch', n.epoch], ['Indexer tip', n.indexer_tip], ['Indexer lag', n.indexer_lag],
-          ['Node identity', n.identity && n.identity.state]]);
-        if (n.identity && n.identity.message) c.appendChild(el('p', n.identity.state === 'unknown' ? 'msg' : 'msg err', n.identity.message));
-        if (n.net_rpc_hint) c.appendChild(el('p', 'msg err', n.net_rpc_hint));
-        dl(cp, [['Pending', n.tx_pool && n.tx_pool.pending], ['Proposed', n.tx_pool && n.tx_pool.proposed], ['Peers in', n.peers_in], ['Peers out', n.peers_out]]);
-      }).catch(function () {});
+        nodeHero(hero, n, state.status, true);
+        ci.textContent = '';
+        var idn = n.identity || {};
+        head(ci, 'Node identity', (idn.state || 'unknown').toUpperCase(), idn.state);
+        ci.appendChild(el('p', 'note', idn.state === 'proven'
+          ? 'The runner holds this node\'s P2P key, so the monitors know the ranked node really is yours.'
+          : 'Set node.p2p_key_file (docs/install.md) so the runner can prove that this node is yours.'));
+        var rows = [['Node ID', n.node_id || '–', 'mono'], ['State', idn.state || '–']];
+        if (idn.message && idn.state !== 'proven') rows.push(['Detail', idn.message]);
+        rows.push(['Net RPC (add_node)', n.net_rpc_hint ? 'missing: enable the Net module' : 'available']);
+        kv(ci, rows);
+        cpeer.textContent = '';
+        head(cpeer, 'Peers & tx pool');
+        var tl = el('div', 'tiles sep');
+        tl.appendChild(tile('Inbound', n.peers_in == null ? '–' : String(n.peers_in), '', 'sm'));
+        tl.appendChild(tile('Outbound', n.peers_out == null ? '–' : String(n.peers_out), '', 'sm'));
+        tl.appendChild(tile('Pending txs', n.tx_pool && n.tx_pool.pending != null ? String(n.tx_pool.pending) : '–', '', 'sm'));
+        tl.appendChild(tile('Proposed txs', n.tx_pool && n.tx_pool.proposed != null ? String(n.tx_pool.proposed) : '–', '', 'sm'));
+        tl.appendChild(tile('Indexer tip', fmtInt(n.indexer_tip), '', 'sm'));
+        cpeer.appendChild(tl);
+      }).catch(function (x) { hero.textContent = ''; hero.appendChild(el('p', 'msg err', x.message)); });
       api('/api/resources/history').then(function (h) {
-        while (ct.children.length > 1) ct.removeChild(ct.lastChild);
-        ct.appendChild(chart(h.samples, 'tip_lag', 'blocks behind'));
+        var s = h.samples || [];
+        chs.textContent = '';
+        head(chs, 'Tip lag, last 24 hours');
+        chs.appendChild(chart(s, 'tip_lag', 'blocks behind'));
+        var lags = s.map(function (x) { return x.tip_lag; }).filter(function (v) { return typeof v === 'number'; });
+        var max = lags.length ? Math.max.apply(null, lags) : null;
+        var inSync = lags.length ? lags.filter(function (v) { return v <= 2; }).length / lags.length : null;
+        kv(chs, [['Most behind', max == null ? '–' : max + ' blocks'], ['In sync (≤ 2 blocks)', inSync == null ? '–' : pct(inSync)]]);
       }).catch(function () {});
     }
     load();
@@ -449,6 +713,7 @@
     ['payout.sweep_address', 'Sweep to address', 'text'],
     ['payout.sweep_threshold_ckb', 'Sweep when the wallet reaches (CKB)', 'int'],
     ['payout.sweep_amount_ckb', 'Sweep amount (CKB)', 'int'],
+    ['registry.auto_renew', 'Auto renew the attestation', 'bool'],
     ['runtime.enabled', 'Runtime enabled', 'bool'],
     ['runtime.min_ckb_per_mcycle', 'Min CKB per Mcycle', 'number'],
     ['limits.max_concurrent_jobs', 'Max concurrent jobs', 'int'],
@@ -607,6 +872,26 @@
 
     var cr = card('Stake and registration');
     cr.appendChild(el('p', '', 'The stake is a Nervos DAO deposit of at least 10,000 CKB in your own wallet; it stays there. Its owner consents by signing a one-line text.'));
+    // Auto renew (registry.auto_renew, on by default): its own setting, independent of the service runtime.
+    var autoBox = el('div', 'setting');
+    var autoTxt = el('div');
+    autoTxt.appendChild(el('p', 't', 'Auto renew'));
+    var autoDesc = el('p', 'd', 'Renews the attestation 2 days before it expires.');
+    autoTxt.appendChild(autoDesc);
+    var sw = el('button', 'switch'); sw.type = 'button'; sw.setAttribute('role', 'switch'); sw.setAttribute('aria-label', 'Auto renew');
+    sw.appendChild(el('span'));
+    autoBox.appendChild(autoTxt); autoBox.appendChild(sw);
+    cr.appendChild(autoBox);
+    var tlBox = el('div', 'tl');
+    cr.appendChild(tlBox);
+    sw.addEventListener('click', function () {
+      var on = sw.getAttribute('aria-checked') !== 'true';
+      sw.disabled = true;
+      api('/api/settings', { method: 'PUT', body: { registry: { auto_renew: on } } })
+        .then(function () { say(on ? 'Auto renew is on.' : 'Auto renew is off: renew by hand before the attestation expires.'); load(); })
+        .catch(function (x) { say(x.message, true); })
+        .then(function () { sw.disabled = false; });
+    });
     var rinfo = el('div');
     var stake = el('input'); stake.placeholder = 'stake: DAO deposit 0x<tx hash>:<index>'; stake.size = 50;
     var getText = el('button', 'btn', 'Show text to sign'); getText.type = 'button';
@@ -619,12 +904,12 @@
       .forEach(function (n) { textBox.appendChild(n); });
     var sig = el('input'); sig.placeholder = 'Signature 0x…'; sig.size = 50; sig.setAttribute('aria-label', 'Signature');
     var reg = el('button', 'btn', 'Register'); reg.type = 'button';
-    var rm = el('button', 'btn', 'Remove registration'); rm.type = 'button';
+    var rm = el('button', 'btn danger', 'Remove registration'); rm.type = 'button';
     var renew = el('button', 'btn', 'Renew now'); renew.type = 'button';
-    var ask = el('div', 'row'); ask.hidden = true;
-    var yes = el('button', 'btn', 'Yes, remove'); yes.type = 'button';
+    var ask = el('div', 'confirm'); ask.hidden = true; ask.setAttribute('role', 'alert');
+    var yes = el('button', 'btn danger', 'Yes, remove'); yes.type = 'button';
     var no = el('button', 'btn', 'Cancel'); no.type = 'button';
-    [el('span', '', 'Remove the registration? Its CKB returns to the runner wallet.'), yes, no].forEach(function (n) { ask.appendChild(n); });
+    [el('span', '', 'Remove the registration? The node leaves the ranking; its CKB returns to the runner wallet.'), yes, no].forEach(function (n) { ask.appendChild(n); });
     getText.addEventListener('click', function () {
       if (!stake.value.trim()) return say('Enter the stake (out point of your Nervos DAO deposit).', true);
       api('/api/registry/consent-message', { method: 'POST', body: { stake: stake.value.trim() } }).then(function (j) {
@@ -679,9 +964,30 @@
           rinfo.appendChild(el('p', 'msg', mainnet ? 'The CSR scripts are not deployed on mainnet yet.' : (r[1].error || 'Registry unavailable.')));
           return;
         }
+        var auto = r[1].auto_renew !== false;
+        sw.setAttribute('aria-checked', auto ? 'true' : 'false');
+        autoDesc.textContent = auto
+          ? 'The runner renews the attestation 2 days before it expires, also while the service runtime is off. Each renewal costs one small transaction fee from this wallet.'
+          : 'Off: the attestation expires and the node leaves the ranking unless you click "Renew now" in time. The Overview warns 3 days before.';
+        tlBox.textContent = '';
+        function step(done, cls, title, sub) {
+          var d = el('div', 'tl-step'), i = el('i', cls), t = el('div');
+          if (done) i.className = 'done';
+          t.appendChild(el('p', '', title)); t.appendChild(el('p', '', sub));
+          d.appendChild(i); d.appendChild(t); tlBox.appendChild(d);
+        }
+        var exp = r[1].attestation_expiry_ms;
+        if (r[1].registered) {
+          step(true, '', 'Registered', r[1].outpoint);
+          step(true, '', 'Attestation from the monitor', 'valid until ' + fmtDate(exp) + ' · ' + fmtLeft(exp) + ' left');
+          if (auto) step(false, '', 'Next renewal', fmtDate(r[1].next_renewal_ms) + ', automatic');
+          else step(false, 'warn', 'Attestation expires', fmtDate(exp) + ': renew by hand before then');
+        } else {
+          step(false, 'warn', 'Not registered', 'enter the stake below, sign the text and register');
+        }
         dl(rinfo, [
           ['Registered', r[1].registered ? r[1].outpoint : 'no'],
-          ['Attestation expires', r[1].attestation_expiry_ms ? new Date(r[1].attestation_expiry_ms).toLocaleString() : '–'],
+          ['Attestation expires', exp ? new Date(exp).toLocaleString() : '–'],
           ['Last renewal error', r[1].renewal_error || '–'],
           ['Stake', st ? st.outpoint : '–'],
           ['Stake status', st ? st.status : '–'],
@@ -859,10 +1165,17 @@
 
   function updateBadge() {
     var b = document.getElementById('network-badge');
-    var n = state.status && state.status.network;
+    var s = state.status;
+    var n = s && s.network;
     if (!n) return;
     b.textContent = n.toUpperCase();
     b.className = 'badge ' + n;
+    var t = document.getElementById('host-title'), l = document.getElementById('host-line'), f = document.getElementById('foot-version');
+    if (t) t.textContent = (s.hostname ? s.hostname + ' · ' : '') + 'Service Runner';
+    if (l) l.textContent = 'CKB Service Runner ' + s.version + ' · ' + n + (typeof s.uptime_s === 'number' ? ' · up ' + fmtUp(s.uptime_s) : '');
+    if (f) f.textContent = 'CKB Service Runner ' + s.version + ' · ' + n;
+    var src = document.getElementById('foot-source');
+    if (src && s.links && s.links.source) { src.href = s.links.source; src.textContent = s.links.source.replace(/^https:\/\//, ''); }
   }
   function setStatus(s) {
     state.status = s;
@@ -899,6 +1212,8 @@
 
   function theme(t) {
     document.documentElement.setAttribute('data-theme', t);
+    var tb = document.getElementById('theme-toggle');
+    if (tb) tb.textContent = t === 'dark' ? 'Light theme' : 'Dark theme';
     try { localStorage.setItem('csr-theme', t); } catch (x) { /* ignore */ }
   }
   var saved = null;

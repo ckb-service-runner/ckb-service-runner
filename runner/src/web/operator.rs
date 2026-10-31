@@ -113,6 +113,10 @@ pub async fn registry_status(State(s): St) -> Response {
         Ok(c) => reply(c.register_status().await.map(|mut v| {
             let e = s.db.get_setting(crate::renew::RENEWAL_ERROR).ok().flatten();
             v["renewal_error"] = e.filter(|e| !e.is_empty()).map_or(Value::Null, Value::from);
+            v["auto_renew"] = Value::from(s.config.read().unwrap().registry.auto_renew);
+            v["next_renewal_ms"] = v["attestation_expiry_ms"]
+                .as_u64()
+                .map_or(Value::Null, |e| Value::from(e.saturating_sub(crate::chain::RENEW_BEFORE_MS)));
             v
         })),
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
