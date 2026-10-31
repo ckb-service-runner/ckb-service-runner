@@ -60,3 +60,41 @@ test('the daemon sweeps the runner wallet automatically', async () => {
   assert.equal(w.last_sweep.amount_shannons, 200 * CKB);
   assert.ok(w.capacity_shannons < 200 * CKB && w.capacity_shannons > 199 * CKB, String(w.capacity_shannons));
 });
+
+test('two runners race for one job: exactly one wallet is paid, the loser pays nothing', async () => {
+  // Ported from A3c (float) to the runner wallet (Oct 2026).
+  await deploy();
+  const hb = await deployService('heartbeat');
+  const runners = [];
+  for (const name of ['a8-race-a', 'a8-race-b']) {
+    const r = await runner(name, undefined, (c) => { c.runtime.enabled = true; return c; });
+    await fundRunnerCell(r, 700);
+    await registerWithConsent(r, await deposit(10000));
+    await allow(r, hb);
+    runners.push(r);
+  }
+  const before = [];
+  for (const r of runners) before.push((await wallet(r)).capacity_shannons);
+  const job = await createJob(hb.code_hash, { tipCkb: 7 });
+  for (const r of runners) await startCsr([...r.args, 'run'], { healthUrl: `${r.base}/healthz` });
+  const stopMiner = startMiner(700);
+  try {
+    await waitFor(async () => {
+      const totals = [];
+      for (const r of runners) totals.push((await getJson(`${r.base}/api/earnings`)).json.tips_shannons);
+      return totals.reduce((a, b) => a + b, 0) === 7 * CKB;
+    }, 240000, 1000);
+  } finally {
+    await stopMiner();
+  }
+  const gains = [];
+  for (let i = 0; i < runners.length; i++) gains.push((await wallet(runners[i])).capacity_shannons - before[i]);
+  assert.deepEqual([...gains].sort((a, b) => a - b), [0, 7 * CKB], 'one wallet gains the tip, the other is unchanged');
+  const states = [];
+  for (const r of runners) {
+    const jobs = (await getJson(`${r.base}/api/jobs`)).json.jobs.filter((j) => j.outpoint === job);
+    states.push(jobs.map((j) => j.state));
+  }
+  assert.equal(states.flat().filter((s) => s === 'Settled').length, 1, JSON.stringify(states));
+  for (const s of states.flat()) assert.ok(['Settled', 'Lost'].includes(s), `unexpected state ${s}`);
+});

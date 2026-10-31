@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, cleanup } from '../a1/lib.mjs';
 import { rpc, csrDev } from '../a3b/devnet.mjs';
-import { deploy } from '../a7/flow.mjs';
+import { deploy, deposit } from '../a7/flow.mjs';
 import { runner, lockCapacity } from '../a8/flow.mjs';
 
 after(cleanup);
@@ -27,12 +27,13 @@ test('csr-dev attest sends nothing to the runner wallet', async () => {
   const r = await runner('a8b-attest');
   const peer = (await rpc('local_node_info')).node_id;
   const out = path.join(r.dir, 'att.json');
-  const a = await csrDev(['attest', '--peer-id', peer, '--service-pubkey', r.id.service_pubkey, '--network', 'devnet', '--out', out]);
+  const stake = await deposit(10000); // contracts v3: the attestation names the stake
+  const a = await csrDev(['attest', '--peer-id', peer, '--stake', stake, '--service-pubkey', r.id.service_pubkey, '--network', 'devnet', '--out', out]);
   assert.equal(a.code, 0, a.stderr);
   assert.equal(a.json.faucet, undefined, 'attest must not report a faucet');
   assert.ok(fs.existsSync(out));
   assert.equal(await lockCapacity(r.id.runner_lock_args), 0, 'the runner wallet must stay empty');
-  const bad = await csrDev(['attest', '--peer-id', peer, '--service-pubkey', r.id.service_pubkey, '--network', 'devnet', '--out', out, '--faucet-ckb', '200']);
+  const bad = await csrDev(['attest', '--peer-id', peer, '--stake', stake, '--service-pubkey', r.id.service_pubkey, '--network', 'devnet', '--out', out, '--faucet-ckb', '200']);
   assert.notEqual(bad.code, 0, '--faucet-ckb must be gone');
 });
 

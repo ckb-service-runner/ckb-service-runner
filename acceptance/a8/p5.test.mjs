@@ -78,9 +78,11 @@ test('dashboard API: consent message, register create, register remove', async (
   await startCsr([...r.args, 'run'], { healthUrl: `${r.base}/healthz` });
   const s = await loginSession(r.base);
 
-  const rc = (await getJson(`${r.base}/api/runner-cell`)).json;
+  // Since the dashboard security fixes (Oct 2026) the read APIs need the session once a password is set.
+  const auth = { cookie: s.cookie };
+  const rc = (await getJson(`${r.base}/api/runner-cell`, auth)).json;
   assert.equal(rc.runner_address, secpAddress(r.id.runner_lock_args, 'devnet'));
-  const w = (await getJson(`${r.base}/api/wallet`)).json;
+  const w = (await getJson(`${r.base}/api/wallet`, auth)).json;
   assert.equal(w.capacity_shannons, 500 * CKB);
 
   const stake = await deposit(10000);
@@ -100,7 +102,7 @@ test('dashboard API: consent message, register create, register remove', async (
   assert.equal(ok.status, 200, ok.text);
   assert.equal(ok.json.updated, false);
   await waitCommitted(ok.json.tx_hash);
-  const reg = (await getJson(`${r.base}/api/registry`)).json;
+  const reg = (await getJson(`${r.base}/api/registry`, auth)).json;
   assert.equal(reg.registered, true);
   assert.equal(reg.stake.status, 'deposited');
   assert.equal(reg.stake.capacity_shannons, 10000 * CKB);

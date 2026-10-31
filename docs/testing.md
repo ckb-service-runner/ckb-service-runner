@@ -57,7 +57,7 @@ csr wallet sweep --json                               # one sweep now (needs [pa
 
 ### Keeper jobs and the race test (A3c)
 
-`node --test --test-concurrency=1 acceptance/a3c/p2.test.mjs acceptance/a3c/p3.test.mjs` (devnet running, `bash scripts/build-services.sh` done). `p2`: an `every:2` job runs three times, the tips are settled (since A8 they go into the runner wallet, `acceptance/a8/p4.test.mjs`). `p3`: two CSR instances with separate data roots share the devnet node and race for one job; exactly one settles, the other ends in `Lost` at no cost. Manual demo steps: `docs/milestones/A3c.md`.
+`node --test --test-concurrency=1 acceptance/a8/p4.test.mjs` (devnet running, `bash scripts/build-services.sh` done): an `every:2` job runs three times and the runner wallet grows by exactly the three tips; two CSR instances with separate data roots share the devnet node and race for one job, exactly one settles (its wallet gains the tip), the other ends in `Lost` at no cost. The A3c float versions of these tests were removed in Oct 2026. Manual demo steps: `docs/milestones/A3c.md`.
 
 ### Manual checks on the devnet (`scripts/manual-checks.sh`)
 
