@@ -1,23 +1,61 @@
-# CSR – CKB Service Runner
+# CKB Service Runner (CSR)
 
-**Install** (Ubuntu/Debian x86_64, beside a synced CKB full node, testnet or mainnet, about 5 minutes):
+**Run a CKB full node. Let it do more.**
+
+CSR installs beside your [CKB](https://github.com/nervosnetwork/ckb) full node in five minutes. It gives the node a
+dashboard, a place in a public ranking of independent full nodes, and a sandboxed runtime that runs decentralised
+services and earns tips. It never changes your node or its `ckb.toml`.
+
+[![Latest release](https://img.shields.io/github/v/release/ckb-service-runner/ckb-service-runner?label=release)](https://github.com/ckb-service-runner/ckb-service-runner/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Live network](https://img.shields.io/badge/live%20network-csr--monitor-2ea44f)](https://csr-monitor.chainsolution.net)
+[![Telegram](https://img.shields.io/badge/chat-Telegram-26A5E4)](https://t.me/ckbrunner)
+
+<p align="center">
+  <img src="docs/images/dashboard-testnet.png" width="760" alt="CSR dashboard on testnet: synced CKB node, rank 1 in the CSR monitor, runner wallet with stake, service runtime on with settled jobs and tips">
+</p>
+
+## Install
+
+On Ubuntu/Debian x86_64, beside a synced CKB full node (testnet, mainnet or both):
 
 ```sh
 curl -fLO https://raw.githubusercontent.com/ckb-service-runner/ckb-service-runner/main/scripts/install.sh
 sudo bash install.sh
 ```
 
-Prerequisites, options and the manual steps: **[quick start](docs/quickstart.md)**. The installer finds every CKB
-node on the machine and sets up one CSR instance per network (`csr@testnet` on port 8130, `csr@mainnet` on port 8140).
+The installer finds every CKB node on the machine and sets up one CSR instance per network: the testnet dashboard on
+port 8130, mainnet on 8140. Prerequisites, options and the manual steps: **[quick start](docs/quickstart.md)**.
 
-**Mainnet: node dashboard only.** On mainnet CSR is a node dashboard with ranking; the Service Runtime stays off until
-the **1.x** release, which comes once the Phase 2 gate is met: at least **4 months** (120 days) of monitor history and
-**20 ranked runners**, with no ASN holding more than 25 % and no country more than 50 % of them (decision D36).
-Ranking needs **no registration** (D29): a registration is only needed to get Service Runtime jobs.
+## What works today
 
-CSR is a Rust side application that runs next to a fully synced [CKB](https://github.com/nervosnetwork/ckb) full node
-and lets the node earn: it is ranked, it runs services and it collects tips. It is one binary, `csr`, with an embedded
-web dashboard (no separate web server, no build step). CSR never edits your `ckb.toml`.
+| | Testnet | Mainnet |
+|---|---|---|
+| Node dashboard and full-node checks | ✅ | ✅ |
+| Public ranking and network map ([live](https://csr-monitor.chainsolution.net)) | ✅ | ✅ ranked after 7 days |
+| Service runtime: run jobs, earn tips | ✅ | from release **1.x** |
+| Registration with a Nervos DAO stake | ✅ | from release **1.x** |
+
+**Mainnet: node dashboard only, for now.** The service runtime starts on mainnet with the **1.x** release, once the
+network meets the Phase 2 gate: at least **4 months** (120 days) of monitor history and **20 ranked runners**, with no
+network (ASN) holding more than 25 % and no country more than 50 % of them. Ranking needs **no registration**: a
+registration is only needed to get service jobs. Every new runner brings that gate closer.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/dashboard-mainnet.png" alt="CSR dashboard on mainnet, light theme: synced node, provisional ranking, Phase 2 gate progress"></td>
+    <td width="50%"><img src="docs/images/network-monitor.png" alt="CSR Network Monitor: world map of runners and the ranking table"></td>
+  </tr>
+  <tr>
+    <td align="center">Mainnet dashboard (light theme), with the Phase 2 gate progress</td>
+    <td align="center">The public CSR Network Monitor</td>
+  </tr>
+</table>
+
+## How it works
+
+CSR is a Rust side application: one binary, `csr`, with an embedded web dashboard (no separate web server, no build
+step). It talks to the node over local RPC only.
 
 What the runner does:
 
@@ -35,11 +73,10 @@ runner wallet: registration (create, update, refresh), removal of the registrati
 your `sweep_address` and `csr wallet send`. It never signs for your own wallet: the stake owner signs one line of text in
 their wallet (Neuron "Sign message"), nothing else.
 
-## Install
+## Build from source
 
-**Operators:** run `scripts/install.sh` as shown at the top, or follow the [quick start](docs/quickstart.md) step by step. The [full installation guide](docs/install.md) covers updates, remote access and uninstalling.
+The [full installation guide](docs/install.md) covers updates, remote access and uninstalling.
 
-### Build from source
 
 ```sh
 . "$HOME/.cargo/env"
