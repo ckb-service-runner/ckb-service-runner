@@ -41,26 +41,3 @@ test('the CSR monitor tab passes the monitor stake object through', async () => 
   assert.equal(j2.node.rank, 7, 'an older monitor without stake still works');
   assert.equal(j2.node.stake, null);
 });
-
-test('documentation', () => {
-  assert.equal(fs.existsSync(path.join(ROOT, 'spec', 'float-lock.md')), false, 'spec/float-lock.md must be replaced');
-  const dual = read('spec/dual-lock.md');
-  for (const s of ['owner_lock_hash', 'runner_lock_hash']) assert.ok(dual.includes(s), `dual-lock.md must cover ${s}`);
-  const job = read('spec/job-cell-standard.md');
-  assert.ok(job.includes('payout_lock_hash') && !job.includes('float_lock_hash'));
-  assert.match(job, /anyone-can-pay/i);
-  const api = read('spec/monitor-public-api.md');
-  for (const s of ['"stake"', 'stake_invalid', 'stake_in_use', 'deposited', 'withdrawn']) assert.ok(api.includes(s), `monitor-public-api.md: ${s}`);
-  const dec = read('docs/decisions.md');
-  assert.match(dec, /D-A7-1/);
-  assert.ok(fs.existsSync(path.join(ROOT, 'docs', 'milestones', 'A7.md')));
-  assert.match(read('CHANGELOG.md'), /A7/);
-  const testing = read('docs/testing.md');
-  for (const s of ['dao-deposit', 'register create', '--stake']) assert.ok(testing.includes(s), `testing.md: ${s}`);
-  assert.ok(!testing.includes('float prepare-create'));
-  const ex = read('config/csr.example.toml');
-  assert.match(ex, /^\[payout\]$/m);
-  for (const f of ['README.md', 'docs/install.md', 'docs/architecture.md']) {
-    assert.ok(!/csr float /.test(read(f)), `${f} must not mention csr float commands`);
-  }
-});

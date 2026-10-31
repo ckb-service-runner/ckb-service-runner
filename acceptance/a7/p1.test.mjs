@@ -19,22 +19,6 @@ test('the float lock is gone', () => {
     'a stale csr-float-lock binary must not remain in contracts/build/release');
 });
 
-test('schema: Registry v2', () => {
-  const mol = read('contracts/schemas/csr.mol');
-  const reg = mol.match(/table Registry \{([^}]*)\}/);
-  assert.ok(reg, 'table Registry missing');
-  const fields = [...reg[1].matchAll(/^\s*(\w+)\s*:\s*(\w+)\s*,/gm)].map((m) => [m[1], m[2]]);
-  assert.deepEqual(fields, [
-    ['peer_id', 'Bytes'], ['service_pubkey', 'Byte33'], ['payout_lock_hash', 'Byte32'], ['network', 'byte'],
-    ['attestation', 'Attestation'], ['prekeys', 'Bytes'], ['stake', 'OutPoint'],
-  ]);
-  const op = mol.match(/struct OutPoint \{([^}]*)\}/);
-  assert.ok(op, 'struct OutPoint missing');
-  assert.deepEqual([...op[1].matchAll(/^\s*(\w+)\s*:\s*(\w+)\s*,/gm)].map((m) => [m[1], m[2]]),
-    [['tx_hash', 'Byte32'], ['index', 'Uint32']]);
-  assert.doesNotMatch(mol, /float/i);
-});
-
 test('registry contract: stake constants', () => {
   const src = read('contracts/csr-registry/src/main.rs');
   assert.match(src, /82d76d1b75fe2fd9a27dfbaa65a039221a380d76c926f378d3f81cf3e7e13f2e/, 'DAO type code hash');

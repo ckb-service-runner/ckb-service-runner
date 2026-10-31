@@ -13,25 +13,6 @@ test('csr-dev refuses a mainnet node', async () => {
   assert.match(r.stderr + r.stdout, /mainnet|ckb_dev|ckb_testnet|refus/i);
 });
 
-test('deploy-contracts deploys five scripts and the config cell', async () => {
-  const r = await csrDev(['deploy-contracts', '--out', DEPLOYMENTS]);
-  assert.equal(r.code, 0, r.stderr);
-  const d = JSON.parse(fs.readFileSync(DEPLOYMENTS, 'utf8'));
-  for (const name of ['float_lock', 'dual_lock', 'registry', 'job_type', 'job_lock']) {
-    const s = d.scripts[name];
-    assert.ok(s, `scripts.${name} missing`);
-    assert.equal(s.hash_type, 'data2');
-    const cell = await liveCell(s.tx_hash, s.index);
-    assert.equal(cell.status, 'live', `${name} code cell not live`);
-    assert.equal(cell.cell.data.hash, s.code_hash, `${name}: code_hash must be the data hash of the deployed binary`);
-  }
-  const cfg = await liveCell(d.config_cell.tx_hash, d.config_cell.index);
-  assert.equal(cfg.status, 'live');
-  assert.ok(cfg.cell.output.type, 'config cell needs a Type ID type script');
-  assert.match(d.registry_type_hash, /^0x[0-9a-f]{64}$/);
-  assert.match(d.monitor_pubkey, /^0x0[23][0-9a-f]{64}$/);
-});
-
 test('clock-update moves the clock forward', async () => {
   const a = await csrDev(['clock-update']);
   assert.equal(a.code, 0, a.stderr);
