@@ -1,4 +1,4 @@
-# Set by the release that deploys mainnet; until then no monitor key is usable and the runner
-# neither answers challenges nor checks in.
-monitor_url = ""
-monitor_pubkey = ""
+# CSR Network Monitor for mainnet (D33, D34, D40: one hostname, one path per network).
+# Mainnet runs as a node dashboard only until 1.x: no CSR contracts, no registration.
+monitor_url = "https://csr-monitor.chainsolution.net/mainnet"
+monitor_pubkey = "0x034cb482bc3becff2e874887323c83069ca8b6c87764a03cf6bfc4aefd111c6eff"

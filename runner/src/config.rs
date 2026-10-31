@@ -638,11 +638,9 @@ mod tests {
     fn network_defaults_parse() {
         for n in ["testnet", "mainnet"] {
             let d = crate::network::NetworkDefaults::for_network(n);
-            if n == "mainnet" {
-                assert!(d.monitor_pubkey.is_empty() && d.monitor_url.is_empty());
-            } else {
-                parse_pubkey(&d.monitor_pubkey).unwrap();
-            }
+            // D34: both networks ship their monitor (mainnet since 0.5.0).
+            parse_pubkey(&d.monitor_pubkey).unwrap();
+            assert!(d.monitor_url.starts_with("https://"), "{n}");
         }
     }
 

@@ -724,3 +724,7 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
   (one monitor process per network behind one Caddy host; the runner keeps the path of `monitor_url`).
   `config/networks/testnet.toml` points there from 0.5.0; the old `monitor-testnet.vericell.net` stays up until
   older runners have updated. `mainnet.toml` gets `/mainnet` and the mainnet key once the mainnet monitor runs.
+- **D34 done** (31 Oct 2026): the mainnet monitor runs on pswsl; `config/networks/mainnet.toml` ships
+  `https://csr-monitor.chainsolution.net/mainnet` and its key `0x034cb482…1c6eff`. The tests
+  `config::tests::network_defaults_parse` and `mainnet_has_no_placeholder_monitor_key` now check a usable mainnet
+  key instead of an empty one. Nothing is deployed on the mainnet chain for 0.5.0 (no contracts, no config cell).
