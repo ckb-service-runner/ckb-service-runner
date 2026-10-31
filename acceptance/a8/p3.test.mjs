@@ -43,7 +43,7 @@ test('registration paid and owned by the runner wallet, consent of the stake own
   const text = consentText({ network: 'devnet', stake, servicePubkey: r.id.service_pubkey, peerId: await peerId() });
   assert.deepEqual(m.json, { message: text, stake_owner_lock_args: o.lock_args, stake_owner_address: secpAddress(o.lock_args, 'devnet') });
 
-  const att = await attestFile(r, await peerId());
+  const att = await attestFile(r, await peerId(), stake);
   const create = (sig) => runCsr([...r.args, 'register', 'create', '--stake', stake, '--consent', sig, '--attestation', att, '--json'],
     { timeoutMs: 180000 });
   // consent of another key, or over another text: refused before anything is sent
@@ -72,7 +72,8 @@ test('registration paid and owned by the runner wallet, consent of the stake own
   const regIdx = t.outputs.findIndex((x) => x.type);
   assert.ok(regIdx >= 0, 'registry output');
   const rh = r.id.runner_lock_hash.slice(2);
-  assert.equal(t.outputs[regIdx].lock.args, '0x' + rh + rh, 'dual lock: owner = runner = the runner wallet lock');
+  // Integration (Oct 2026): contracts v3 writes the runner-owned dual lock with the short args (runner lock hash once).
+  assert.equal(t.outputs[regIdx].lock.args, '0x' + rh, 'dual lock: owner = runner = the runner wallet lock');
   assert.ok(t.witnesses[regIdx].includes(good.signature.slice(2)), 'consent signature in the witness of the registry output');
   assert.equal(j.outpoint, `${j.tx_hash}:${regIdx}`);
 
@@ -114,7 +115,7 @@ test('register create explains a runner wallet that is too small', async () => {
   const stake = await deposit(10000);
   const text = consentText({ network: 'devnet', stake, servicePubkey: r.id.service_pubkey, peerId: await peerId() });
   const good = await signMessage(text);
-  const att = await attestFile(r, await peerId());
+  const att = await attestFile(r, await peerId(), stake);
   const reg = await runCsr([...r.args, 'register', 'create', '--stake', stake, '--consent', good.signature, '--attestation', att, '--json'],
     { timeoutMs: 120000 });
   assert.notEqual(reg.code, 0);

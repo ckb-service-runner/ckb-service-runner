@@ -92,7 +92,7 @@ test('dashboard API: consent message, register create, register remove', async (
 
   const sig = await csrDev(['sign-message', '--text', text, '--key', 'genesis']);
   assert.equal(sig.code, 0, sig.stderr);
-  const att = JSON.parse(fs.readFileSync(await attestFile(r, peer), 'utf8'));
+  const att = JSON.parse(fs.readFileSync(await attestFile(r, peer, stake), 'utf8'));
   const bad = await post(r.base, s, '/api/registry/create', { stake, consent: '0x' + '00'.repeat(65), attestation: att });
   assert.equal(bad.status, 400, bad.text);
   assert.match(bad.json.error, /consent|signature/i);
