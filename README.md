@@ -1,13 +1,19 @@
 # CSR – CKB Service Runner
 
-**Install** (Ubuntu/Debian x86_64, beside a synced CKB testnet node, about 5 minutes):
+**Install** (Ubuntu/Debian x86_64, beside a synced CKB full node, testnet or mainnet, about 5 minutes):
 
 ```sh
 curl -fLO https://raw.githubusercontent.com/ckb-service-runner/ckb-service-runner/main/scripts/install.sh
 sudo bash install.sh
 ```
 
-Prerequisites, options and the manual steps: **[quick start](docs/quickstart.md)**.
+Prerequisites, options and the manual steps: **[quick start](docs/quickstart.md)**. The installer finds every CKB
+node on the machine and sets up one CSR instance per network (`csr@testnet` on port 8130, `csr@mainnet` on port 8140).
+
+**Mainnet: node dashboard only.** On mainnet CSR is a node dashboard with ranking; the Service Runtime stays off until
+the **1.x** release, which comes once the Phase 2 gate is met: at least **4 months** (120 days) of monitor history and
+**20 ranked runners**, with no ASN holding more than 25 % and no country more than 50 % of them (decision D36).
+Ranking needs **no registration** (D29): a registration is only needed to get Service Runtime jobs.
 
 CSR is a Rust side application that runs next to a fully synced [CKB](https://github.com/nervosnetwork/ckb) full node
 and lets the node earn: it is ranked, it runs services and it collects tips. It is one binary, `csr`, with an embedded
@@ -112,6 +118,24 @@ fee (below 1 CKB) and a change cell of at least 61 CKB, which makes about 601 CK
 The **runner wallet** is the set of plain cells of the runner's own key. The job **tips** go into it. With `[payout] sweep_address` set, the runner sends `sweep_amount_ckb` (default 1,000) there whenever the wallet holds `sweep_threshold_ckb` (default 1,500); `csr wallet send --to ADDRESS --ckb N` sends by hand.
 
 A registration references a **stake**: a Nervos DAO deposit of at least 10,000 CKB that stays in the operator's wallet. Its owner consents by signing one line of text ("Sign message" in Neuron): `csr register consent-message --stake 0x<tx>:<index>` prints it, `csr register create --stake … --consent 0x<signature>` registers (CSR signs the transaction itself), `csr register remove` returns the registry cell's CKB to the wallet. Details: `spec/registry.md` §4.2 and §9, `docs/decisions.md` (D-A8-1).
+
+## What it costs an operator
+
+**The dashboard and the ranking cost nothing**: install CSR, join the ranking, no CKB needed.
+
+To run **service jobs** (testnet now, mainnet from 1.x) a runner registers once:
+
+| Item | Amount | Where it stays | Back? |
+|---|---|---|---|
+| Stake: Nervos DAO deposit | at least **10,000 CKB** | your own wallet, still in the Nervos DAO (keeps earning DAO interest) | yes, by a normal DAO withdrawal (then the registration ends) |
+| First transfer to the runner wallet | **700 CKB** once | runner wallet; **539 CKB** of it is locked in the registry cell | yes: `csr register remove` returns the registry cell, the rest stays in the runner wallet |
+| Transaction fees | below 1 CKB each (registration, refreshes, sweeps) | spent | no |
+
+Only the fees are spent; the stake and the 700 CKB come back. The arithmetic of the 700 CKB is in
+[Runner wallet, stake and registration](#runner-wallet-stake-and-registration). Jobs pay their own transaction fees;
+their **tips** go into the runner wallet, which sends 1,000 CKB to your `sweep_address` whenever it holds 1,500 CKB
+(defaults). The runner wallet is a hot key on the node: at most the 700 CKB and the unswept tips are exposed, never the
+stake. Testers on testnet can ask the project for the 10,000 testnet CKB stake.
 
 ## Documents
 

@@ -700,5 +700,22 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
   Was 12 months / 60 runners. Monitor `gate_min_days = 120`, `gate_min_runners = 20`.
 - **D37 – `MIN_STAKE` stays 10,000 CKB on testnet and mainnet** (closes open point (1) of D-A7-1).
 - **D38 – External contract review**: decided later, before the 1.x release.
-- **D39 – Testnet tester support**: no job simulator on mainnet; mainnet carries real use only. Whether to
-  sponsor the testnet stake of the first testers is still open.
+- **D39 – Testnet tester support**: no job simulator on mainnet; mainnet carries real use only. The project
+  sponsors the 10,000 testnet CKB stake of the first testers (decided 31 Oct 2026); the testnet simulator keeps
+  running from the faucet.
+
+## csr-mainnet-dashboard (implementation notes)
+
+- `PUT /api/settings` answers 400 `network follows the node and cannot be changed here` for any body with a top-level
+  `network` key; nothing is written. `acceptance/a1/p4.test.mjs` "network change requires a restart" now expects that.
+- `csr confirm-mainnet` writes the same marker as `csr run --confirm-mainnet` (`<data-root>/mainnet/.mainnet-confirmed`),
+  is idempotent and refuses a non-mainnet config.
+- `[dashboard] peer_url`: empty or `http(s)://…`, no whitespace, at most 200 bytes. `/api/status` `peer_dashboard`.
+- Installer: per-instance systemd drop-in `csr@<network>.service.d/node-key.conf` (instead of one for the template),
+  so two nodes with keys under `/home` each get only their own key. `--key` is used only when one node is found.
+- Two instances share the binary: an update staged by one instance installs it and restarts both; the other
+  instance's own staged copy (if any) is then rejected as "not newer" and moved to its `update/rejected/`, which is
+  harmless.
+- The old `csr.service`, `csr-update.path` and `csr-update.service` stay in `config/` and in the tarball for manual
+  single-instance setups.
+- Version 0.5.0 (D35: same 0.x line for testnet and the mainnet dashboard).

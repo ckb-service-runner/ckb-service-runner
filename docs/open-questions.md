@@ -1,7 +1,7 @@
 # Open questions
 
 - Real monitor URL and pubkey per network: placeholders remain in `config/networks/*.toml` where no monitor runs.
-- Neuron RPC port and indexer: does the embedded Neuron node expose `get_indexer_tip`? `node_type = "neuron"` is accepted but untested.
+- Neuron: on testnet Neuron's own node is a **light client**, which CSR refuses (a full node is required). Only Neuron's internal **mainnet full node** can work; whether it exposes `get_indexer_tip` and the `Net` module, and where its P2P key lives, is still untested (`node_type = "neuron"` is accepted). A Neuron wallet pointed at an external node runs no node of its own: install CSR beside that node instead.
 - Monitor reply format: does the real `/v1/answer` reply carry data beyond HTTP 200 (CSR treats 200 as accepted)?
 - Outbound check-in cadence on failure: retry sooner than 10 min?
 - `get_peers` / `sync_state` field names were taken from the ckb 0.210 RPC docs; verify against a real node.

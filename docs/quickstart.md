@@ -11,7 +11,8 @@ For every detail (upgrades, uninstall, remote access) see the [full installation
 You need:
 
 - A Linux x86_64 machine with `systemd` and `sudo` access.
-- A **fully synced CKB full node** (not a light client) on the **same machine**, RPC on `http://127.0.0.1:8114`.
+- A **fully synced CKB full node** (not a light client) on the **same machine**, testnet or mainnet (or one of
+  each). The script looks for it on `http://127.0.0.1:8114` and at the `[rpc] listen_address` of its `ckb.toml`.
   CSR cannot use a node on another computer: install CSR on the node's machine and open the dashboard from
   elsewhere through an SSH tunnel (step 3).
 - The `Indexer` and `Net` RPC modules enabled in the node's `ckb.toml`. Under `[rpc]`, the `modules` list must
@@ -36,11 +37,16 @@ less install.sh          # optional: read what it does (q to quit)
 sudo bash install.sh
 ```
 
-The script checks your node, downloads the latest release and verifies its checksum, creates the `csr` user and
-`/var/lib/csr/csr.toml` (testnet, `ping_mode = "outbound"`, which works behind a home router, and the service runtime
-on: it runs only the services you approve), finds your node's
-P2P key and proves the node identity, starts CSR as a service with automatic updates, and asks for a dashboard
-password. It never changes your CKB node or its `ckb.toml`.
+The script finds your node(s) and their network, downloads the latest release and verifies its checksum, creates
+the `csr` user and one configuration per node: `/var/lib/csr/csr-testnet.toml` (dashboard on port 8130) and/or
+`/var/lib/csr/csr-mainnet.toml` (dashboard on port 8140), with `ping_mode = "outbound"`, which works behind a home
+router, and the service runtime on: it runs only the services you approve. It finds each node's P2P key and proves
+the node identity, starts CSR as `csr@testnet` / `csr@mainnet` with automatic updates, and asks for a dashboard
+password. With both nodes, each dashboard links to the other. It never changes your CKB node or its `ckb.toml`.
+
+**On mainnet CSR is a node dashboard only**: the dashboard and the ranking work, the Service Runtime stays off
+until the 1.x release (see the [README](../README.md)). An older install with `/var/lib/csr/csr.toml` is migrated
+to the new layout and keeps its settings.
 
 At the end it prints the dashboard address and whether the node identity is `proven`. If something is
 missing (node not running, `Indexer` module off) it stops and tells you what to fix: fix it and run it again.
@@ -51,7 +57,7 @@ Options (`sudo bash install.sh --help`):
 | Option | Use |
 |---|---|
 | `--key PATH` | your node's key, if the script does not find it (`<ckb data dir>/network/secret_key`) |
-| `--rpc URL` | the node's RPC if it is not `http://127.0.0.1:8114` |
+| `--rpc URL` | a node's RPC if the script does not find it; give it twice for a testnet and a mainnet node |
 | `--inbound` | answer the monitor on TCP 8131 instead of `outbound` (port must be reachable) |
 | `--no-runtime` | install with the service runtime off (`[runtime] enabled = false`) |
 | `--no-identity`, `--no-password`, `-y` | skip the identity proof, the password, or all questions |
@@ -60,7 +66,8 @@ Prefer to type each command yourself? Follow the [manual installation](#manual-i
 
 ## 3. Open the dashboard
 
-On the CSR machine open **http://127.0.0.1:8130**.
+On the CSR machine open **http://127.0.0.1:8130** (testnet) or **http://127.0.0.1:8140** (mainnet). In the commands
+below use `8140`, `csr@mainnet` and `csr-mainnet.toml` for the mainnet instance.
 
 If CSR runs on a remote server, open an SSH tunnel **from your own computer** and keep it open:
 
@@ -74,8 +81,8 @@ Log in with the dashboard password you chose. Without a password the dashboard i
 wallet, registration or settings changes). To set or change it:
 
 ```bash
-sudo -u csr csr --data-root /var/lib/csr set-password
-sudo systemctl restart csr
+sudo -u csr csr --data-root /var/lib/csr --config /var/lib/csr/csr-testnet.toml set-password
+sudo systemctl restart csr@testnet
 ```
 
 Do not expose the dashboard to the internet: it speaks plain HTTP.
@@ -85,7 +92,8 @@ Do not expose the dashboard to the internet: it speaks plain HTTP.
 Ranking and the dashboard work without this step. To earn tips from service jobs, the runner must be
 registered:
 
-1. Get testnet CKB from the [Nervos faucet](https://faucet.nervos.org).
+1. Get testnet CKB from the [Nervos faucet](https://faucet.nervos.org). First testers can ask the project for the
+   10,000 testnet CKB of the stake (open an issue).
 2. Send about **700 CKB** to the runner address shown on the dashboard page **Wallet & registration**.
 3. Make a **Nervos DAO deposit of at least 10,000 CKB** from your own wallet (for example Neuron). It stays
    yours; the registration only refers to it.
@@ -99,19 +107,19 @@ Details: [Runner wallet, stake and registration](../README.md#runner-wallet-stak
 ## Useful commands
 
 ```bash
-systemctl status csr --no-pager                    # status
-sudo systemctl restart csr                         # restart
-sudo journalctl -u csr -n 100 --no-pager           # recent log lines
-sudo -u csr csr --data-root /var/lib/csr check     # node check
-sudo -u csr csr --data-root /var/lib/csr update check   # is a newer release available?
+systemctl status csr@testnet --no-pager            # status (csr@mainnet for the mainnet instance)
+sudo systemctl restart csr@testnet                 # restart
+sudo journalctl -u csr@testnet -n 100 --no-pager   # recent log lines
+sudo -u csr csr --data-root /var/lib/csr --config /var/lib/csr/csr-testnet.toml check          # node check
+sudo -u csr csr --data-root /var/lib/csr --config /var/lib/csr/csr-testnet.toml update check   # newer release?
 ```
 
 ## Notes
 
 - **Updates:** the dashboard shows a notice when a release is available; click **Update**.
 - **Backups:** `/var/lib/csr` holds the runner's keys. Back it up encrypted and keep it private.
-- **Mainnet:** this guide uses testnet. Mainnet needs a one-time `--confirm-mainnet` start and a different
-  update path; read the [full installation guide](install.md) first.
+- **Mainnet:** the script sets up a mainnet node the same way (`csr@mainnet`, port 8140) and confirms mainnet
+  once (`csr confirm-mainnet`). Manual setup: [One instance per network](install.md#one-instance-per-network).
 - **Uninstall:** see [Uninstall](install.md#uninstall).
 - Problems or questions: [open an issue](https://github.com/ckb-service-runner/ckb-service-runner/issues).
 
