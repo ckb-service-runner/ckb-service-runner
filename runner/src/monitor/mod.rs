@@ -103,6 +103,26 @@ pub struct NodeStats {
     pub score: Option<f64>,
     #[serde(default)]
     pub metrics: Option<serde_json::Value>,
+    /// The node's own 2° map cell (the one `/v1/locations` counts it in); `null` when not located, when the
+    /// monitor is older, or when the value is malformed (ignored, never an error).
+    #[serde(default, deserialize_with = "lenient_cell")]
+    pub location: Option<MapCell>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, serde::Serialize)]
+pub struct MapCell {
+    pub lat: i64,
+    pub lon: i64,
+}
+
+fn lenient_cell<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<MapCell>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    if !v.is_object() {
+        return Ok(None); // serde would also accept [lat, lon]
+    }
+    Ok(serde_json::from_value::<MapCell>(v)
+        .ok()
+        .filter(|c| (-90..=90).contains(&c.lat) && (-180..=180).contains(&c.lon)))
 }
 
 #[derive(Debug, Clone)]
@@ -438,6 +458,25 @@ mod tests {
         assert!(!n.provisional);
         assert_eq!(n.rank, Some(3));
         assert_eq!(n.availability.d30, Some(0.8));
+    }
+
+    #[test]
+    fn own_map_cell_is_lenient() {
+        let base = json!({
+            "rank": 1, "of": 1, "availability": {"d7": 1.0, "d30": 1.0, "d365": 1.0},
+            "check_type": "p2p_verified", "attestation": {"status": "valid", "expiry": 9}
+        });
+        let with = |loc: Value| {
+            let mut v = base.clone();
+            v["location"] = loc;
+            serde_json::from_value::<NodeStats>(v).unwrap().location
+        };
+        assert_eq!(serde_json::from_value::<NodeStats>(base.clone()).unwrap().location, None);
+        assert_eq!(with(json!({"lat": 53, "lon": 13})), Some(MapCell { lat: 53, lon: 13 }));
+        assert_eq!(with(json!(null)), None);
+        assert_eq!(with(json!({"lat": "53", "lon": 13})), None);
+        assert_eq!(with(json!({"lat": 91, "lon": 13})), None);
+        assert_eq!(with(json!([53, 13])), None);
     }
 
     #[test]

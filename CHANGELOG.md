@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- CSR monitor map: dots at 60 % of their size; your own node's dot is larger and orange, with a "your node" key under the map and in its label. Needs a monitor whose `/v1/nodes` sends `location` (older monitors: no own dot, nothing else changes).
+- API: `/api/network` passes on the monitor's `node.location` (`{lat, lon}`, the node's 2° map cell, or `null`).
+
 ## 0.4.0
 - New dashboard look (ckbdash style) with a light and a dark theme (the theme button stays in the header).
 - Overview: node card (tip, behind, tip age, peers, sync bar, epoch, explorer link), CSR monitor card with rank, score and its terms, Wallet & registration card (balance, stake, attestation expiry, next renewal), service runtime card (job counts, tips; the Runtime switch now saves the setting), last 24 hours sparklines, machine bars, CSR network card, update card. A warning card when the attestation expires within 3 days without automatic renewal.
