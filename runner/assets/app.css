@@ -63,3 +63,5 @@ tr.click{cursor:pointer}
 .logo{width:40px;height:40px;flex:none}
 .logo-full{display:block;margin:0 auto 1rem;width:100%;max-width:240px;height:auto}
 .addr-full{display:block;width:100%;box-sizing:border-box;font-family:ui-monospace,monospace;overflow-wrap:anywhere;user-select:all;margin:.3rem 0}
+/* `hidden` must win over display rules such as .row{display:flex} */
+[hidden]{display:none !important}

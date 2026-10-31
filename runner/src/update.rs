@@ -30,6 +30,8 @@ const MAX_RELEASE_JSON: usize = 1 << 20;
 const MAX_ASSET: usize = 64 << 20;
 const MAX_REDIRECTS: usize = 5;
 pub const CACHE_TTL: Duration = Duration::from_secs(3600);
+/// Cache of a check asked for by hand: short, but repeated clicks do not hit GitHub's rate limit.
+pub const MANUAL_TTL: Duration = Duration::from_secs(60);
 pub const BACKGROUND_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 const NO_KEY: &str = "no release key configured: updates are refused by this build";
 
@@ -281,6 +283,12 @@ impl Cache {
     /// Checks for a newer release (cached for an hour).
     pub async fn check(&self) -> Result<Value, String> {
         let (rel, at) = self.release(CACHE_TTL).await?;
+        Ok(check_json(&rel, at))
+    }
+
+    /// Like `check`, but with a cache of at most `MANUAL_TTL` (the dashboard's "Check for update").
+    pub async fn check_fresh(&self) -> Result<Value, String> {
+        let (rel, at) = self.release(MANUAL_TTL).await?;
         Ok(check_json(&rel, at))
     }
 

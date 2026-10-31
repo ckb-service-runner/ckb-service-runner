@@ -184,6 +184,8 @@ pub async fn register_create(State(s): St, Json(b): Json<Value>) -> Response {
     }
     let r = c.register_create(&att, &stake, consent).await;
     if let Ok(v) = &r {
+        // A new attestation is in the cell: an error of an earlier renewal no longer applies.
+        let _ = s.db.put_setting(crate::renew::RENEWAL_ERROR, "");
         tracing::info!(
             "registration {}: {} (stake {stake})",
             if v["updated"] == true {
@@ -243,7 +245,9 @@ pub async fn register_refresh(State(s): St) -> Response {
 
 /// The latest GitHub release compared with this version (cached for an hour).
 pub async fn update_check(State(s): St) -> Response {
-    match s.update.check().await {
+    // "Check for update" in the dashboard: ask GitHub again unless the answer is under a minute old
+    // (the daily background check keeps the one-hour cache).
+    match s.update.check_fresh().await {
         Ok(v) => Json(v).into_response(),
         Err(e) => fail(StatusCode::BAD_GATEWAY, e),
     }
