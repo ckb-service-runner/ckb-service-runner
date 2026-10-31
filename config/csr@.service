@@ -1,0 +1,27 @@
+[Unit]
+Description=CSR - CKB Service Runner (%i)
+After=network-online.target ckb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=csr
+Group=csr
+# One instance per network (D32): csr@testnet, csr@mainnet, config /var/lib/csr/csr-<network>.toml.
+# A mainnet instance needs `csr --config /var/lib/csr/csr-mainnet.toml confirm-mainnet` once (the installer does it).
+ExecStart=/usr/local/bin/csr --data-root /var/lib/csr --config /var/lib/csr/csr-%i.toml run
+Restart=on-failure
+RestartSec=5
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/csr
+MemoryMax=256M
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target
