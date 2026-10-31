@@ -38,7 +38,7 @@ test('csr-dev attest sends nothing to the runner wallet', async () => {
 });
 
 test('the docs ask for about 700 CKB', () => {
-  for (const f of ['README.md', 'docs/testing.md', 'docs/milestones/A8.md']) {
+  for (const f of ['README.md', 'docs/testing.md']) {
     const t = read(f);
     assert.doesNotMatch(t, /about 500 CKB/i, `${f} still says about 500 CKB`);
     assert.doesNotMatch(t, /161 CKB/, `${f} still mentions 161 CKB`);

@@ -20,7 +20,12 @@ runner wallet: registration (create, update, refresh), removal of the registrati
 your `sweep_address` and `csr wallet send`. It never signs for your own wallet: the stake owner signs one line of text in
 their wallet (Neuron "Sign message"), nothing else.
 
-## Install from source
+## Install
+
+**Operators:** follow the [quick start](docs/quickstart.md) (Ubuntu/Debian, about 15 minutes) to install the latest
+release beside your node. The [full installation guide](docs/install.md) covers updates, remote access and uninstalling.
+
+### Build from source
 
 ```sh
 . "$HOME/.cargo/env"
@@ -28,7 +33,7 @@ cargo build --release
 ./target/release/csr version
 ```
 
-## Quick start
+## Commands
 
 ```sh
 csr detect            # inspect the configured node (add --probe to try 127.0.0.1:8114 and :8124)
@@ -80,7 +85,7 @@ With `ranking.join = true` the CSR Network Monitor can verify that your node is 
 - `ping_mode = "outbound"`: for nodes behind NAT. CSR checks in with the monitor every 10 minutes and answers the challenge it gets back. The ping port stays closed.
 - `ping_mode = "both"`: both.
 
-Protocol details: `spec/ping-protocol.md`. The monitor URL and key are placeholders until the real monitor exists (see `docs/open-questions.md`).
+Protocol details: `spec/ping-protocol.md`. The default monitor URL and key per network are in `config/networks/`.
 
 ## Services and jobs
 Build the example services with `bash scripts/build-services.sh`, then
@@ -102,5 +107,13 @@ A registration references a **stake**: a Nervos DAO deposit of at least 10,000 C
 
 ## Documents
 
-`docs/architecture.md`, `docs/roadmap.md`, `docs/open-questions.md`, `docs/decisions.md`, `docs/install.md`, `docs/testing.md`, `spec/`,
-and the milestone history in `docs/milestones/` (index in `docs/milestones/README.md`).
+| Document | Content |
+|---|---|
+| [`docs/quickstart.md`](docs/quickstart.md) | install and run CSR (start here) |
+| [`docs/install.md`](docs/install.md) | full installation guide: updates, rollback, remote access, uninstall |
+| [`docs/architecture.md`](docs/architecture.md) | how the runner is built |
+| [`docs/roadmap.md`](docs/roadmap.md), [`docs/open-questions.md`](docs/open-questions.md) | what is done and what is open |
+| [`docs/decisions.md`](docs/decisions.md) | design decisions and their reasons |
+| [`docs/testing.md`](docs/testing.md), [`docs/release.md`](docs/release.md) | devnet tests, making a release (developers) |
+| [`spec/`](spec/) | registry, job cells, host interface, ping protocol, monitor API |
+| [`CHANGELOG.md`](CHANGELOG.md) | changes per release |

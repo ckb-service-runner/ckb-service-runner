@@ -6,7 +6,7 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 
 ## Phase 0 — Requirements
 
-- [x] Requirements R1–R4, non-goals and the specification (`docs/spec/CSR-SPEC-v0.2.md`)
+- [x] Requirements R1–R4, non-goals and the specifications in `spec/`
 - [ ] Feedback from CKB / CKB-VM maintainers on the host-interface idea
 - [ ] Funding for a prototype (Spark revision or Community Fund DAO proposal)
 

@@ -1,5 +1,5 @@
 //! Keeper job execution: the run lifecycle, sandbox execution, the run transaction, submission and
-//! settlement tracking (`docs/spec/CSR-SPEC-v0.2.md` §10.3).
+//! settlement tracking (`spec/job-cell-standard.md`).
 //!
 //! Lifecycle of a run (one per job cell outpoint):
 //! `Discovered → Queued → Scheduled → Running → Completed → Submitting → Settled | Lost`,

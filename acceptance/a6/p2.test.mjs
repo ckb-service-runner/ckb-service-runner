@@ -42,8 +42,6 @@ test('app.css: map styles for both themes', () => {
 });
 
 test('docs', () => {
-  assert.ok(fs.existsSync(path.join(ROOT, 'docs', 'milestones', 'A6.md')));
-  assert.match(R('docs/milestones/A6.md'), /CSR monitor/);
   assert.match(R('CHANGELOG.md'), /A6/);
   const api = R('spec/monitor-public-api.md');
   assert.ok(api.includes('/v1/locations') && api.includes('locations_available'));

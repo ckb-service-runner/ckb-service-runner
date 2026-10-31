@@ -77,7 +77,6 @@ test('documentation', () => {
   assert.match(readme, /csr run/);
   assert.match(readme, /csr detect/);
   assert.doesNotMatch(readme, /mempool/i, 'README still mentions the mempool fork');
-  assert.ok(fs.existsSync(path.join(ROOT, 'docs', 'milestones', 'A1.md')));
   assert.match(fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'), /A1/);
   assert.ok(fs.existsSync(path.join(ROOT, 'runner', 'tests', 'mock_monitor')), 'runner/tests/mock_monitor missing');
 });
