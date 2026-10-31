@@ -142,12 +142,23 @@ rpc_url_from_ckb_toml() { # the node's RPC URL from [rpc] listen_address, if it 
   esac
 }
 
+configured_rpc_urls() { # rpc_url of every existing CSR config in $DATA (loopback http only)
+  local f u
+  for f in "$DATA"/csr.toml "$DATA"/csr-*.toml; do
+    [ -f "$f" ] || continue
+    u="$(sed -nE 's/^rpc_url[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$f" | head -1)"
+    case "$u" in http://127.0.0.1:*|http://localhost:*|http://\[::1\]:*) echo "$u" ;; esac
+  done
+}
+
 find_nodes() { # prints "testnet URL" and/or "mainnet URL" (first node per network wins)
   local cands=() u k seen=" " chain net tn="" mn=""
   if [ ${#RPCS[@]} -gt 0 ]; then
     cands=("${RPCS[@]}")
   else
     cands=("${DEFAULT_RPCS[@]}")
+    # nodes an existing CSR install already uses (csr.toml of an older install, csr-<network>.toml)
+    while IFS= read -r u; do if [ -n "$u" ]; then cands+=("$u"); fi; done < <(configured_rpc_urls)
     while IFS= read -r k; do
       [ -n "$k" ] || continue
       if u="$(rpc_url_from_ckb_toml "${k%/data/network/secret_key}/ckb.toml")"; then cands+=("$u"); fi
@@ -190,6 +201,10 @@ check_node() { # checks the node of the current instance ($RPC)
   ok "Indexer module enabled"
 }
 
+release_has_templates() { # release_has_templates DIR: the unpacked release ships the per-network units
+  [ -f "$1/csr@.service" ] && [ -f "$1/csr-update@.path" ] && [ -f "$1/csr-update@.service" ]
+}
+
 install_binary() {
   step "Downloading the latest CSR release"
   local tmp tarball dir
@@ -202,6 +217,9 @@ install_binary() {
   ok "$tarball: checksum OK"
   tar -C "$tmp" -xzf "$tmp/$tarball"
   dir="$tmp/${tarball%.tar.gz}"
+  release_has_templates "$dir" || die "the latest release ($tarball) is older than this installer: it has no
+       csr@.service template (needs CSR 0.5.0 or later). Nothing was changed. Wait for the next release,
+       or use the installer of that release: https://github.com/${REPO}/releases"
   local old=""; [ -x "$BIN" ] && old="$("$BIN" version 2>/dev/null || true)"
   install -m 0755 -o root -g root "$dir/csr" "$BIN"
   ok "installed $("$BIN" version)${old:+ (was: $old)}"

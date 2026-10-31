@@ -5,6 +5,7 @@
 - The network follows the node: the Settings page no longer offers a network field and `PUT /api/settings` refuses `network` (400).
 - New `csr confirm-mainnet` (what `csr run --confirm-mainnet` does once); the installer runs it for the mainnet instance.
 - New `[dashboard] peer_url`: the dashboard of the other instance on the machine, shown as a link next to the network badge (`peer_dashboard` in `/api/status`).
+- The installer also finds the nodes an existing CSR config uses (`rpc_url` of `csr.toml` / `csr-<network>.toml`), and stops before changing anything when the latest release has no `csr@` templates (older than 0.5.0).
 - The update helper restarts every instance (`csr.service` and `csr@*.service`).
 - New template units `config/csr@.service`, `csr-update@.path`, `csr-update@.service` (also in the tarball).
 - Docs: "What it costs an operator" in the README, "One instance per network" in the install guide, Neuron finding in the open questions.
