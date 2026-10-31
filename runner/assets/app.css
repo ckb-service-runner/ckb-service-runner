@@ -21,6 +21,7 @@ a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 .top .btn{margin-left:auto}
 .badge{padding:.15rem .55rem;border-radius:999px;font-size:.72rem;font-weight:700;letter-spacing:.06em;border:1px solid var(--bd);color:var(--mut)}
 .badge.testnet{color:var(--warn);border-color:var(--warn-bd);background:var(--warn-bg)}
+.peer-link{font-size:.75rem;color:var(--mut);margin-left:.5rem}.peer-link:hover{color:var(--fg)}
 .badge.mainnet{color:var(--bad);border-color:var(--bad-bd);background:var(--bad-bg)}
 .nav{display:flex;flex-wrap:wrap;gap:.2rem;padding:0 1.2rem .5rem;max-width:1240px;margin:0 auto;border-bottom:1px solid var(--bd)}
 .nav a{padding:.5rem .7rem;border-radius:8px;color:var(--mut);font-weight:500;font-size:.92rem}

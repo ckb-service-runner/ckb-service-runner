@@ -705,7 +705,6 @@
   };
 
   var FIELDS = [
-    ['network', 'Network', 'select:testnet,mainnet', true],
     ['node.rpc_url', 'Node RPC URL', 'text', true],
     ['node.node_type', 'Node type', 'select:auto,ckb,neuron'],
     ['dashboard.bind', 'Dashboard bind', 'text', true],
@@ -1175,6 +1174,16 @@
     if (!n) return;
     b.textContent = n.toUpperCase();
     b.className = 'badge ' + n;
+    var peer = document.getElementById('peer-dashboard');
+    if (peer) {
+      if (s.peer_dashboard) {
+        peer.href = s.peer_dashboard;
+        peer.textContent = n === 'mainnet' ? 'Testnet dashboard' : 'Mainnet dashboard';
+        peer.hidden = false;
+      } else {
+        peer.hidden = true;
+      }
+    }
     var t = document.getElementById('host-title'), l = document.getElementById('host-line'), f = document.getElementById('foot-version');
     if (t) t.textContent = (s.hostname ? s.hostname + ' · ' : '') + 'Service Runner';
     if (l) l.textContent = 'CKB Service Runner ' + s.version + ' · ' + n + (typeof s.uptime_s === 'number' ? ' · up ' + fmtUp(s.uptime_s) : '');

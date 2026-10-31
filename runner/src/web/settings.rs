@@ -55,6 +55,10 @@ pub async fn put(State(s): St, Json(patch): Json<Value>) -> Response {
     let Some(p) = patch.as_object() else {
         return bad("body must be a JSON object");
     };
+    // D31: the network follows the node; it is set by the installer, never from the dashboard.
+    if p.contains_key("network") {
+        return bad("network follows the node and cannot be changed here");
+    }
     if let Some(d) = p.get("dashboard") {
         let Some(d) = d.as_object() else {
             return bad("dashboard must be an object");

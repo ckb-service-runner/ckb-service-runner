@@ -100,6 +100,8 @@ impl AppState {
         let ok_at = self.last_check_ok_at.load(Ordering::Relaxed);
         json!({
             "network": cfg.network,
+            // The other instance on this machine (D32); `null` when not configured.
+            "peer_dashboard": (!cfg.dashboard.peer_url.is_empty()).then(|| cfg.dashboard.peer_url.clone()),
             "hostname": sysinfo::System::host_name(),
             // Outside links of the dashboard come from here: the assets carry no external URLs (A1).
             "links": {

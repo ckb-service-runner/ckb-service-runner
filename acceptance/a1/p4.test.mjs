@@ -147,11 +147,11 @@ describe('no password, loopback', () => {
     assert.equal(ev.network, 'testnet');
   });
 
-  test('network change requires a restart', async () => {
+  test('the network cannot be changed from the dashboard (D31)', async () => {
     const s = await loggedIn(envw.base);
     const r = await putSettings(envw.base, { network: 'mainnet' }, s);
-    assert.equal(r.status, 200, r.text);
-    assert.equal(r.json.restart_required, true);
+    assert.equal(r.status, 400, r.text);
+    assert.match(r.json.error, /network follows the node/);
   });
 });
 
