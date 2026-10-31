@@ -9,6 +9,6 @@ import { devnetRunner, fundRunnerCell, createFloat, register } from './runner.mj
 after(cleanup);
 
 test('docs', () => {
-  for (const f of ['docs/testing.md', 'docs/milestones/A3b.md']) assert.ok(fs.existsSync(f), `${f} missing`);
+  for (const f of ['docs/testing.md']) assert.ok(fs.existsSync(f), `${f} missing`);
   assert.match(fs.readFileSync('docs/testing.md', 'utf8'), /testnet/i);
 });

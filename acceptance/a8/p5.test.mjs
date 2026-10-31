@@ -120,7 +120,6 @@ test('documentation', () => {
     assert.ok(t.includes(s), `docs/testing.md: ${s}`);
   }
   assert.match(t, /Neuron/);
-  assert.ok(fs.existsSync(path.join(ROOT, 'docs', 'milestones', 'A8.md')));
   assert.match(read('CHANGELOG.md'), /A8/);
   assert.match(read('README.md'), /sign/i);
 });

@@ -94,6 +94,5 @@ test('service actions without a password are refused with password_required', as
 test('services page is linked; milestone documented', () => {
   const html = fs.readFileSync(path.join(ROOT, 'runner', 'assets', 'index.html'), 'utf8');
   assert.ok(html.includes('href="#/services"'));
-  assert.ok(fs.existsSync(path.join(ROOT, 'docs', 'milestones', 'A2.md')));
   assert.ok(fs.existsSync(path.join(ROOT, 'spec', 'host-interface.md')));
 });

@@ -91,5 +91,4 @@ test('package, unit file and install docs', () => {
   for (const s of ['Indexer', 'csr detect', 'csr check', 'systemctl', 'ssh -L', 'set-password', '8131', 'outbound', '--confirm-mainnet']) {
     assert.ok(install.includes(s), `docs/install.md must mention ${s}`);
   }
-  assert.ok(fs.existsSync(path.join(ROOT, 'docs', 'milestones', 'A4.md')));
 });

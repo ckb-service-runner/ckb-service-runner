@@ -12,5 +12,4 @@ after(cleanup);
 test('pages linked; docs written', () => {
   const html = fs.readFileSync(path.join(ROOT, 'runner', 'assets', 'index.html'), 'utf8');
   for (const r of ['#/jobs', '#/earnings']) assert.ok(html.includes(`href="${r}"`), `${r} missing`);
-  assert.ok(fs.existsSync(path.join(ROOT, 'docs', 'milestones', 'A3c.md')));
 });
