@@ -12,8 +12,14 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// Public ed25519 key of the release signer. All zero = not configured: every update is refused.
-pub const RELEASE_PUBKEY: [u8; 32] = [0u8; 32];
+/// Public ed25519 key of the release signer (created offline, Oct 2026; the private key never enters
+/// the repository). All zero = not configured: every update is refused.
+pub const RELEASE_PUBKEY: [u8; 32] = [
+    0x1c, 0x46, 0x34, 0xc3, 0x9c, 0x12, 0xfc, 0x1c,
+    0x0c, 0x3d, 0xd2, 0x27, 0x3e, 0x76, 0xd7, 0xc2,
+    0xa6, 0x5c, 0x4f, 0x0a, 0x95, 0xe6, 0x1f, 0x23,
+    0xe9, 0x68, 0x5e, 0x62, 0x35, 0x1a, 0xa2, 0x82,
+];
 
 pub const REPO: &str = "ckb-service-runner/ckb-service-runner";
 const LATEST_URL: &str =
@@ -470,7 +476,11 @@ mod tests {
         assert!(verify_dir(d.path()).unwrap_err().contains("expected"));
         let asset = asset_name("99.0.0", std::env::consts::ARCH);
         write_staged(d.path(), "99.0.0", &asset, b"bin", b"sums", &[0; 64]).unwrap();
-        assert!(verify_dir(d.path()).unwrap_err().contains("no release key"));
+        let e = verify_dir(d.path()).unwrap_err();
+        assert!(
+            e.contains("no release key") || e.contains("signature does not match"),
+            "{e}"
+        );
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(d.path().join("csr.new"))
             .unwrap()

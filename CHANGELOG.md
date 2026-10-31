@@ -1,11 +1,15 @@
 # Changelog
 
-## 0.1.0
-- First Phase 1 release: release profile, `scripts/package.sh` (tarball + SHA256SUMS), `config/csr.service`, `docs/install.md`, greyed-out runtime toggle on mainnet; `docs/milestones/A4.md`.
-
 ## Unreleased
 - Contracts v3 phase 2: the runner writes and reads Registry v3 (`chain::RegistryV3` encode/decode; `parse_registry_data` still reads v1/v2 cells), runner-owned registry cells with 32-byte dual-lock args, `CSR-ATTEST-v2` (`attest::attestation_message_v2`; `check` and `register create` verify stake and registry type hash, the 8-day cap and the config cell's monitor key), new setting `ranking.public_endpoint` written into the cell (`endpoint`), `register status` shows `registry_version` and `endpoint`; deployments files with `scripts.config_type` (v3; the config cell found under `csr-config-type`, registry args = `config_id`, hashes checked); `build_run` keeps the job output at the job input's index (`JOB_INDEX`). `csr-dev`: `deploy-contracts` deploys `csr-config-type` and a new config cell of that type (`--keep-config` only for such a cell), `clock-update` never moves the clock back, `attest --stake` signs v2. Docs: devnet flow on v3 (`docs/testing.md`), testnet migration (`docs/install.md`).
 - Contracts v3 phase 1 (D20 A–D24 A): `RegistryV3` (node ID once, optional `endpoint`, `version = 3`) and `CSR-ATTEST-v2` (signs stake and registry type hash) in `csr.mol`, `csr-registry` and `csr-job-lock`; 8-day attestation lifetime cap (registry error 24, job lock 18); consent of the stake owner for `peer_id`/`network`/`service_pubkey` changes; 32-byte dual-lock args for runner-owned cells; new `csr-config-type` (Type ID, clock only forward, monitor key fixed, no destroy) on the monitor config cell, found by its type hash (registry args = its Type ID); job refund/recreation at the job input's index (job lock error 19). Specs and `docs/decisions.md` updated. Runner and `csr-dev` follow in later phases.
+
+## 0.2.1
+- First update delivered through the signed update path (dashboard "Update"); the dashboard session helper `anonymous_count` is test-only (no dead-code warning in release builds).
+
+## 0.2.0
+- First signed release: `RELEASE_PUBKEY` is set (ed25519, private key offline), so the dashboard "Update" and `csr update stage` accept releases signed with it; `docs/release.md`.
+- Audit fixes, Oct 2026 (PR #1): the AIWorker branches before contracts v3 (skeleton guard, delete-on-consume, keeper robustness, dashboard security, sandbox storage v2, runner fixes, attestation renewal, check-in v1.1, node identity, cell-consumed trigger, update check) and the integration fixes; a spent cell counts as consumed when the node answers `unknown`; devnet manual checks `scripts/manual-checks.sh`.
 - csr-update-check phase 1 (D5 B): update check and verified staging. `csr update check|stage|verify`, `GET /api/update`, `POST /api/update/install` (needs a dashboard password), daily background check with a notice and "Check for update"/"Update" on the Overview; ed25519-signed `SHA256SUMS` checked against `RELEASE_PUBKEY` (all zeros in this build: every update is refused); root installer `config/csr-update.path`, `config/csr-update.service`, `scripts/install-update.sh` (verify by the installed binary, `csr.prev` rollback); `scripts/release.sh`, `docs/release.md`; `csr --version`.
 - A8b phase 1: `csr-dev attest` no longer has a devnet faucet (`--faucet-ckb`, the transfer, the `faucet` JSON key and the stderr line are gone); the A8 tests that needed it are replaced by `acceptance/a8b/p3`–`p5` with 700 CKB; setup figures in the docs corrected (about 700 CKB to send, registry cell about 540 CKB). See `docs/milestones/A8b.md`.
 - A8b phase 2: dashboard – setup text (700/540 CKB), runner address shown in full without a Copy button, Copy of the text to sign works over plain http (execCommand fallback), project logo (header, login, favicon), PNG served as `image/png`.
@@ -51,3 +55,6 @@
 - Outbound check-in (`ping_mode` outbound/both): `/v1/checkin` → validated challenge → `/v1/answer`, every 10 min (2 s with fast tick), `last_check_ok_at` on acceptance.
 - Rust mock monitor and ping-flow integration tests; README, `docs/milestones/A1.md`, open questions. **Milestone A1 complete.**
 - A3b Phase 3: `csr runner-cell status`, `csr float prepare-*|status`, `csr tx submit`, matching HTTP routes and a dashboard Float page.
+
+## 0.1.0
+- First Phase 1 release: release profile, `scripts/package.sh` (tarball + SHA256SUMS), `config/csr.service`, `docs/install.md`, greyed-out runtime toggle on mainnet; `docs/milestones/A4.md`.
