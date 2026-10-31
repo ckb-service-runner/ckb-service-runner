@@ -9,7 +9,7 @@ import { startChainMock } from './chainmock.mjs';
 after(cleanup);
 
 const DEP = JSON.parse(fs.readFileSync(path.join(ROOT, 'deployments', 'testnet.json'), 'utf8'));
-const TESTNET_URL = 'https://monitor-testnet.vericell.net';
+const TESTNET_URL = 'https://csr-monitor.chainsolution.net/testnet';
 const TESTNET_PK = '0x03db2a5f9af76cf37294137ec5d5533abf014b6c399cd4ca0722778ffa07980c7c';
 
 async function env(name, network, chain) {

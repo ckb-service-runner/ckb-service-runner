@@ -719,3 +719,8 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
 - The old `csr.service`, `csr-update.path` and `csr-update.service` stay in `config/` and in the tarball for manual
   single-instance setups.
 - Version 0.5.0 (D35: same 0.x line for testnet and the mainnet dashboard).
+
+- **D40 – One monitor hostname** (31 Oct 2026): `https://csr-monitor.chainsolution.net/testnet` and `/mainnet`
+  (one monitor process per network behind one Caddy host; the runner keeps the path of `monitor_url`).
+  `config/networks/testnet.toml` points there from 0.5.0; the old `monitor-testnet.vericell.net` stays up until
+  older runners have updated. `mainnet.toml` gets `/mainnet` and the mainnet key once the mainnet monitor runs.

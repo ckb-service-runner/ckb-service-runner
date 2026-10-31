@@ -68,7 +68,7 @@ csr wallet sweep --json                               # one sweep now (needs [pa
 Prerequisites: a synced testnet CKB node (full node with the Indexer module), a funded testnet key, the built contracts.
 
 1. **Deployment.** The testnet deployment is embedded in the runner (`deployments/testnet.json`, compiled in) and `config/networks/testnet.toml` carries the real monitor; nothing to configure. (Developers redeploy with `bash scripts/build-contracts.sh`, free the old cells with `csr-dev reclaim --outpoint 0x<tx>:<i> …` and run `csr-dev deploy-contracts --out deployments/testnet.json`; the v2 → v3 redeploy needs a new config cell, so no `--keep-config` then. Later v3 redeploys may use `--keep-config deployments/testnet.json --reuse-unchanged` as long as `csr-config-type` is unchanged. Until `deployments/testnet.json` is a v3 file the runner refuses `register create` on testnet.)
-2. **Clock.** The monitor `monitor-testnet.vericell.net` keeps the on-chain clock fresh; no `csr-dev clock-update` is needed.
+2. **Clock.** The testnet monitor (`https://csr-monitor.chainsolution.net/testnet`) keeps the on-chain clock fresh; no `csr-dev clock-update` is needed.
 3. **Runner wallet.** `csr identity --json` (network `testnet`) shows `runner_address`; send about 700 CKB there from any wallet (the registry cell takes ≈ 540 CKB, 61 CKB stay as change).
 4. **Sweep (optional).** Set `[payout] sweep_address` to your own wallet's address; the runner sends `sweep_amount_ckb` there whenever the wallet reaches `sweep_threshold_ckb`.
 5. **Stake.** Deposit at least 10,000 CKB into the Nervos DAO with your wallet (Neuron or `ckb-cli dao deposit`); note the deposit's out point `0x<tx hash>:<index>`. CSR never moves it; keep it deposited while registered.
