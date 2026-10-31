@@ -300,6 +300,21 @@ set_key_in_config() { # set_key_in_config PATH
   fi
 }
 
+clear_key_in_config() { # comment out p2p_key_file, so a rejected key never stays configured
+  sed -i -E 's|^p2p_key_file[[:space:]]*=.*|# p2p_key_file = ""|' "$CONF"
+}
+
+keys_for_node() { # keys_for_node URL: the key of the node whose ckb.toml serves URL first, then all other keys
+  local k u first=() rest=()
+  while IFS= read -r k; do
+    [ -n "$k" ] || continue
+    u="$(rpc_url_from_ckb_toml "${k%/data/network/secret_key}/ckb.toml" 2>/dev/null)" || u=""
+    if [ -n "$u" ] && [ "$u" = "$1" ]; then first+=("$k"); else rest+=("$k"); fi
+  done < <(find_keys)
+  if [ ${#first[@]} -gt 0 ]; then printf '%s\n' "${first[@]}"; return; fi
+  [ ${#rest[@]} -eq 0 ] || printf '%s\n' "${rest[@]}"
+}
+
 grant_key_access() { # grant_key_access PATH
   setfacl -m u:csr:r "$1"
   local d; d="$(dirname "$1")"
@@ -332,7 +347,7 @@ setup_identity() {
   local candidates=()
   if [ -n "$KEY" ] && [ ${#NODES[@]} -eq 1 ]; then candidates=("$KEY")
   elif [ -n "$configured" ]; then candidates=("$configured")
-  else mapfile -t candidates < <(find_keys)
+  else mapfile -t candidates < <(keys_for_node "$RPC")
   fi
   if [ ${#candidates[@]} -eq 0 ]; then
     warn "no CKB P2P key found. Run again with --key <ckb data dir>/network/secret_key"
@@ -353,13 +368,19 @@ setup_identity() {
         write_dropin "$k"; ok "node identity: proven ($k)"; return ;;
       mismatch)
         setfacl -x u:csr "$k" 2>/dev/null || true
+        clear_key_in_config
         warn "$k belongs to another node (mismatch), skipped" ;;
+      unreadable)
+        setfacl -x u:csr "$k" 2>/dev/null || true
+        clear_key_in_config
+        warn "$k cannot be read by the csr user (unreadable), skipped" ;;
       *) # the node did not answer: keep the key, CSR proves the identity once the node is up
         write_dropin "$k"
         warn "node identity ${state:-unknown} for $k: kept; CSR proves it once the node answers"
         return ;;
     esac
   done
+  clear_key_in_config
   warn "node identity not proven; the node is not ranked. Fix later: see docs/install.md, \"Node identity\""
 }
 
