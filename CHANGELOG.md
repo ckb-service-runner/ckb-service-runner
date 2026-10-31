@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1
 - CSR monitor map: dots at 60 % of their size; your own node's dot is larger and orange, with a "your node" key under the map and in its label. Needs a monitor whose `/v1/nodes` sends `location` (older monitors: no own dot, nothing else changes).
 - API: `/api/network` passes on the monitor's `node.location` (`{lat, lon}`, the node's 2° map cell, or `null`).
 
