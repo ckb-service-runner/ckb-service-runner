@@ -11,6 +11,7 @@ node_type = "auto"                  # auto | ckb | neuron
 [dashboard]
 bind = "127.0.0.1:8130"             # non-loopback bind requires password_hash (see `csr set-password`)
 password_hash = ""
+peer_url = ""                        # dashboard of the other instance on this machine (testnet/mainnet); "" = none
 
 [ranking]
 join = true

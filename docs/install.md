@@ -27,6 +27,31 @@ cd csr-<version>-linux-x86_64
 sudo install -m 0755 csr /usr/local/bin/csr
 ```
 
+## One instance per network
+
+CSR follows the node: each instance serves exactly one CKB node and takes its network from it. There is no network
+switch in the dashboard. A machine with a testnet and a mainnet node runs two instances of the same binary:
+
+| | testnet | mainnet |
+|---|---|---|
+| service | `csr@testnet` | `csr@mainnet` |
+| config | `/var/lib/csr/csr-testnet.toml` | `/var/lib/csr/csr-mainnet.toml` |
+| dashboard | 127.0.0.1:8130 | 127.0.0.1:8140 |
+| ping listener | 8131 | 8141 |
+| data, keys, logs | `/var/lib/csr/testnet/` | `/var/lib/csr/mainnet/` |
+| update helper | `csr-update@testnet.path` | `csr-update@mainnet.path` |
+
+`scripts/install.sh` finds the nodes itself (127.0.0.1:8114 and the `[rpc] listen_address` of every `ckb.toml` next to a
+node key); give `--rpc http://127.0.0.1:<port>` once per node if they are elsewhere. With two instances it sets
+`[dashboard] peer_url` in both configs, so each dashboard links to the other. A mainnet instance needs a one-time
+confirmation, `sudo -u csr csr --data-root /var/lib/csr --config /var/lib/csr/csr-mainnet.toml confirm-mainnet`
+(the installer runs it; `csr run --confirm-mainnet` once does the same).
+
+**Older single installs** (`/var/lib/csr/csr.toml` with `csr.service`) are migrated by the installer: `csr.toml` is
+moved to `csr-<network>.toml` with all its settings and ports, `csr.service` and `csr-update.path` are disabled and
+`csr@<network>` takes over. The data in `/var/lib/csr/<network>/` is not touched. The manual steps below still work
+for a single instance with `csr.service`.
+
 ## User and data directory
 
 ```sh
@@ -60,9 +85,12 @@ sudo systemctl enable --now csr
 journalctl -u csr -f
 ```
 
-On **mainnet** the first start needs an explicit confirmation: edit the unit
-(`sudo systemctl edit --full csr`), use the commented `--confirm-mainnet` `ExecStart` line once,
-start the service, then switch back to the normal line.
+For one instance per network use the template unit instead: copy your config to
+`/var/lib/csr/csr-<network>.toml`, install `csr@.service`, `csr-update@.path` and `csr-update@.service`, then
+`sudo systemctl enable --now csr@<network> csr-update@<network>.path` (see "One instance per network").
+
+On **mainnet** the first start needs an explicit confirmation: run `csr confirm-mainnet` once with the instance's
+`--data-root` and `--config` (or start once with `csr run --confirm-mainnet`).
 
 ## Dashboard
 
@@ -215,6 +243,15 @@ Data in `/var/lib/csr` is kept. Read `CHANGELOG.md` for config changes.
 
 ## Uninstall
 
+Per network instance (`csr@testnet`, `csr@mainnet`):
+
+```sh
+sudo systemctl disable --now csr@testnet csr-update@testnet.path
+sudo rm /etc/systemd/system/csr@.service /etc/systemd/system/csr-update@.path /etc/systemd/system/csr-update@.service
+```
+
+A single install with `csr.service`:
+
 ```sh
 sudo systemctl disable --now csr csr-update.path
 sudo rm /etc/systemd/system/csr.service /etc/systemd/system/csr-update.path \
@@ -226,8 +263,9 @@ sudo rm -r /var/lib/csr    # deletes keys and data: back up first
 
 ## What is active now
 
-- Active: dashboard, node checks, ranking (join, ping, network page) on testnet and mainnet;
-  on testnet also the service runtime.
-- Not active: on **mainnet** the runtime stays `inactive` (`mainnet_runtime_unlocked = false`);
-  the dashboard shows the runtime toggle greyed out: "Services start on mainnet in Phase 2".
+- Active: dashboard, node checks, ranking (join, ping, network page) on testnet and mainnet. Ranking needs no
+  registration (D29); on testnet also the service runtime, which needs a registration.
+- Not active: on **mainnet** the runtime stays `inactive` (`mainnet_runtime_unlocked = false`) until the 1.x
+  release, once the Phase 2 gate is met (4 months, 20 ranked runners, D36); the dashboard shows the runtime toggle
+  greyed out: "Services start on mainnet in Phase 2".
 - The unit limits CSR to 256 MB and runs it at the lowest CPU and I/O priority.

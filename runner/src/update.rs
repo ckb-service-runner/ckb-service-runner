@@ -358,7 +358,7 @@ async fn stage_release(rel: &Release, dir: &Path) -> Result<Value, String> {
         "dir": dir.display().to_string(),
         "message": format!(
             "Update {version} is verified and staged. The installer checks it again, installs it \
-             and restarts the runner in a few seconds (needs csr-update.path, see docs/install.md)."
+             and restarts the runner in a few seconds (needs csr-update@<network>.path, see docs/install.md)."
         ),
     }))
 }

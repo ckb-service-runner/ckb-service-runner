@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Installs a CSR update that the runner staged in <update dir> (run as root by csr-update.service).
+# Installs a CSR update that the runner staged in <update dir> (run as root by csr-update@<network>.service).
 #
 # The staged files belong to the unprivileged csr user, so they are untrusted: they are read as that
 # user into a root-only work directory, and the INSTALLED binary (/usr/local/bin/csr, trusted) checks
 # the copies (`csr update verify`: release signature, SHA-256, newer version) before they are
 # installed. The previous binary is kept as /usr/local/bin/csr.prev for a rollback.
-# No network access. Messages go to stdout/stderr, i.e. the journal (journalctl -u csr-update).
+# No network access. Messages go to stdout/stderr, i.e. the journal (journalctl -u 'csr-update@*').
 set -euo pipefail
 
 DIR="${1:?usage: install-update.sh <update dir>}"
@@ -58,5 +58,6 @@ else
   install -m 0755 -o root -g root "$PREV" "$BIN.installing"
   mv -f "$BIN.installing" "$BIN"
 fi
-systemctl restart csr
-log "csr restarted"
+# One binary serves every instance (csr@testnet, csr@mainnet, or an old single csr.service).
+systemctl try-restart csr.service 'csr@*.service'
+log "csr instances restarted"

@@ -22,7 +22,7 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const RENEW_INTERVAL: Duration = Duration::from_secs(30 * 60);
 /// The consumed-cell watch asks for the tip at this pace (a new block is ~8–10 s apart).
 const CONSUMED_INTERVAL: Duration = Duration::from_secs(10);
-const MAINNET_MARKER: &str = ".mainnet-confirmed";
+pub const MAINNET_MARKER: &str = ".mainnet-confirmed";
 
 pub fn now() -> i64 {
     SystemTime::now()
@@ -59,7 +59,7 @@ async fn shutdown_signal() {
     }
 }
 
-fn write_marker(path: &Path) -> Result<(), String> {
+pub fn write_marker(path: &Path) -> Result<(), String> {
     std::fs::write(path, format!("confirmed {}\n", now()))
         .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }

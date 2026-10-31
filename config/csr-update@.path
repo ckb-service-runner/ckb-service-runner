@@ -1,0 +1,12 @@
+# Watches for an update staged by the %i instance (dashboard "Update" or `csr update stage`) and starts
+# csr-update@%i.service, which verifies and installs it as root. One binary serves every instance, so the
+# install restarts all of them.
+[Unit]
+Description=CSR - staged update watcher (%i)
+
+[Path]
+PathExists=/var/lib/csr/%i/update/ready.json
+Unit=csr-update@%i.service
+
+[Install]
+WantedBy=multi-user.target

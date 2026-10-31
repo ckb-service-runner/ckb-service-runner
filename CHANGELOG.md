@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+- **Mainnet as a node dashboard** (D29–D39): the installer finds every CKB node on the machine and installs one instance per network: `csr@testnet` (`/var/lib/csr/csr-testnet.toml`, dashboard 8130, ping 8131) and `csr@mainnet` (`csr-mainnet.toml`, dashboard 8140, ping 8141), each with its own update helper `csr-update@<network>.path`. `--rpc` may be given twice. An older install (`csr.toml`, `csr.service`) is migrated to `csr-<network>.toml` and `csr@<network>`, keeping its settings and ports. On mainnet the Service Runtime stays inactive until 1.x.
+- The network follows the node: the Settings page no longer offers a network field and `PUT /api/settings` refuses `network` (400).
+- New `csr confirm-mainnet` (what `csr run --confirm-mainnet` does once); the installer runs it for the mainnet instance.
+- New `[dashboard] peer_url`: the dashboard of the other instance on the machine, shown as a link next to the network badge (`peer_dashboard` in `/api/status`).
+- The update helper restarts every instance (`csr.service` and `csr@*.service`).
+- New template units `config/csr@.service`, `csr-update@.path`, `csr-update@.service` (also in the tarball).
+- Docs: "What it costs an operator" in the README, "One instance per network" in the install guide, Neuron finding in the open questions.
+
 ## 0.4.1
 - CSR monitor map: dots at 60 % of their size; your own node's dot is larger and orange, with a "your node" key under the map and in its label. Needs a monitor whose `/v1/nodes` sends `location` (older monitors: no own dot, nothing else changes).
 - API: `/api/network` passes on the monitor's `node.location` (`{lat, lon}`, the node's 2° map cell, or `null`).

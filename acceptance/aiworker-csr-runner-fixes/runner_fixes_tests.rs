@@ -80,8 +80,10 @@ fn service_totals_count_settled_jobs_and_tips() {
 
 #[test]
 fn mainnet_has_no_placeholder_monitor_key() {
+    // D34 (0.5.0): mainnet ships the real monitor key; it must be usable, never a placeholder.
     let d = crate::network::NetworkDefaults::for_network("mainnet");
-    assert!(d.monitor_pubkey.is_empty());
+    assert!(crate::network::monitor_key_usable(&d.monitor_pubkey));
+    assert_eq!(d.monitor_url, "https://csr-monitor.chainsolution.net/mainnet");
     assert!(!crate::network::monitor_key_usable(""));
     assert!(!crate::network::monitor_key_usable("0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"));
     let t = crate::network::NetworkDefaults::for_network("testnet");

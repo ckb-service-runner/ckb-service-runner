@@ -66,6 +66,8 @@ const NETWORKS: [&str; 2] = ["testnet", "mainnet"];
 enum Command {
     /// Print the version
     Version,
+    /// Confirm that this instance runs on mainnet (what `run --confirm-mainnet` does once)
+    ConfirmMainnet,
     /// Config tools
     Config {
         #[command(subcommand)]
@@ -441,6 +443,35 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
     match &cli.command {
+        Command::ConfirmMainnet => {
+            let cfg = match load_config(&cli) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+            };
+            if cfg.network != "mainnet" {
+                eprintln!(
+                    "confirm-mainnet: this config is for {}, not mainnet; nothing written",
+                    cfg.network
+                );
+                return ExitCode::from(1);
+            }
+            let dir = data_root(&cli).join("mainnet");
+            let marker = dir.join(run::MAINNET_MARKER);
+            if !marker.exists() {
+                if let Err(e) = std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("cannot create {}: {e}", dir.display()))
+                    .and_then(|_| run::write_marker(&marker))
+                {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+            }
+            println!("mainnet confirmed: {}", marker.display());
+            ExitCode::SUCCESS
+        }
         Command::Version => {
             println!("csr {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

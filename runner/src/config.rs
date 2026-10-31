@@ -47,6 +47,8 @@ pub struct NodeCfg {
 pub struct DashboardCfg {
     pub bind: String,
     pub password_hash: String,
+    /// Dashboard URL of this machine's other instance (testnet <-> mainnet, D32); empty = none.
+    pub peer_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -199,6 +201,7 @@ impl Default for DashboardCfg {
         DashboardCfg {
             bind: "127.0.0.1:8130".into(),
             password_hash: String::new(),
+            peer_url: String::new(),
         }
     }
 }
@@ -249,6 +252,22 @@ impl Default for LoggingCfg {
             level: "info".into(),
         }
     }
+}
+
+/// `dashboard.peer_url`: empty, or `http://` / `https://` with a non-empty rest, no whitespace, ≤ 200 bytes.
+pub fn validate_peer_url(u: &str) -> Result<(), String> {
+    if u.is_empty() {
+        return Ok(());
+    }
+    let rest = u
+        .strip_prefix("http://")
+        .or_else(|| u.strip_prefix("https://"));
+    if u.len() > 200 || u.chars().any(char::is_whitespace) || rest.map_or(true, str::is_empty) {
+        return Err(format!(
+            "dashboard.peer_url must be empty or an http(s) URL of at most 200 bytes, got \"{u}\""
+        ));
+    }
+    Ok(())
 }
 
 fn one_of(what: &str, v: &str, allowed: &[&str]) -> Result<(), String> {
@@ -425,6 +444,7 @@ impl Config {
             &self.ranking.ping_mode,
             &["inbound", "outbound", "both"],
         )?;
+        validate_peer_url(&self.dashboard.peer_url)?;
         one_of(
             "logging.level",
             &self.logging.level,
@@ -577,6 +597,20 @@ pub fn parse_pubkey(s: &str) -> Result<secp256k1::PublicKey, String> {
 mod tests {
 
     #[test]
+    fn peer_url_validation() {
+        for ok in ["", "http://127.0.0.1:8140", "https://node.example:8140/"] {
+            assert!(validate_peer_url(ok).is_ok(), "{ok}");
+        }
+        let long = format!("http://{}:1", "a".repeat(200));
+        for bad in ["ftp://x:1", "127.0.0.1:8140", "http://", "https://", "http://a b:1", long.as_str()] {
+            assert!(validate_peer_url(bad).is_err(), "{bad}");
+        }
+        let c = Config::parse("[dashboard]\npeer_url = \"http://127.0.0.1:8140\"").unwrap();
+        assert_eq!(c.dashboard.peer_url, "http://127.0.0.1:8140");
+        assert!(Config::parse("[dashboard]\npeer_url = \"nope\"").is_err());
+    }
+
+    #[test]
     fn auto_renew_is_on_by_default_and_can_be_switched_off() {
         assert!(Config::default().registry.auto_renew);
         assert!(Config::parse("").unwrap().registry.auto_renew);
@@ -604,11 +638,9 @@ mod tests {
     fn network_defaults_parse() {
         for n in ["testnet", "mainnet"] {
             let d = crate::network::NetworkDefaults::for_network(n);
-            if n == "mainnet" {
-                assert!(d.monitor_pubkey.is_empty() && d.monitor_url.is_empty());
-            } else {
-                parse_pubkey(&d.monitor_pubkey).unwrap();
-            }
+            // D34: both networks ship their monitor (mainnet since 0.5.0).
+            parse_pubkey(&d.monitor_pubkey).unwrap();
+            assert!(d.monitor_url.starts_with("https://"), "{n}");
         }
     }
 
