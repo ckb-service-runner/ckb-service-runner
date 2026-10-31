@@ -3,7 +3,7 @@
 CSR runs beside your CKB node, shows a dashboard and joins the node ranking.
 Linux x86_64 only (Windows and macOS are not supported).
 
-New here? The [quick start](quickstart.md) walks through a first testnet install step by step. This guide is the
+New here? On testnet, `scripts/install.sh` does all of this for you; see the [quick start](quickstart.md). This guide is the
 reference behind it.
 
 ## Requirements

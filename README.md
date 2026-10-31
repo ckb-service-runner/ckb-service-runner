@@ -1,5 +1,14 @@
 # CSR – CKB Service Runner
 
+**Install** (Ubuntu/Debian x86_64, beside a synced CKB testnet node, about 5 minutes):
+
+```sh
+curl -fLO https://raw.githubusercontent.com/ckb-service-runner/ckb-service-runner/main/scripts/install.sh
+sudo bash install.sh
+```
+
+Prerequisites, options and the manual steps: **[quick start](docs/quickstart.md)**.
+
 CSR is a Rust side application that runs next to a fully synced [CKB](https://github.com/nervosnetwork/ckb) full node
 and lets the node earn: it is ranked, it runs services and it collects tips. It is one binary, `csr`, with an embedded
 web dashboard (no separate web server, no build step). CSR never edits your `ckb.toml`.
@@ -22,8 +31,7 @@ their wallet (Neuron "Sign message"), nothing else.
 
 ## Install
 
-**Operators:** follow the [quick start](docs/quickstart.md) (Ubuntu/Debian, about 15 minutes) to install the latest
-release beside your node. The [full installation guide](docs/install.md) covers updates, remote access and uninstalling.
+**Operators:** run `scripts/install.sh` as shown at the top, or follow the [quick start](docs/quickstart.md) step by step. The [full installation guide](docs/install.md) covers updates, remote access and uninstalling.
 
 ### Build from source
 
