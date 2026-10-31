@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+- Dashboard: elements marked `hidden` stay hidden (the "Remove the registration? Yes, remove / Cancel" confirmation was always visible because `.row` set `display:flex`).
+- A new registration (`csr register create`, dashboard "Register") clears the error of an earlier attestation renewal.
+- "Check for update" asks GitHub again (cache at most 60 s instead of 1 hour); the daily background check keeps the hour.
+
 ## 0.3.0
 - Contracts v3 on testnet (`deployments/testnet.json`, new config cell `0x912124d6…`): Registry v3, CSR-ATTEST-v2 (stake and registry type hash signed), `csr-config-type`, 8-day attestation cap, refund at the job input's index; runners register again (`csr register create`). Docs follow the code (csr-docs). Devnet tests and the manual checks follow v3.
 - Contracts v3 phase 2: the runner writes and reads Registry v3 (`chain::RegistryV3` encode/decode; `parse_registry_data` still reads v1/v2 cells), runner-owned registry cells with 32-byte dual-lock args, `CSR-ATTEST-v2` (`attest::attestation_message_v2`; `check` and `register create` verify stake and registry type hash, the 8-day cap and the config cell's monitor key), new setting `ranking.public_endpoint` written into the cell (`endpoint`), `register status` shows `registry_version` and `endpoint`; deployments files with `scripts.config_type` (v3; the config cell found under `csr-config-type`, registry args = `config_id`, hashes checked); `build_run` keeps the job output at the job input's index (`JOB_INDEX`). `csr-dev`: `deploy-contracts` deploys `csr-config-type` and a new config cell of that type (`--keep-config` only for such a cell), `clock-update` never moves the clock back, `attest --stake` signs v2. Docs: devnet flow on v3 (`docs/testing.md`), testnet migration (`docs/install.md`).

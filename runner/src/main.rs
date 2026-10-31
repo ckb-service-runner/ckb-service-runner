@@ -652,7 +652,7 @@ fn main() -> ExitCode {
                     eprintln!("{e}");
                     return ExitCode::from(1);
                 }
-                node_cmd(&cli, *json, |c, cfg, (id, _)| async move {
+                node_cmd(&cli, *json, |c, cfg, (id, net_dir)| async move {
                     let att = match attestation {
                         Some(f) => chain::read_json(f)?,
                         None => {
@@ -661,7 +661,12 @@ fn main() -> ExitCode {
                                 .await?
                         }
                     };
-                    c.register_create(&att, stake, consent).await
+                    let r = c.register_create(&att, stake, consent).await?;
+                    // A new attestation is in the cell: an error of an earlier renewal no longer applies.
+                    if let Ok(db) = db::Db::open(&net_dir.join("csr.db")) {
+                        let _ = db.put_setting(crate::renew::RENEWAL_ERROR, "");
+                    }
+                    Ok(r)
                 })
             }
             RegisterAction::Refresh { json } => node_cmd(&cli, *json, |c, cfg, (id, net_dir)| async move {
