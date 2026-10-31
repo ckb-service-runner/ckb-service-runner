@@ -3,11 +3,11 @@
   --ac:#1b9a5b;--ac-ink:#ffffff;--ok:#0f7a43;--ok-bg:rgba(27,154,91,.10);--ok-bd:#9fd6b7;
   --warn:#8a5d00;--warn-bg:rgba(214,158,46,.14);--warn-bd:#e2c27a;--bad:#b42318;--bad-bg:rgba(220,38,38,.08);--bad-bd:#f0a8a2;
   --link:#1d63a8;--track:#e3ebe6;--mono:ui-monospace,'JetBrains Mono','SFMono-Regular',Menlo,Consolas,monospace;
-  --wm-land:#fff;--wm-border:#d6ddd9;--wm-shadow:#e1ebe5;--wm-dot:#1b9a5b}
+  --wm-land:#fff;--wm-border:#d6ddd9;--wm-shadow:#e1ebe5;--wm-dot:#1b9a5b;--wm-own:#e8730c}
 :root[data-theme=dark]{--bg:#0a0f0d;--fg:#e8f1ec;--card:#101815;--card2:#0c1310;--bd:#1d2a25;--bd2:#18231f;--mut:#93a89e;
   --ac:#3ddc84;--ac-ink:#06120c;--ok:#5fe39b;--ok-bg:rgba(61,220,132,.08);--ok-bd:#2a5a40;
   --warn:#f3c34f;--warn-bg:rgba(240,180,41,.08);--warn-bd:#5a4a1d;--bad:#ff8f8f;--bad-bg:rgba(255,91,91,.08);--bad-bd:#6b2a2a;
-  --link:#7cc4ff;--track:#1a2622;--wm-land:#16211d;--wm-border:#2a3833;--wm-shadow:#070b09;--wm-dot:#3ddc84}
+  --link:#7cc4ff;--track:#1a2622;--wm-land:#16211d;--wm-border:#2a3833;--wm-shadow:#070b09;--wm-dot:#3ddc84;--wm-own:#ffa94d}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,'Segoe UI',Inter,sans-serif}
 a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
@@ -146,6 +146,8 @@ tr.click{cursor:pointer}
 .wm-shadow path{fill:var(--wm-shadow)}
 .wm-c{fill:var(--wm-land);stroke:var(--wm-border);stroke-width:.3;stroke-linejoin:round;stroke-linecap:round}
 .wm-dot{fill:var(--wm-dot);fill-opacity:.8;stroke:var(--wm-land);stroke-width:.3;cursor:pointer}
+.wm-dot.wm-own{fill:var(--wm-own);fill-opacity:.95;stroke-width:.6}
+.wm-key{display:inline-block;width:.7em;height:.7em;border-radius:50%;background:var(--wm-own);margin:0 .3em 0 .6em;vertical-align:baseline}
 .credit{color:var(--mut);font-size:.75rem;margin:.4rem 0 0}
 .logo-full{max-width:220px;display:block;margin:0 0 .8rem}
 footer.foot{max-width:1240px;margin:0 auto;padding:.4rem 1.2rem 1.4rem;display:flex;flex-wrap:wrap;justify-content:space-between;gap:.5rem;color:var(--mut);font-size:.78rem}

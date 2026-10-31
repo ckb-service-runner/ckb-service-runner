@@ -577,12 +577,17 @@
       var d = dots[Number(t.getAttribute('data-index'))];
       if (d) mapInfo.textContent = d.label;
     });
-    function drawMap(nw) {
+    function drawMap(nw, own) {
       var ok = !!(nw && nw.locations_available);
       var list = ok ? (nw.locations || []) : [];
-      mapBox.innerHTML = window.CSRWorldMap.svg(list, {label: 'CSR runners on a world map'});
-      dots = window.CSRWorldMap.dots(list);
-      mapInfo.textContent = ok ? 'Tap a dot for details.' : 'Location data is not available from the monitor.';
+      mapBox.innerHTML = window.CSRWorldMap.svg(list, {label: 'CSR runners on a world map', own: own});
+      dots = window.CSRWorldMap.dots(list, own);
+      if (!ok) { mapInfo.textContent = 'Location data is not available from the monitor.'; return; }
+      mapInfo.textContent = 'Tap a dot for details.';
+      if (dots.some(function (d) { return d.own; })) {
+        mapInfo.appendChild(el('span', 'wm-key'));
+        mapInfo.appendChild(document.createTextNode('your node'));
+      }
     }
     root.appendChild(g); root.appendChild(cm); root.appendChild(cc);
     function load() {
@@ -596,7 +601,7 @@
         cm.hidden = false;
         stale(cw, j);
         var nw = j.network, n = j.node;
-        drawMap(nw);
+        drawMap(nw, n && n.location);
         dl(cw, [['Nodes worldwide', nw ? nw.nodes_total : null], ['Nodes reachable', nw ? nw.nodes_reachable : null],
           ['Updated', nw ? fmtTime(nw.updated_at) : null], ['Fetched', fmtTime(j.fetched_at)], ['Monitor', j.monitor_url]]);
         var ping = j.ping || {};
