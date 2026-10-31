@@ -100,6 +100,17 @@ impl AppState {
         let ok_at = self.last_check_ok_at.load(Ordering::Relaxed);
         json!({
             "network": cfg.network,
+            "hostname": sysinfo::System::host_name(),
+            // Outside links of the dashboard come from here: the assets carry no external URLs (A1).
+            "links": {
+                "explorer": match cfg.network.as_str() {
+                    "mainnet" => Some("https://explorer.nervos.org"),
+                    "testnet" => Some("https://testnet.explorer.nervos.org"),
+                    _ => None,
+                },
+                "nodes_list": (cfg.network == "mainnet").then_some("https://nodes.ckb.dev/"),
+                "source": "https://github.com/ckb-service-runner/ckb-service-runner",
+            },
             "version": env!("CARGO_PKG_VERSION"),
             "uptime_s": self.started.elapsed().as_secs(),
             "peer_id": *self.peer_id.read().unwrap(),
@@ -147,6 +158,12 @@ impl AppState {
             "best_known": r.best_known,
             "tip_lag": r.tip_lag,
             "epoch": s.tip.as_ref().and_then(|t| crate::node::rpc::hex_u64(&json!(t.epoch))).map(|e| e & 0xff_ffff),
+            // The packed epoch: number (24 bits), index (16), length (16).
+            "epoch_index": s.tip.as_ref().and_then(|t| crate::node::rpc::hex_u64(&json!(t.epoch))).map(|e| (e >> 24) & 0xffff),
+            "epoch_length": s.tip.as_ref().and_then(|t| crate::node::rpc::hex_u64(&json!(t.epoch))).map(|e| (e >> 40) & 0xffff),
+            "tip_timestamp_ms": s.tip.as_ref().and_then(|t| t.timestamp_ms),
+            "node_id": s.node_id,
+            "rpc_url": self.config.read().unwrap().node.rpc_url.clone(),
             "peers_in": peers_in,
             "peers_out": peers_out,
             "indexer_tip": r.indexer_tip,

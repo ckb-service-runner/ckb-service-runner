@@ -98,6 +98,11 @@ pub struct NodeStats {
     /// The monitor's view of the registration stake (any JSON); `null` if it sends none.
     #[serde(default)]
     pub stake: Option<serde_json::Value>,
+    /// score_v1 (0–100) and its terms (`a30`, `s30`, `f30`, `t`, `age_days`); absent from older monitors.
+    #[serde(default)]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub metrics: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]

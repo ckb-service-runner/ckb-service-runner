@@ -20,6 +20,7 @@ pub struct Config {
     pub storage: StorageCfg,
     pub logging: LoggingCfg,
     pub payout: PayoutCfg,
+    pub registry: RegistryCfg,
     /// Only valid with `network = "devnet"` (debug builds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub devnet: Option<DevnetCfg>,
@@ -133,6 +134,21 @@ pub struct PayoutCfg {
     pub sweep_amount_ckb: u64,
 }
 
+/// `[registry]`: the runner-owned registration.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct RegistryCfg {
+    /// Renew the monitor's attestation automatically, 2 days before it expires (on by default; works
+    /// whether the service runtime is on or off).
+    pub auto_renew: bool,
+}
+
+impl Default for RegistryCfg {
+    fn default() -> Self {
+        RegistryCfg { auto_renew: true }
+    }
+}
+
 impl Default for PayoutCfg {
     fn default() -> Self {
         PayoutCfg {
@@ -164,6 +180,7 @@ impl Default for Config {
             storage: StorageCfg::default(),
             logging: LoggingCfg::default(),
             payout: PayoutCfg::default(),
+            registry: RegistryCfg::default(),
             devnet: None,
         }
     }
@@ -558,6 +575,14 @@ pub fn parse_pubkey(s: &str) -> Result<secp256k1::PublicKey, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn auto_renew_is_on_by_default_and_can_be_switched_off() {
+        assert!(Config::default().registry.auto_renew);
+        assert!(Config::parse("").unwrap().registry.auto_renew);
+        assert!(!Config::parse("[registry]\nauto_renew = false").unwrap().registry.auto_renew);
+        assert!(Config::parse("[registry]\nauto_renw = false").is_err(), "unknown keys are refused");
+    }
     use super::*;
 
     fn err(text: &str) -> String {

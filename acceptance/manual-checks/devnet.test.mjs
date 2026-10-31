@@ -221,7 +221,8 @@ test('spec 09: automatic renewal near the expiry, error while the monitor is dow
   let lifetime = 1.5 * DAY;                  // inside the 2-day renewal window: due at once
   let mon = await startDevnetMonitor(port, () => Date.now() + lifetime);
   const r = await runner('mc-renew', undefined, (c) => {
-    c.runtime.enabled = true;
+    // v0.4.0: auto renew (on by default) works with the service runtime off.
+    c.runtime.enabled = false;
     c.monitor = { url: `http://127.0.0.1:${port}`, pubkey: MONITOR_PUBKEY };
     return c;
   });

@@ -32,6 +32,8 @@ pub struct TipHeader {
     pub number: u64,
     pub hash: String,
     pub epoch: String,
+    /// Block timestamp in ms (`None` if the node sent none).
+    pub timestamp_ms: Option<u64>,
 }
 
 /// Raw facts about the node; `None` means the call failed or the method is missing.
@@ -136,6 +138,7 @@ pub async fn fetch_snapshot(c: &RpcClient) -> Snapshot {
             number: hex_u64(v.get("number")?)?,
             hash: v.get("hash")?.as_str()?.to_string(),
             epoch: v.get("epoch")?.as_str()?.to_string(),
+            timestamp_ms: v.get("timestamp").and_then(hex_u64),
         })
     });
     let ni = opt(c.call("local_node_info", json!([])).await, &mut s);
@@ -249,6 +252,7 @@ mod tests {
                 number: 1000,
                 hash: "0xab".into(),
                 epoch: "0x1".into(),
+                timestamp_ms: None,
             }),
             chain_info: Some(("ckb_testnet".into(), false)),
             sync: Some((false, 1000)),

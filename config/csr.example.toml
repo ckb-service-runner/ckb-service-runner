@@ -56,3 +56,8 @@ level = "info"                      # error | warn | info | debug | trace
 sweep_address = ""                  # "" = no sweep; a full-format address (ckb1…/ckt1…) of this network
 sweep_threshold_ckb = 1500          # >= sweep_amount_ckb + 100, <= 2000000000
 sweep_amount_ckb = 1000             # 61..=1000000000
+
+[registry]
+# Renew the monitor's attestation of the registration automatically, 2 days before it expires
+# (also while the service runtime is off). Each renewal costs one small fee from the runner wallet.
+auto_renew = true
