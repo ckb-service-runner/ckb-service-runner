@@ -9,15 +9,7 @@
   "monitor_pubkey": "0x03db2a5f9af76cf37294137ec5d5533abf014b6c399cd4ca0722778ffa07980c7c",
   "network": "testnet",
   "registry_type_hash": "0xcbde41dc5ccedda96c6ceaa441317817eb35630859a50f4c8b5fc4a2226173f0",
-  "rpc": "http://127.0.0.1:8112",
   "scripts": {
-    "anyone_can_pay": {
-      "code_hash": "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356",
-      "dep_type": "dep_group",
-      "hash_type": "type",
-      "index": 0,
-      "tx_hash": "0xec26b0f85ed839ece5f11c4c4e837ec359f5adc4420410f6453b1f6b60fb96a6"
-    },
     "config_type": {
       "code_hash": "0x19f9c25e4cb49cf0e57379f9fc8ec3dd2e5a07c26eec33eca0c041e4e0c05b22",
       "hash_type": "data2",

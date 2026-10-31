@@ -389,7 +389,10 @@ fn deploy(
             json!({"code_hash": code_hash, "hash_type": "data2", "tx_hash": tx_hash, "index": 0}),
         );
     }
-    scripts.insert("anyone_can_pay".into(), deploy_acp(ctx, acp)?);
+    // The runner reads no anyone-can-pay entry since A8; the devnet keeps it for the older tests (F-RUN-021).
+    if chain.devnet {
+        scripts.insert("anyone_can_pay".into(), deploy_acp(ctx, acp)?);
+    }
     let (config_cell, config_id, monitor_pubkey) = match kept {
         Some(k) => {
             let id = hex_arg(
@@ -447,15 +450,17 @@ fn deploy(
         // contracts v3: the registry's args are the config id (`spec/registry.md` §2)
         .args(Bytes::copy_from_slice(&config_id).pack())
         .build();
-    let d = json!({
+    let mut d = json!({
         "contracts": "v3",
         "network": chain.network_name(),
-        "rpc": chain.rpc.url,
         "scripts": scripts,
         "config_cell": config_cell,
         "registry_type_hash": h(registry_type.calc_script_hash().as_slice()),
         "monitor_pubkey": monitor_pubkey,
     });
+    if chain.devnet {
+        d["rpc"] = json!(chain.rpc.url); // a local URL: never in the shipped testnet file (F-RUN-021)
+    }
     write_json(out, &d)?;
     Ok(json!({"file": out, "deployments": d, "reused": reused}))
 }

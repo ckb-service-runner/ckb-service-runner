@@ -2131,11 +2131,14 @@ mod tests {
     #[test]
     fn embedded_testnet_deployment_parses() {
         let d = parse_deployments(TESTNET_DEPLOYMENTS, "deployments/testnet.json").unwrap();
+        // contracts v3 on testnet (Oct 2026)
         assert_eq!(
             format!("{:x}", d.registry.code_hash),
-            "411aceb357a61684226169902cab2ccf64f470f0aaf93687d7cd2904f3c741d8"
+            "c047d4036a79f38535eb8560f17b79aea100f9e27c2f9267c9fa333d4ebd5067"
         );
         assert_eq!(d.registry.dep_type, DepType::Code);
+        assert!(d.config_type.is_some(), "the testnet file is a contracts v3 deployment");
+        assert_eq!(d.registry_args(), d.config_type_args);
     }
 
     #[test]
@@ -2238,9 +2241,12 @@ mod tests {
         assert_eq!(out_point_str(&stake), format!("0x{}:3", "5a".repeat(32)));
     }
 
-    /// A v3 deployments file: the testnet file plus `scripts.config_type`, hashes made consistent.
+    /// The A8 (contracts v2) testnet deployment, replaced by contracts v3 in Oct 2026.
+    const TESTNET_A8_DEPLOYMENTS: &str = include_str!("testdata/deployments-testnet-a8.json");
+
+    /// A v3 deployments file: the A8 testnet file plus `scripts.config_type`, hashes made consistent.
     fn v3_deployments() -> Value {
-        let mut v: Value = serde_json::from_str(TESTNET_DEPLOYMENTS).unwrap();
+        let mut v: Value = serde_json::from_str(TESTNET_A8_DEPLOYMENTS).unwrap();
         let mut d3 = parse_deployments(&v.to_string(), "x").unwrap();
         v["scripts"]["config_type"] = json!({
             "code_hash": format!("0x{}", "c1".repeat(32)), "hash_type": "data2",
@@ -2264,8 +2270,8 @@ mod tests {
             packed::Byte::new(ScriptHashType::Data2 as u8)
         );
         assert_eq!(d.registry_args(), d.config_type_args);
-        // the testnet file (contracts v2) still parses, with the Type ID config cell
-        let v2 = parse_deployments(TESTNET_DEPLOYMENTS, "t").unwrap();
+        // the A8 testnet file (contracts v2) still parses, with the Type ID config cell
+        let v2 = parse_deployments(TESTNET_A8_DEPLOYMENTS, "t").unwrap();
         assert!(v2.config_type.is_none());
         assert_eq!(v2.registry_args(), v2.config_type_hash.as_bytes());
         // inconsistent hashes are refused

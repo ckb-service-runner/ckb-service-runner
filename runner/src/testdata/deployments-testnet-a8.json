@@ -1,0 +1,37 @@
+{
+  "config_cell": {
+    "index": 0,
+    "tx_hash": "0x73e9db7db9d10c7ab4069b91a466651ab1216bae6be9a6ebab0032b1c973d528",
+    "type_args": "0xa98e580e53599b845b54ca0471a80b5e19813a6a8c4758876b60a95df00e0e8e",
+    "type_hash": "0x581bc7bfe6c621361d665f79452e4ce3c8644d134980c0d29ca5302cd6b37439"
+  },
+  "monitor_pubkey": "0x03db2a5f9af76cf37294137ec5d5533abf014b6c399cd4ca0722778ffa07980c7c",
+  "network": "testnet",
+  "registry_type_hash": "0x5f0c1dc9ea126bd2464983a60f11731ce3a68a499ec37ea8f516fd2c06f32cb6",
+  "scripts": {
+    "dual_lock": {
+      "code_hash": "0xe81c8076b9fd9e18e2394a5933f841b6ce924d398d52bdcd26f876378a7feb76",
+      "hash_type": "data2",
+      "index": 0,
+      "tx_hash": "0x21ba95ed7e34f694d4bf2302e6197ee3f396d93abde79373d4621a7dd267728e"
+    },
+    "job_lock": {
+      "code_hash": "0x93122d3717533f248c22b7a4cf208f1bcf5226799b890fc758dc494e9d3d0657",
+      "hash_type": "data2",
+      "index": 0,
+      "tx_hash": "0x87470ffb6c19732bb2323fa3c2e2d6a59533154e3ba26ebe5f0e1ca481acf431"
+    },
+    "job_type": {
+      "code_hash": "0x05d4c13da30a7aeeb85d7dca5b578d65ee7e53a5393bedae1b3d21ad30711f64",
+      "hash_type": "data2",
+      "index": 0,
+      "tx_hash": "0xc39018b91d82f324e9c56b02d21963c48a768838cc68b7e390a8b5846926d276"
+    },
+    "registry": {
+      "code_hash": "0x411aceb357a61684226169902cab2ccf64f470f0aaf93687d7cd2904f3c741d8",
+      "hash_type": "data2",
+      "index": 0,
+      "tx_hash": "0xfe9a2556f632079ec2a4c08a0b9c371685d7de5d3dfd4dbc4b5c70fae18b2f58"
+    }
+  }
+}
