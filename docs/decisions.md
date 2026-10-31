@@ -728,3 +728,7 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
   `https://csr-monitor.chainsolution.net/mainnet` and its key `0x034cb482…1c6eff`. The tests
   `config::tests::network_defaults_parse` and `mainnet_has_no_placeholder_monitor_key` now check a usable mainnet
   key instead of an empty one. Nothing is deployed on the mainnet chain for 0.5.0 (no contracts, no config cell).
+- **Installer, first real run** (31 Oct 2026, pswsl): the latest release was still 0.4.1 (no templates) and the testnet
+  node on 8112 was not found (its `ckb.toml` is not next to a found key with a loopback `listen_address`). Fixes: the
+  candidates also include the `rpc_url` of every existing CSR config in `/var/lib/csr`; `install_binary` stops with
+  "older than this installer" before installing anything when the release has no `csr@` templates.
