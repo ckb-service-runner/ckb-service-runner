@@ -37,7 +37,8 @@ sudo bash install.sh
 ```
 
 The script checks your node, downloads the latest release and verifies its checksum, creates the `csr` user and
-`/var/lib/csr/csr.toml` (testnet, `ping_mode = "outbound"`, which works behind a home router), finds your node's
+`/var/lib/csr/csr.toml` (testnet, `ping_mode = "outbound"`, which works behind a home router, and the service runtime
+on: it runs only the services you approve), finds your node's
 P2P key and proves the node identity, starts CSR as a service with automatic updates, and asks for a dashboard
 password. It never changes your CKB node or its `ckb.toml`.
 
@@ -52,6 +53,7 @@ Options (`sudo bash install.sh --help`):
 | `--key PATH` | your node's key, if the script does not find it (`<ckb data dir>/network/secret_key`) |
 | `--rpc URL` | the node's RPC if it is not `http://127.0.0.1:8114` |
 | `--inbound` | answer the monitor on TCP 8131 instead of `outbound` (port must be reachable) |
+| `--no-runtime` | install with the service runtime off (`[runtime] enabled = false`) |
 | `--no-identity`, `--no-password`, `-y` | skip the identity proof, the password, or all questions |
 
 Prefer to type each command yourself? Follow the [manual installation](#manual-installation) below instead.
@@ -89,8 +91,8 @@ registered:
    yours; the registration only refers to it.
 4. On **Wallet & registration**, enter the deposit, sign the shown text in Neuron ("Sign message"), paste the
    signature and register.
-5. Set `[runtime] enabled = true` in `/var/lib/csr/csr.toml` (or switch the runtime on in the dashboard),
-   approve only services you trust, and restart CSR.
+5. On the **Services** page, approve only services you trust. The runtime is already on after the install
+   script (check the Runtime card on the Overview); nothing runs until you approve a service.
 
 Details: [Runner wallet, stake and registration](../README.md#runner-wallet-stake-and-registration).
 
@@ -167,12 +169,12 @@ join = true
 ping_mode = "outbound"     # the example file says "inbound": change it
 
 [runtime]
-enabled = false
+enabled = true             # runs only services you approve
 ```
 
 `ping_mode = "outbound"` works behind a home router or firewall: CSR contacts the monitor itself, so you do not
 have to open a port. (If your machine accepts inbound connections on TCP 8131 you can use `"inbound"` instead.)
-The runtime stays off until the installation works.
+With the runtime on, CSR still runs nothing until you approve a service on the Services page.
 
 ### M3. Prove your node's identity (recommended)
 
