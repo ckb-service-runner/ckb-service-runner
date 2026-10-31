@@ -103,7 +103,10 @@ rpc_call() { # rpc_call method -> JSON result on stdout; fails on no answer or a
 check_node() {
   step "Checking the CKB node at $RPC"
   rpc_call get_tip_block_number >/dev/null 2>&1 || die "no CKB node answers at $RPC.
-       Start your node first (CSR runs beside a fully synced full node), or pass --rpc."
+       CSR must run on the SAME machine as your CKB full node (it only talks to a local node and reads
+       the node's key file). If your node runs elsewhere, run this script on that machine and open the
+       dashboard from here with: ssh -L 8130:127.0.0.1:8130 <user>@<node machine>
+       If the node is on this machine: start it, or pass --rpc if its RPC port is not 8114."
   ok "node answers"
   if rpc_call local_node_info >/dev/null 2>&1; then ok "Net module enabled"
   else warn "the node's Net RPC module is off: node identity and NAT help need it (add \"Net\" to modules in ckb.toml)"; fi

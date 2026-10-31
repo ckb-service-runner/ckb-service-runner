@@ -12,6 +12,8 @@ You need:
 
 - A Linux x86_64 machine with `systemd` and `sudo` access.
 - A **fully synced CKB full node** (not a light client) on the **same machine**, RPC on `http://127.0.0.1:8114`.
+  CSR cannot use a node on another computer: install CSR on the node's machine and open the dashboard from
+  elsewhere through an SSH tunnel (step 3).
 - The `Indexer` and `Net` RPC modules enabled in the node's `ckb.toml`. Under `[rpc]`, the `modules` list must
   contain both, for example:
 
