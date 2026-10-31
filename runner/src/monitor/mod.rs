@@ -129,6 +129,8 @@ fn lenient_cell<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<MapCell
 struct Snapshot {
     network: NetworkStats,
     node: Option<NodeStats>,
+    /// The Phase 2 gate of `GET /v1/{network}/summary` (any JSON); `None` from older monitors or on error.
+    gate: Option<Value>,
     fetched_at: i64,
     at: Instant,
     /// What the snapshot was fetched for (monitor URL, peer id).
@@ -185,10 +187,18 @@ pub fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
     crate::network::http_client(timeout)
 }
 
+/// The `gate` object of a `GET /v1/{network}/summary` reply, if it has the expected shape.
+fn parse_gate(v: &Value) -> Option<Value> {
+    let g = v.get("gate")?;
+    let num = |k: &str| g.get(k).and_then(Value::as_f64).is_some();
+    (num("runners") && num("min_runners") && num("history_days") && num("min_days")).then(|| g.clone())
+}
+
 async fn fetch(
     base: &str,
     peer_id: Option<&str>,
-) -> Result<(NetworkStats, Option<NodeStats>), String> {
+    net_name: &str,
+) -> Result<(NetworkStats, Option<NodeStats>, Option<Value>), String> {
     let http = crate::network::http_client(TIMEOUT)?;
     let net = get(&http, &format!("{base}/v1/network"))
         .await?
@@ -214,7 +224,11 @@ async fn fetch(
             },
         },
     };
-    Ok((network, node))
+    let gate = match get(&http, &format!("{base}/v1/{}/summary", encode_segment(net_name))).await {
+        Ok(Some(v)) => parse_gate(&v),
+        _ => None,
+    };
+    Ok((network, node, gate))
 }
 
 /// Refreshes the cache if it is older than 5 minutes; failures keep the old data.
@@ -222,6 +236,7 @@ async fn refresh(state: &AppState) {
     let base = monitor_base(state);
     let peer_id = state.peer_id.read().unwrap().clone();
     let key = (base.clone(), peer_id.clone());
+    let net_name = state.config.read().unwrap().network.clone();
     let mut cache = state.monitor_cache.lock().await;
     if let Some(s) = &cache.snap {
         if s.key == key && s.at.elapsed() < CACHE_TTL {
@@ -233,11 +248,12 @@ async fn refresh(state: &AppState) {
             return;
         }
     }
-    match fetch(&base, peer_id.as_deref()).await {
-        Ok((network, node)) => {
+    match fetch(&base, peer_id.as_deref(), &net_name).await {
+        Ok((network, node, gate)) => {
             cache.snap = Some(Snapshot {
                 network,
                 node,
+                gate,
                 fetched_at: crate::run::now(),
                 at: Instant::now(),
                 key,
@@ -296,6 +312,7 @@ pub async fn network_json(state: &AppState) -> Value {
         "error": error,
         "network": snap.map(|s| json!(s.network)),
         "node": snap.and_then(|s| s.node.as_ref()).map(|n| json!(n)),
+        "gate": snap.and_then(|s| s.gate.clone()),
         "ping": ping,
         "warning": key_problem,
         "identity": {
@@ -428,6 +445,16 @@ async fn add_monitor_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gate_is_parsed_from_the_summary() {
+        let v = json!({"gate": {"history_days": 13, "min_days": 120, "runners": 1, "min_runners": 20,
+            "met": false, "progress": 0.05}});
+        let g = parse_gate(&v).unwrap();
+        assert_eq!(g["min_runners"], 20);
+        assert!(parse_gate(&json!({})).is_none());
+        assert!(parse_gate(&json!({"gate": {"runners": "x"}})).is_none());
+    }
 
     #[test]
     fn null_rank_reply_parses_and_serializes_nulls() {

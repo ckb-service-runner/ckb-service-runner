@@ -153,3 +153,4 @@ tr.click{cursor:pointer}
 .logo-full{max-width:220px;display:block;margin:0 0 .8rem}
 footer.foot{max-width:1240px;margin:0 auto;padding:.4rem 1.2rem 1.4rem;display:flex;flex-wrap:wrap;justify-content:space-between;gap:.5rem;color:var(--mut);font-size:.78rem}
 @media(max-width:560px){.view{padding:.7rem}.top{padding:.7rem}.nav{padding:0 .7rem .4rem}.nav a{padding:.4rem .5rem}.spark{grid-template-columns:90px minmax(0,1fr) 56px}.big.xl{font-size:2rem}}
+.locked-notice{border-color:var(--warn-bd);background:var(--warn-bg)}

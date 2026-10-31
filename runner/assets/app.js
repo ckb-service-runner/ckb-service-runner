@@ -51,6 +51,7 @@
           pwNotice(j.detail);
           throw new Error(j.detail || 'a dashboard password is required');
         }
+        if (!r.ok && j.error === 'mainnet_locked') throw new Error(j.detail || 'Not available on mainnet yet.');
         if (!r.ok) throw new Error(j.error === 'busy' && j.detail ? 'The runner wallet is busy: ' + j.detail + '. Try again after the next block.' : j.error || 'HTTP ' + r.status);
         return j;
       });
@@ -253,6 +254,33 @@
     m.appendChild(bar(fraction, cls));
     c.appendChild(m);
   }
+  // Mainnet before 1.x (0.5.1): the notice shown instead of registration, wallet funding, jobs and earnings.
+  // `msg` is `registration_locked` of /api/status or `message` of a locked /api/registry reply.
+  function lockedNotice(msg, gate) {
+    var c = el('section', 'card locked-notice');
+    head(c, 'Mainnet: dashboard and ranking only', 'COMES WITH 1.x', 'warn');
+    c.appendChild(el('p', '', String(msg).replace(/^Mainnet: node dashboard and ranking only\.\s*/, '')));
+    if (gate) gateMetrics(c, gate);
+    return c;
+  }
+  // Progress of the Phase 2 gate (monitor `GET /v1/{network}/summary` → `gate`).
+  function gateMetrics(c, g) {
+    metric(c, 'Ranked runners (' + g.min_runners + ' needed)', fmtInt(g.runners) + ' / ' + fmtInt(g.min_runners), g.runners / Math.max(1, g.min_runners));
+    metric(c, 'Monitor history (' + g.min_days + ' days needed)', fmtInt(g.history_days) + ' / ' + fmtInt(g.min_days) + ' days', g.history_days / Math.max(1, g.min_days));
+    if (typeof g.max_asn_share === 'number') {
+      c.appendChild(el('p', 'note', 'Also needed: no network (ASN) above ' + Math.round(g.max_asn_share * 100) + ' % and no country above ' +
+        Math.round(g.max_country_share * 100) + ' % of the ranked runners. Now: ' + Math.round(g.largest_asn_share * 100) + ' % and ' +
+        Math.round(g.largest_country_share * 100) + ' %.'));
+    }
+  }
+  function lockedMsg() { return state.status && state.status.registration_locked; }
+  // Puts the mainnet notice at the top of `root` once the status is known (also on a first page load).
+  function lockedTop(root) {
+    function put(m) { if (m) root.insertBefore(lockedNotice(m), root.firstChild); }
+    if (state.status) put(lockedMsg());
+    else api('/api/status').then(function (st) { put(st.registration_locked); }).catch(function () {});
+  }
+
   // A 24 h sparkline of one sample field; `now` is the value shown at the right.
   function spark(samples, key, label, now) {
     var row = el('div', 'spark');
@@ -408,6 +436,11 @@
         p.style.marginTop = '.7rem';
         cn.appendChild(p);
         if (j.monitor_url) { var lk = el('div', 'links'); lk.style.marginTop = '.7rem'; lk.appendChild(linkBtn('CSR monitor', j.monitor_url)); cn.appendChild(lk); }
+        if (j.gate && lockedMsg()) {
+          var gh = el('h3', '', 'Until services start on mainnet (Phase 2)'); gh.style.marginTop = '1rem';
+          cn.appendChild(gh);
+          gateMetrics(cn, j.gate);
+        }
       }).catch(function () {});
     }
     function loadWallet() {
@@ -416,6 +449,17 @@
         api('/api/earnings').catch(function () { return null; }), api('/api/jobs').catch(function () { return null; })]).then(function (r) {
         var w = r[0], reg = r[1], e = r[2], jobs = (r[3] && r[3].jobs) || [];
         cw.textContent = '';
+        if (reg && reg.locked) {
+          head(cw, 'Wallet & registration', 'MAINNET 1.x', 'warn');
+          cw.appendChild(el('p', 'note', reg.message));
+          if (w && typeof w.capacity_shannons === 'number' && w.capacity_shannons > 0) {
+            kv(cw, [['Runner wallet', ckbShort(w.capacity_shannons) + ' CKB (send it back on the Wallet page)', 'mono']]);
+          }
+          var la = el('a', '', 'Wallet & registration →'); la.href = '#/wallet'; cw.appendChild(la);
+          cx.hidden = true;
+          paintRuntime();
+          return;
+        }
         var auto = reg && reg.auto_renew !== false;
         head(cw, 'Wallet & registration', reg && reg.registered ? (auto ? 'AUTO RENEW ON' : 'AUTO RENEW OFF') : 'NOT REGISTERED', reg && reg.registered ? (auto ? 'ok' : 'warn') : 'warn');
         var bal = el('div');
@@ -451,6 +495,8 @@
         } else {
           cx.hidden = true;
         }
+        paintRuntime();
+        function paintRuntime() {
         // runtime card
         var s = state.status || {};
         cr.textContent = '';
@@ -477,7 +523,8 @@
             .then(function () { cb.disabled = locked; });
         });
         cr.appendChild(tg);
-        if (!jobs.length) cr.appendChild(el('p', 'note', locked ? 'Services start on mainnet in Phase 2.' : 'No jobs yet. The node earns once apps such as CRT post jobs.'));
+        if (!jobs.length) cr.appendChild(el('p', 'note', locked ? 'Services start on mainnet with CSR 1.x (Phase 2).' : 'No jobs yet. The node earns once apps such as CRT post jobs.'));
+        }
       }).catch(function () {});
     }
     function loadHistory() {
@@ -858,7 +905,8 @@
     }
     var c = card('Runner wallet');
     var warn = el('p', 'msg err'); warn.style.display = 'none'; c.appendChild(warn);
-    c.appendChild(el('p', '', 'Send about 700 CKB here from your wallet to start. The registration cell uses about 540 CKB, the rest pays small fees. Tips are added here.'));
+    var intro = el('p', '', 'Send about 700 CKB here from your wallet to start. The registration cell uses about 540 CKB, the rest pays small fees. Tips are added here.');
+    c.appendChild(intro);
     var info = el('div');
     var addr = el('div', 'addr-full'); addr.setAttribute('aria-label', 'Runner address');
     var arow = addr;
@@ -945,21 +993,35 @@
     var r1 = el('div', 'row'); [stake, getText].forEach(function (n) { r1.appendChild(n); });
     var r2 = el('div', 'row'); [sig, reg, renew, rm].forEach(function (n) { r2.appendChild(n); });
     [rinfo, r1, textBox, r2, ask].forEach(function (n) { cr.appendChild(n); });
-    root.appendChild(c); root.appendChild(cr); root.appendChild(msg);
+    var lockBox = el('div');
+    root.appendChild(lockBox); root.appendChild(c); root.appendChild(cr); root.appendChild(msg);
     function load() {
       var none = { registered: false, stake: null, unavailable: true };
-      Promise.all([api('/api/wallet'), api('/api/registry').catch(function (x) { none.error = x.message; return none; }), api('/api/runner-cell').catch(function () { return {}; })]).then(function (r) {
+      var werr = null;
+      Promise.all([api('/api/wallet').catch(function (x) { werr = x.message; return {}; }), api('/api/registry').catch(function (x) { none.error = x.message; return none; }), api('/api/runner-cell').catch(function () { return {}; })]).then(function (r) {
         var w = r[0], ls = w.last_sweep;
+        if (r[1].locked) {
+          // Mainnet before 1.x: no registration; the wallet stays usable to send back CKB sent by mistake.
+          lockBox.textContent = '';
+          lockBox.appendChild(lockedNotice(r[1].message));
+          intro.textContent = 'Nothing needs to be sent here on mainnet now. CKB that arrived here can be sent back with "Send" below.';
+          cr.hidden = true;
+        } else {
+          lockBox.textContent = '';
+          cr.hidden = false;
+        }
         warn.textContent = w.sweep_warning || '';
         warn.style.display = w.sweep_warning ? '' : 'none';
         addr.textContent = r[2].runner_address || w.address || '';
         info.textContent = '';
-        dl(info, [
+        if (werr) { info.appendChild(el('p', 'msg err', 'Wallet unavailable: ' + werr)); }
+        else dl(info, [
           ['Balance', ckb(w.capacity_shannons)],
           ['Sweep to', w.sweep_address || 'not set (payout.sweep_address)'],
           ['Sweep', w.sweep_amount_ckb + ' CKB when the wallet reaches ' + w.sweep_threshold_ckb + ' CKB'],
           ['Last sweep', ls ? ckb(ls.amount_shannons) + ' – ' + new Date(ls.at_ms).toLocaleString() : 'never'],
         ]);
+        if (r[1].locked) return;
         reg.textContent = r[1].registered ? 'Update stake' : 'Register';
         rinfo.textContent = '';
         var st = r[1].stake;
@@ -1025,6 +1087,7 @@
     });
     c.appendChild(tabs); c.appendChild(table);
     root.appendChild(c);
+    lockedTop(root);
     root.appendChild(detail);
     function showDetail(id) {
       open = id;
@@ -1085,6 +1148,7 @@
     var warn = el('p', 'msg err'); warn.style.display = 'none';
     [warn, info, btns, el('h2', '', 'Tips per day'), chartBox, el('h2', '', 'Settlements'), table].forEach(function (n) { c.appendChild(n); });
     root.appendChild(c);
+    lockedTop(root);
     function load() {
       api('/api/wallet').then(function (w) {
         warn.textContent = w.sweep_warning || '';

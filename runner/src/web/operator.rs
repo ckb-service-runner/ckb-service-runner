@@ -12,6 +12,14 @@ use std::sync::Arc;
 
 type St = State<Arc<AppState>>;
 
+/// 409 `{error: "mainnet_locked"}` while registration is not available on this network (0.5.1).
+fn locked(s: &AppState) -> Option<Response> {
+    let net = s.config.read().unwrap().network.clone();
+    crate::network::registration_locked(&net).map(|m| {
+        (StatusCode::CONFLICT, Json(json!({"error": "mainnet_locked", "detail": m}))).into_response()
+    })
+}
+
 fn fail(code: StatusCode, msg: String) -> Response {
     (code, Json(json!({"error": msg}))).into_response()
 }
@@ -109,6 +117,10 @@ pub async fn wallet_send(State(s): St, Json(b): Json<Value>) -> Response {
 }
 
 pub async fn registry_status(State(s): St) -> Response {
+    if let Some(m) = crate::network::registration_locked(&s.config.read().unwrap().network.clone()) {
+        return Json(json!({"locked": true, "message": m, "registered": false, "stake": null,
+            "auto_renew": false})).into_response();
+    }
     match chain(&s).await {
         Ok(c) => reply(c.register_status().await.map(|mut v| {
             let e = s.db.get_setting(crate::renew::RENEWAL_ERROR).ok().flatten();
@@ -135,6 +147,9 @@ fn stake_of(b: &Value) -> Result<String, Response> {
 
 /// Body: `stake`.
 pub async fn consent_message(State(s): St, Json(b): Json<Value>) -> Response {
+    if let Some(r) = locked(&s) {
+        return r;
+    }
     let stake = match stake_of(&b) {
         Ok(s) => s,
         Err(r) => return r,
@@ -148,6 +163,9 @@ pub async fn consent_message(State(s): St, Json(b): Json<Value>) -> Response {
 /// Body: `stake`, `consent` (the stake owner's signature) and optionally `attestation` (the monitor's
 /// attestation object; without it the monitor is asked).
 pub async fn register_create(State(s): St, Json(b): Json<Value>) -> Response {
+    if let Some(r) = locked(&s) {
+        return r;
+    }
     let stake = match stake_of(&b) {
         Ok(s) => s,
         Err(r) => return r,
@@ -204,6 +222,9 @@ pub async fn register_create(State(s): St, Json(b): Json<Value>) -> Response {
 }
 
 pub async fn register_remove(State(s): St) -> Response {
+    if let Some(r) = locked(&s) {
+        return r;
+    }
     match chain(&s).await {
         Ok(c) => {
             let _tx = s.wallet_tx.lock().await;
@@ -222,6 +243,9 @@ pub async fn register_remove(State(s): St) -> Response {
 
 /// Asks the monitor for a new attestation and refreshes the registry cell (no body).
 pub async fn register_refresh(State(s): St) -> Response {
+    if let Some(r) = locked(&s) {
+        return r;
+    }
     let c = match chain(&s).await {
         Ok(c) => c,
         Err(e) => return fail(StatusCode::BAD_GATEWAY, e),

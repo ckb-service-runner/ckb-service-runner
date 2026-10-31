@@ -732,3 +732,20 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
   node on 8112 was not found (its `ckb.toml` is not next to a found key with a loopback `listen_address`). Fixes: the
   candidates also include the `rpc_url` of every existing CSR config in `/var/lib/csr`; `install_binary` stops with
   "older than this installer" before installing anything when the release has no `csr@` templates.
+- **Installer, node keys** (31 Oct 2026, second run on pswsl): the mainnet instance was offered every key on the disk,
+  including the AIWorker devnet keys, and a rejected key stayed in the config (identity "unreadable"). Now the key whose
+  `ckb.toml` serves the instance's RPC URL is the only candidate when there is one (`keys_for_node`); a `mismatch` or
+  `unreadable` key is removed from the config (`clear_key_in_config`) and the next candidate is tried.
+  The mainnet key (`/mnt/ps_data/…`, its own disk) was not found because `find -xdev` from `/mnt` does not enter other
+  filesystems: `find_keys` now lists the keys of running `ckb run -C <dir>` processes first and searches each
+  `/mnt/*` and `/media/*` as its own root.
+
+## 0.5.1 – mainnet notices, locked registration, per-network cookie (31 Oct 2026)
+
+- Requested by the owner after the first look at the mainnet dashboard (it asked for 700 CKB and showed Auto renew).
+  `network::registration_locked(network)` = mainnet while `mainnet_runtime_unlocked()` is false; it gates the four
+  registry write routes (409 `mainnet_locked`), `GET /api/registry` (`locked: true`), the `csr register` CLI (except
+  `status`, `verify-consent`) and the dashboard notices. The wallet stays usable (send back CKB sent by mistake).
+- `/api/network` passes on the monitor's Phase 2 `gate` (`GET /v1/{network}/summary`; ignored when absent or malformed).
+- Session cookie per network: `csr_session_mainnet` on mainnet, `csr_session` elsewhere (browsers share cookies across
+  ports of one host). Existing testnet sessions and tests are unaffected.
