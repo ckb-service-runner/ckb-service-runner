@@ -7,6 +7,7 @@ use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use zeroize::{Zeroize, Zeroizing};
@@ -42,10 +43,11 @@ fn create_key(path: &Path, valid: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32]
             break;
         }
     }
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let mut f = opts
         .open(path)
         .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
     let line = Zeroizing::new(format!("{}\n", hex::encode(key)));
@@ -56,12 +58,14 @@ fn create_key(path: &Path, valid: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32]
 }
 
 /// True when a key file's mode gives anything to group or others.
+#[cfg(unix)]
 pub fn key_mode_too_open(mode: u32) -> bool {
     mode & 0o077 != 0
 }
 
 fn load_or_create(path: &Path, valid: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32], String> {
     if path.exists() {
+        #[cfg(unix)]
         if let Ok(m) = fs::metadata(path) {
             if key_mode_too_open(m.permissions().mode()) {
                 tracing::warn!("{} had mode {:o}; restricting it to 0600", path.display(), m.permissions().mode() & 0o777);
@@ -125,6 +129,7 @@ impl Identity {
     pub fn load_or_create(net_dir: &Path) -> Result<Identity, String> {
         let dir = net_dir.join("keys");
         fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        #[cfg(unix)]
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
             .map_err(|e| format!("cannot restrict {}: {e}", dir.display()))?;
         let mut sk = load_or_create(&dir.join("service.key"), |k| {
@@ -274,6 +279,7 @@ pub fn load_p2p_key_file(path: &Path) -> Result<P2pKey, P2pKeyError> {
     if !meta.is_file() {
         return Err(err(format!("{} is not a file", path.display())));
     }
+    #[cfg(unix)]
     if meta.permissions().mode() & 0o004 != 0 {
         return Err(err(format!(
             "{} is readable by every user (mode {:o}): remove the read bit for \"other\" on the node \
@@ -282,6 +288,8 @@ pub fn load_p2p_key_file(path: &Path) -> Result<P2pKey, P2pKeyError> {
             meta.permissions().mode() & 0o777
         )));
     }
+    #[cfg(not(unix))]
+    tracing::info!("permission checks for {} are skipped on Windows", path.display());
     let mut bytes = fs::read(path).map_err(|e| err(format!("cannot read {}: {e}", path.display())))?;
     let key = parse_p2p_key(&bytes).map_err(|e| err(format!("{}: {e}", path.display())));
     bytes.fill(0);
@@ -413,6 +421,7 @@ mod tests {
         assert_eq!(hash.len(), 66);
     }
 
+    #[cfg(unix)]
     #[test]
     fn creates_once_with_modes_and_reloads() {
         let tmp = crate::test_tmp();
@@ -451,6 +460,7 @@ mod tests {
         assert!(!format!("{k:?}").contains("0707"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn p2p_key_file_modes_and_read_only() {
         let tmp = crate::test_tmp();

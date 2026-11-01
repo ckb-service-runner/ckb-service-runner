@@ -39,6 +39,9 @@ pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Windows has no automatic install (beta): the operator runs the installer of the new zip again.
+const WINDOWS_UPDATE: &str = "download the new zip and run install.ps1 again";
+
 pub fn key_configured() -> bool {
     RELEASE_PUBKEY != [0u8; 32]
 }
@@ -245,6 +248,7 @@ pub fn check_json(rel: &Release, checked_at: i64) -> Value {
         "notes_url": rel.notes_url,
         "checked_at": checked_at,
         "key_configured": key_configured(),
+        "auto_install": cfg!(unix),
     })
 }
 
@@ -294,6 +298,9 @@ impl Cache {
 
     /// Downloads, verifies and stages the latest release in `dir`.
     pub async fn stage(&self, dir: &Path) -> Result<Value, String> {
+        if cfg!(not(unix)) {
+            return Err(WINDOWS_UPDATE.into());
+        }
         if !key_configured() {
             return Err(NO_KEY.into());
         }
@@ -364,12 +371,17 @@ async fn stage_release(rel: &Release, dir: &Path) -> Result<Value, String> {
 }
 
 fn write_file(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
     let tmp = path.with_extension("part");
     let err = |e: std::io::Error| format!("cannot write {}: {e}", path.display());
     std::fs::write(&tmp, data).map_err(err)?;
     // Explicit mode, independent of the umask.
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).map_err(err)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).map_err(err)?;
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
     std::fs::rename(&tmp, path).map_err(err)
 }
 
@@ -489,12 +501,15 @@ mod tests {
             e.contains("no release key") || e.contains("signature does not match"),
             "{e}"
         );
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(d.path().join("csr.new"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o755);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(d.path().join("csr.new"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
     }
 }
 

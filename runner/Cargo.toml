@@ -26,7 +26,6 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 rand = "0.8"
 zeroize = "1"
-libc = "0.2"
 argon2 = "0.5"
 futures-util = { version = "0.3", default-features = false }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
@@ -39,6 +38,9 @@ hmac = "0.12"
 ckb-types = "1"
 ckb-jsonrpc-types = "1"
 ckb-hash = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
