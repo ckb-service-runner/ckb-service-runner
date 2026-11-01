@@ -57,8 +57,9 @@ fn create_key(path: &Path, valid: impl Fn(&[u8; 32]) -> bool) -> Result<[u8; 32]
     Ok(key)
 }
 
-/// True when a key file's mode gives anything to group or others.
-#[cfg(unix)]
+/// True when a key file's mode gives anything to group or others. A pure check of Unix mode bits; only called
+/// on Unix, but compiled everywhere so the tests run on Windows too.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn key_mode_too_open(mode: u32) -> bool {
     mode & 0o077 != 0
 }
@@ -491,6 +492,7 @@ mod tests {
         let tmp = crate::test_tmp();
         let f = tmp.path().join("secret_key");
         fs::write(&f, format!("{}\n", hex::encode([7u8; 32]))).unwrap();
+        #[cfg(unix)]
         fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
         let k = ConfiguredP2pKey::load(f.to_str().unwrap());
         assert_eq!(k.status(Some(id)).state, "proven");

@@ -1,5 +1,7 @@
 //! Node identity (D6 A, D12 A): the proof is posted with both signatures, the monitor's node is added,
 //! and the P2P key never shows up in an API answer or the log.
+//! Unix only: the tests set and check Unix file modes of the key (Windows has no mode bits; csr-windows).
+#![cfg(unix)]
 
 mod mock_monitor;
 use mock_monitor::*;
