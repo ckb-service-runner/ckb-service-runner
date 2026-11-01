@@ -23,7 +23,10 @@ bash scripts/package.sh
 ASSET="csr-${VERSION}-${ARCH}-linux"
 install -m 0755 target/release/csr "dist/$ASSET"
 TARBALL="csr-${VERSION}-linux-x86_64.tar.gz"
-(cd dist && sha256sum "$ASSET" "$TARBALL" > SHA256SUMS)
+FILES=("$ASSET" "$TARBALL")
+WINZIP="csr-${VERSION}-x86_64-windows.zip"
+if [ -f "dist/$WINZIP" ]; then FILES+=("$WINZIP"); fi
+(cd dist && sha256sum "${FILES[@]}" > SHA256SUMS)
 rm -f dist/SHA256SUMS.sig
 
 cat <<MSG
@@ -34,6 +37,6 @@ Sign SHA256SUMS offline (on the machine that holds the release key, never in thi
 
   openssl pkeyutl -sign -rawin -inkey <key file> -in SHA256SUMS -out SHA256SUMS.sig
 
-then check it with the public key and upload $ASSET, $TARBALL, SHA256SUMS and SHA256SUMS.sig
+then check it with the public key and upload $ASSET, $TARBALL${WINZIP:+ (and $WINZIP if listed above)}, SHA256SUMS and SHA256SUMS.sig
 to the GitHub release v$VERSION (see docs/release.md).
 MSG

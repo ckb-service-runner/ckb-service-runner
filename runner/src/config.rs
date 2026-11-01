@@ -385,6 +385,7 @@ impl Config {
     /// An existing file is kept as `<path>.bak`.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         use std::io::Write;
+        #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
         let text =
             toml::to_string_pretty(self).map_err(|e| format!("cannot serialise config: {e}"))?;
@@ -400,12 +401,11 @@ impl Config {
         let mut bak = path.as_os_str().to_owned();
         bak.push(".bak");
         let write = || -> std::io::Result<()> {
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            opts.mode(0o600);
+            let mut f = opts.open(&tmp)?;
             f.write_all(text.as_bytes())?;
             f.sync_all()?;
             if path.exists() {

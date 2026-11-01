@@ -749,3 +749,30 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
 - `/api/network` passes on the monitor's Phase 2 `gate` (`GET /v1/{network}/summary`; ignored when absent or malformed).
 - Session cookie per network: `csr_session_mainnet` on mainnet, `csr_session` elsewhere (browsers share cookies across
   ports of one host). Existing testnet sessions and tests are unaffected.
+
+## csr-windows (owner)
+
+- **W1** Windows is a **beta**: x86_64 only, no code signing, no auto-update. Updating = run the installer of the new zip again; it keeps configs, keys and data.
+- **W2** Behaviour is identical to Linux: same config format, same ports per network, same per-network data layout, same mainnet lock (`mainnet_runtime_unlocked()` stays `false`; never change it).
+- **W3** Data root on Windows: `%ProgramData%\csr` (fallback `C:\ProgramData\csr` when the variable is missing). Binary in `%ProgramFiles%\csr\csr.exe`.
+- **W4** Background start: one **scheduled task per network** (`CSR-testnet`, `CSR-mainnet`), trigger "at startup", runs as `SYSTEM`, restarts on failure (3 times, 1 minute apart), no time limit. No native Windows service in the beta.
+- **W5** The Linux release, installer and systemd files stay unchanged except where a phase says otherwise.
+
+## csr-windows
+
+- **Phase 1, Unix default root**: the code's real default without `--data-root` is `$HOME/.csr`; `/var/lib/csr` is only passed explicitly by the units and installer. `default_data_root()` keeps `$HOME/.csr` on Unix (behaviour unchanged, W5) and uses `%ProgramData%\csr` on Windows. `/var/lib/csr` stays in docs/comments.
+- **Phase 1, updates**: `/api/update` gains `auto_install` (false on Windows); `Cache::stage` is refused on Windows with "download the new zip and run install.ps1 again". No Windows updater.
+- **Phase 1, key permissions**: on Windows no chmod/ACL work is done; files rely on the ACL of `%ProgramData%\csr` (inherited; SYSTEM/Administrators). The installer (later phase) should restrict it.
+- **Phase 1, CI**: `.github/workflows/windows.yml` builds, runs unit tests and uploads `csr.exe`; nothing is published.
+- **Phase 1, verification**: see `acceptance/aiworker-csr-windows/cross-check.sh` result below.
+- **Phase 1, cross-check result**: `cross-check.sh` prints SKIP on the build machine: `rusqlite` (bundled SQLite) and `ring`/`ckb-vm` build scripts need `x86_64-w64-mingw32-gcc`, which is not installed, so the Windows target could not be type-checked here. The Windows branches (`shutdown_signal`, `default_data_root`, key checks, `write_file`) were reviewed by reading; the GitHub Actions job is the real check. Nothing was run on Windows.
+- **Phase 2, installer**: `scripts/install.ps1` / `uninstall.ps1` are ASCII-only (PowerShell 5.1 reads BOM-less files as ANSI). Nothing was run on Windows; only content tests apply here (`pwsh` is not installed on the build machine).
+- **Phase 2, data root ACL**: the installer restricts `%ProgramData%\csr` to SYSTEM and Administrators with `icacls` (resolves the Phase 1 key-permission note).
+- **Phase 2, node discovery**: besides the spec'd candidates, `rpc_url` of existing `csr-*.toml` files is tried (as `install.sh` does), so a re-run finds the same nodes. A node in initial block download is accepted with a warning.
+- **Phase 2, identity**: keys are tried like on Linux (the key of the node whose `ckb.toml` serves the RPC URL first), each verified with `csr check` (`proven`/`mismatch`/`unreadable`); a rejected key is commented out again. No prompt per key.
+- **Phase 2, password**: asked once per instance after the task starts; empty input skips it; the task is restarted afterwards.
+- **Phase 2, Ranking/Runtime**: `-NoRanking` writes `[ranking] join = false`; unlike Linux there is no `-NoRuntime`/`-Inbound` switch (the example's `[runtime] enabled` is kept; `ping_mode` is always `outbound`).
+- **Phase 2, Net module**: a missing Net module stops the install (exit 1) before anything is copied, as spec'd (Linux only warns).
+- **Phase 3, package**: `scripts/package-windows.sh` nests files under `csr-<version>-x86_64-windows/` inside the zip; the zip is built from a staging dir (so only listed files can enter). Uses `zip` if present, else Python `zipfile`.
+- **Phase 3, release.sh**: the Windows zip is added to `SHA256SUMS` only when it already exists; otherwise unchanged. Linux output text is unchanged apart from a hint when the zip is included.
+- **Phase 3, docs**: the Net/Neuron caveat is documented as unverified (open question added). The uninstall section defers to the script header for what data is kept.

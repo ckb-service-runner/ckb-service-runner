@@ -27,6 +27,11 @@ sudo bash install.sh
 The installer finds every CKB node on the machine and sets up one CSR instance per network: the testnet dashboard on
 port 8130, mainnet on 8140. Prerequisites, options and the manual steps: **[quick start](docs/quickstart.md)**.
 
+## Windows (beta)
+
+A Windows x86_64 beta runs beside `ckb.exe` (or Neuron's internal mainnet full node): download the zip, run
+`install.ps1` in PowerShell as administrator. Unsigned, no auto-update. See **[docs/windows.md](docs/windows.md)**.
+
 ## What works today
 
 | | Testnet | Mainnet |

@@ -1,0 +1,26 @@
+name: windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Build
+        run: cargo build --release -p csr
+      - name: Unit tests
+        run: cargo test -p csr
+      - uses: actions/upload-artifact@v4
+        with:
+          name: csr-windows-x86_64
+          path: target/release/csr.exe

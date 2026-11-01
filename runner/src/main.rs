@@ -44,7 +44,7 @@ use std::process::ExitCode;
     version
 )]
 struct Cli {
-    /// Data root directory (default: $HOME/.csr)
+    /// Data root directory (default: $HOME/.csr on Unix, %ProgramData%\csr on Windows)
     #[arg(long, global = true)]
     data_root: Option<PathBuf>,
     /// Config file (default: <data-root>/csr.toml)
@@ -335,10 +335,52 @@ enum ConfigAction {
     Validate,
 }
 
+/// Where the data lives without `--data-root`. Unix: `$HOME/.csr` (the installer and the systemd units pass
+/// `--data-root /var/lib/csr` explicitly). Windows: `%ProgramData%\csr`, or `C:\ProgramData\csr` when unset.
+#[cfg(unix)]
+pub fn default_data_root() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".csr")
+}
+
+#[cfg(windows)]
+pub fn default_data_root() -> PathBuf {
+    windows_data_root(std::env::var_os("ProgramData"))
+}
+
+#[cfg(any(windows, test))]
+fn windows_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
+    match program_data.filter(|v| !v.is_empty()) {
+        Some(p) => PathBuf::from(p).join("csr"),
+        None => PathBuf::from(r"C:\ProgramData\csr"),
+    }
+}
+
 fn data_root(cli: &Cli) -> PathBuf {
-    cli.data_root
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".csr"))
+    cli.data_root.clone().unwrap_or_else(default_data_root)
+}
+
+#[cfg(test)]
+mod data_root_tests {
+    use super::*;
+
+    #[test]
+    fn default_root_for_this_platform() {
+        let p = default_data_root();
+        #[cfg(unix)]
+        assert!(p.ends_with(".csr"), "{}", p.display());
+        #[cfg(windows)]
+        assert!(p.ends_with("csr"), "{}", p.display());
+    }
+
+    #[test]
+    fn windows_root_uses_program_data_with_fallback() {
+        assert_eq!(
+            windows_data_root(Some(r"D:\PD".into())),
+            PathBuf::from(r"D:\PD").join("csr")
+        );
+        assert_eq!(windows_data_root(None), PathBuf::from(r"C:\ProgramData\csr"));
+        assert_eq!(windows_data_root(Some("".into())), PathBuf::from(r"C:\ProgramData\csr"));
+    }
 }
 
 fn load_config(cli: &Cli) -> Result<config::Config, String> {
@@ -438,6 +480,7 @@ fn runtime() -> tokio::runtime::Runtime {
 fn main() -> ExitCode {
     // Every file the runner creates (data, database, logs, keys) is private to its user, whatever the
     // caller's umask; this runs before anything is written.
+    #[cfg(unix)]
     unsafe {
         libc::umask(0o077);
     }

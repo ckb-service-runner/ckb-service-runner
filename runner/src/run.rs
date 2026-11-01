@@ -49,6 +49,16 @@ pub fn period(normal: Duration) -> Duration {
     }
 }
 
+#[cfg(windows)]
+async fn shutdown_signal() {
+    let mut brk = tokio::signal::windows::ctrl_break().expect("Ctrl-Break handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = brk.recv() => {},
+    }
+}
+
+#[cfg(unix)]
 async fn shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");

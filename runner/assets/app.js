@@ -569,9 +569,10 @@
     function show(u) {
       info.textContent = '';
       dl(info, [['Current', u.current], ['Latest', u.latest], ['Checked', fmtTime(u.checked_at)], ['Notes', link(u.notes_url)]]);
-      var can = u.newer === true && u.key_configured;
+      var can = u.newer === true && u.key_configured && u.auto_install !== false;
       go.hidden = !can; sure.hidden = true; cancel.hidden = true;
-      if (u.newer === true && !u.key_configured) say('', 'This build has no release key configured: install the update manually (docs/install.md).');
+      if (u.newer === true && u.auto_install === false) say('', 'CSR ' + u.latest + ' is available: download the new zip and run install.ps1 again.');
+      else if (u.newer === true && !u.key_configured) say('', 'This build has no release key configured: install the update manually (docs/install.md).');
       else if (u.newer === false) say('ok', 'CSR is up to date.');
       else if (u.newer === null) say('', 'The latest release tag is not a plain version; nothing to install.');
       else say('', '');
@@ -600,7 +601,7 @@
     return {
       notice: function (u) {
         if (u && u.newer === true) {
-          note.className = 'msg stale'; note.textContent = 'CSR ' + u.latest + ' is available (this is ' + u.current + '). ';
+          note.className = 'msg stale'; note.textContent = 'CSR ' + u.latest + ' is available (this is ' + u.current + '). ' + (u.auto_install === false ? 'Download the new zip and run install.ps1 again. ' : '');
           note.appendChild(link(u.notes_url));
         } else {
           note.className = 'msg'; note.textContent = 'Version ' + ((state.status || {}).version || '–');
