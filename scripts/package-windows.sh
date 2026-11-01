@@ -35,7 +35,7 @@ Install: unzip, open PowerShell as Administrator in this folder, then run:
   .\install.ps1
 
 To update, run install.ps1 of the new zip again (configs, keys and data are kept).
-To remove: .\uninstall.ps1
+To remove: .\uninstall.ps1 (the installer also keeps a copy in C:\Program Files\csr\uninstall.ps1)
 
 Dashboards: http://127.0.0.1:8130 (testnet), http://127.0.0.1:8140 (mainnet).
 Full guide: docs/windows.md in https://github.com/ckb-service-runner/ckb-service-runner

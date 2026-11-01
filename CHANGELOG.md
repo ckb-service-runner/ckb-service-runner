@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+- **Windows beta** (x86_64, csr-windows W1–W5): `csr-0.5.2-x86_64-windows.zip` with `csr.exe`, `install.ps1` and `uninstall.ps1`. Run `install.ps1` in PowerShell as Administrator: it finds the CKB node (`ckb.exe`, or Neuron's internal mainnet full node), checks the Indexer and Net modules, installs to `%ProgramFiles%\csr` with data in `%ProgramData%\csr` (SYSTEM and Administrators only), proves the node identity, opens only the ping port and starts one scheduled task per network (`CSR-testnet`, `CSR-mainnet`; at startup, as SYSTEM). Same config, ports and data layout as Linux; no auto-update and no code signing (update = run the installer of the new zip again). Guide: `docs/windows.md`.
+- The installer keeps a copy of `uninstall.ps1` in `%ProgramFiles%\csr`, so it is still there after the unpacked zip is deleted; the summary names that path.
+- Windows CI (`.github/workflows/windows.yml`): builds `csr.exe`, uploads it as the artifact `csr-windows-x86_64` and runs the unit tests on Windows.
+- Linux: no behaviour change (Unix-only code is now gated with `cfg(unix)`; `scripts/release.sh` adds the Windows zip to `SHA256SUMS` when it exists).
+
 ## 0.5.1
 - **Mainnet notices** (until 1.x): the Wallet & registration page shows "Mainnet: dashboard and ranking only" instead of the funding text and the stake, sign, register, renew and Auto renew controls; the runner address, balance and "Send" stay, so CKB sent there by mistake can be returned. Overview, Jobs and Earnings show the same notice; the CSR network card shows the **Phase 2 gate progress** from the monitor (ranked runners of 20, days of history of 120, ASN and country shares).
 - The server refuses registration on mainnet before 1.x: `POST /api/registry/{consent-message,create,refresh,remove}` answer 409 `{"error": "mainnet_locked", "detail": …}`, `GET /api/registry` answers `{"locked": true, "message": …}`, `csr register …` (except `status` and `verify-consent`) exits 1 with the same message. `/api/status` has `registration_locked` (the message, or `null`). `/api/network` has `gate` (`GET /v1/{network}/summary` of the monitor).

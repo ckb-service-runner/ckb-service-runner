@@ -377,6 +377,11 @@ function Install-Files {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Copy-Item -LiteralPath (Join-Path $Source 'csr.exe') -Destination $Exe -Force
     Copy-Item -LiteralPath (Join-Path $Source 'csr.example.toml') -Destination $Example -Force
+    # keep the uninstaller with the program, so it is still there after the unpacked zip is deleted
+    $uninst = Join-Path $Source 'uninstall.ps1'
+    if (Test-Path -LiteralPath $uninst) {
+        Copy-Item -LiteralPath $uninst -Destination (Join-Path $InstallDir 'uninstall.ps1') -Force
+    }
     $netDest = Join-Path $InstallDir 'networks'
     New-Item -ItemType Directory -Force -Path $netDest | Out-Null
     Copy-Item -Path (Join-Path (Join-Path $Source 'networks') '*') -Destination $netDest -Recurse -Force
@@ -518,7 +523,7 @@ function Show-Summary($Nodes) {
     Write-Host ''
     Write-Host '  Updates     there is no auto-update on Windows (beta): download the new zip and run install.ps1 again.'
     Write-Host '              It keeps your configs, keys and data.'
-    Write-Host '  Uninstall   scripts\uninstall.ps1 (add -RemoveData to delete the data as well)'
+    Write-Host "  Uninstall   & '$InstallDir\uninstall.ps1' in an Administrator PowerShell (add -RemoveData to delete the data as well)"
     Write-Host ''
 }
 

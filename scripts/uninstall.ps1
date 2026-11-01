@@ -49,6 +49,8 @@ Get-Process -Name csr -ErrorAction SilentlyContinue |
     ForEach-Object { $_.Kill(); [void]$_.WaitForExit(10000) }
 
 if (Test-Path -LiteralPath $InstallDir) {
+    # Windows cannot delete the folder the shell is in (when run as & '...\csr\uninstall.ps1' from there)
+    if ((Get-Location).Path -like "$InstallDir*") { Set-Location -LiteralPath $ProgData }
     Remove-Item -LiteralPath $InstallDir -Recurse -Force
     Write-Host "  removed $InstallDir"
 } else {

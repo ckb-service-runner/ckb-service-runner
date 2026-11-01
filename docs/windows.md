@@ -71,7 +71,8 @@ again; configs, keys and data are kept. There is no auto-update; the dashboard o
 
 ## Uninstall
 
-Run `.\uninstall.ps1` from the zip in an Administrator PowerShell. It removes the tasks, the firewall rules and
+Run `& "$env:ProgramFiles\csr\uninstall.ps1"` (the installer keeps a copy there) or `.\uninstall.ps1` from the zip, in an
+Administrator PowerShell. It removes the tasks, the firewall rules and
 the program folder. Data in `%ProgramData%\csr` (configs, keys, wallet, logs) is kept unless you pass `-RemoveData` (you must then type DELETE).
 
 ## Logs
