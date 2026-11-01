@@ -766,3 +766,10 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
 - **Phase 1, CI**: `.github/workflows/windows.yml` builds, runs unit tests and uploads `csr.exe`; nothing is published.
 - **Phase 1, verification**: see `acceptance/aiworker-csr-windows/cross-check.sh` result below.
 - **Phase 1, cross-check result**: `cross-check.sh` prints SKIP on the build machine: `rusqlite` (bundled SQLite) and `ring`/`ckb-vm` build scripts need `x86_64-w64-mingw32-gcc`, which is not installed, so the Windows target could not be type-checked here. The Windows branches (`shutdown_signal`, `default_data_root`, key checks, `write_file`) were reviewed by reading; the GitHub Actions job is the real check. Nothing was run on Windows.
+- **Phase 2, installer**: `scripts/install.ps1` / `uninstall.ps1` are ASCII-only (PowerShell 5.1 reads BOM-less files as ANSI). Nothing was run on Windows; only content tests apply here (`pwsh` is not installed on the build machine).
+- **Phase 2, data root ACL**: the installer restricts `%ProgramData%\csr` to SYSTEM and Administrators with `icacls` (resolves the Phase 1 key-permission note).
+- **Phase 2, node discovery**: besides the spec'd candidates, `rpc_url` of existing `csr-*.toml` files is tried (as `install.sh` does), so a re-run finds the same nodes. A node in initial block download is accepted with a warning.
+- **Phase 2, identity**: keys are tried like on Linux (the key of the node whose `ckb.toml` serves the RPC URL first), each verified with `csr check` (`proven`/`mismatch`/`unreadable`); a rejected key is commented out again. No prompt per key.
+- **Phase 2, password**: asked once per instance after the task starts; empty input skips it; the task is restarted afterwards.
+- **Phase 2, Ranking/Runtime**: `-NoRanking` writes `[ranking] join = false`; unlike Linux there is no `-NoRuntime`/`-Inbound` switch (the example's `[runtime] enabled` is kept; `ping_mode` is always `outbound`).
+- **Phase 2, Net module**: a missing Net module stops the install (exit 1) before anything is copied, as spec'd (Linux only warns).
