@@ -39,6 +39,17 @@ GitHub release of `ckb-service-runner/ckb-service-runner`, checks the ed25519 si
    This writes `dist/csr-0.9.0-x86_64-linux` (the raw binary the updater downloads),
    `dist/csr-0.9.0-linux-x86_64.tar.gz` (manual installs) and `dist/SHA256SUMS`, and prints the
    signing command. It reads no key.
+   **Windows beta (optional).** Before running `scripts/release.sh`: run the `windows.yml` workflow on the tag
+   (GitHub Actions), download the artifact `csr-windows-x86_64` (it holds `csr.exe`), then run
+
+   ```sh
+   scripts/package-windows.sh 0.9.0 path/to/csr.exe
+   ```
+
+   which writes `dist/csr-0.9.0-x86_64-windows.zip`. Then run `scripts/release.sh 0.9.0` as usual: when that zip
+   exists it is added to `SHA256SUMS`, so the offline signature covers it. Upload the zip with the other assets.
+   Without the zip `release.sh` behaves as before.
+
 3. Copy `dist/SHA256SUMS` to the offline machine and sign it:
 
    ```sh

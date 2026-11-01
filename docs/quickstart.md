@@ -3,6 +3,8 @@
 This guide installs **CKB Service Runner (CSR)** on an **Ubuntu/Debian x86_64** machine and runs it as a
 background service. With the install script it takes about 5 minutes.
 
+> On Windows? See [docs/windows.md](windows.md) (beta).
+
 CSR runs **beside an existing CKB full node**. It does **not** install or synchronise the node for you.
 For every detail (upgrades, uninstall, remote access) see the [full installation guide](install.md).
 

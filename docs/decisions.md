@@ -773,3 +773,6 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
 - **Phase 2, password**: asked once per instance after the task starts; empty input skips it; the task is restarted afterwards.
 - **Phase 2, Ranking/Runtime**: `-NoRanking` writes `[ranking] join = false`; unlike Linux there is no `-NoRuntime`/`-Inbound` switch (the example's `[runtime] enabled` is kept; `ping_mode` is always `outbound`).
 - **Phase 2, Net module**: a missing Net module stops the install (exit 1) before anything is copied, as spec'd (Linux only warns).
+- **Phase 3, package**: `scripts/package-windows.sh` nests files under `csr-<version>-x86_64-windows/` inside the zip; the zip is built from a staging dir (so only listed files can enter). Uses `zip` if present, else Python `zipfile`.
+- **Phase 3, release.sh**: the Windows zip is added to `SHA256SUMS` only when it already exists; otherwise unchanged. Linux output text is unchanged apart from a hint when the zip is included.
+- **Phase 3, docs**: the Net/Neuron caveat is documented as unverified (open question added). The uninstall section defers to the script header for what data is kept.

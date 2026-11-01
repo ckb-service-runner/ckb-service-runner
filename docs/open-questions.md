@@ -10,3 +10,4 @@
   long run is never interrupted: is that acceptable on mainnet?), and whether the monitor should expose
   `identity_proven` directly instead of the dashboard inferring it from `check_type`.
 - CRT: prekey support (`prekey_decrypt`, `random_bytes`) is reserved and returns 2.
+- Windows: where Neuron keeps its internal mainnet node's `ckb.toml` and `secret_key`, and whether a Net module added there survives a Neuron restart — to be checked on a real PC.
