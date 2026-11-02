@@ -166,6 +166,7 @@ function Find-Nodes {
         $cands += $Rpc
     } else {
         $cands += 'http://127.0.0.1:8114'
+        $cands += 'http://127.0.0.1:9000'   # Neuron's light client (only probed to report it clearly)
         $cands += Get-ConfiguredRpcUrls
         foreach ($d in $CkbDir) {
             $u = Get-RpcUrlFromCkbToml (Join-Path $d 'ckb.toml')
@@ -179,11 +180,16 @@ function Find-Nodes {
     $nodes = @()
     $seen = @{}
     $have = @{}
+    $script:LightClients = @()
     foreach ($u in $cands) {
         if ($seen.ContainsKey($u)) { continue }
         $seen[$u] = $true
         $info = Invoke-NodeRpc $u 'get_blockchain_info'
-        if ($null -eq $info -or $info -eq $true) { continue }
+        if ($null -eq $info -or $info -eq $true) {
+            # A light client (e.g. Neuron's testnet mode) answers get_tip_header but not get_blockchain_info.
+            if ($null -ne (Invoke-NodeRpc $u 'get_tip_header')) { $script:LightClients += $u }
+            continue
+        }
         if (-not ($info.PSObject.Properties.Name -contains 'chain')) { continue }
         $net = Get-ChainNetwork ([string]$info.chain)
         if (-not $net -or $have.ContainsKey($net)) { continue }
@@ -531,6 +537,15 @@ function Show-Summary($Nodes) {
 function Install-Csr {
     Write-Step 'Looking for CKB full nodes on this PC'
     $nodes = @(Find-Nodes)
+    if ($nodes.Count -eq 0 -and $script:LightClients.Count -gt 0) {
+        Write-Host ''
+        Write-Host "Error: a CKB light client answers at $($script:LightClients -join ', '), but CSR needs a full node." -ForegroundColor Red
+        Write-Host "       This is usually Neuron in testnet mode, which runs a light client. CSR does not support"
+        Write-Host '       light clients: it must prove a fully synced full node.'
+        Write-Host "       Options: switch Neuron to mainnet (its internal full node), or run ckb.exe as a testnet"
+        Write-Host '       full node and pass -CkbDir <folder with ckb.toml>. See docs/windows.md.'
+        exit 1
+    }
     if ($nodes.Count -eq 0) {
         Write-Host ''
         Write-Host 'Error: no CKB node answers on this PC.' -ForegroundColor Red
