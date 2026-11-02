@@ -7,6 +7,7 @@
   - A CKB light client (Neuron on testnet, `127.0.0.1:9000`) is now reported as such ("a CKB light client answers ..., but CSR needs a full node") instead of "no CKB node answers", also with `-Rpc`.
   - Removes the "downloaded from the internet" mark from the unpacked files, adds a Start menu folder **CSR** with a dashboard link per instance, and opens the dashboard at the end (`-NoBrowser` to skip). The uninstaller removes the Start menu folder.
   - `csr.exe` started without arguments from the unpacked zip shows how to install instead of flashing the CLI help.
+- Dashboard, Services page: the empty state now says that services become available once the Service Runtime is active (and that developers can test locally with `csr service add-local`), instead of only "No services registered", which looked broken to dashboard-only operators.
 - Docs: Neuron's internal mainnet node has the Net and Indexer modules on by default and keeps its key in `<node data folder>\data\network\secret_key` (`docs/windows.md`, `docs/open-questions.md`).
 - Linux: no behaviour change.
 

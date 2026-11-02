@@ -859,7 +859,13 @@
     function load() {
       api('/api/services').then(function (list) {
         clear(c);
-        if (!list.length) { c.appendChild(el('p', '', 'No services registered. Use `csr service add-local --manifest PATH`.')); return; }
+        if (!list.length) {
+          var p = el('p', 'note', 'Services become available once the Service Runtime is active. Developers can test locally with ');
+          p.appendChild(el('code', '', 'csr service add-local'));
+          p.appendChild(document.createTextNode('.'));
+          c.appendChild(p);
+          return;
+        }
         var t = el('table');
         var h = el('tr');
         ['Name', 'Language', 'Code hash', 'Status', 'Storage', 'Jobs', 'Earned (shannons)', ''].forEach(function (x) { h.appendChild(el('th', '', x)); });
