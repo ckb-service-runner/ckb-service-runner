@@ -9,8 +9,13 @@ instance per network, like scripts/install.sh does on Linux:
 On mainnet CSR is a node dashboard only: the Service Runtime stays off until Phase 2.
 Neuron's testnet mode is a light client and is not supported.
 
-Run it from the unpacked zip, in PowerShell started as Administrator:
+Easiest: double-click install.cmd in the unpacked zip (it asks for Administrator rights and runs this script).
+Or run it from the unpacked zip, in PowerShell started as Administrator:
   powershell -ExecutionPolicy Bypass -File .\install.ps1
+
+Node folders are found automatically: from the running ckb.exe (its -C folder, which is also where Neuron keeps
+its internal node, wherever the user put it), from -CkbDir, the user profile and %APPDATA%\Neuron. Neuron's
+light-client folders (chains\light\...) are never used.
 
 What it does: copies csr.exe to %ProgramFiles%\csr, creates the data root %ProgramData%\csr, writes
 csr-<network>.toml per node (only if it does not exist yet), links the node identity (the node's own
@@ -26,13 +31,15 @@ Parameters:
   -CkbDir <dir[]>   folder(s) that contain a ckb.toml
   -NoRanking        write [ranking] join = false
   -Source <dir>     the unpacked zip (default: the folder of this script)
+  -NoBrowser        do not open the dashboard in the browser at the end
 #>
 [CmdletBinding()]
 param(
     [string[]]$Rpc = @(),
     [string[]]$CkbDir = @(),
     [switch]$NoRanking,
-    [string]$Source = ''
+    [string]$Source = '',
+    [switch]$NoBrowser
 )
 
 Set-StrictMode -Version Latest
@@ -41,11 +48,14 @@ $ErrorActionPreference = 'Stop'
 # ---------------------------------------------------------------- admin check
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host 'Run PowerShell as Administrator' -ForegroundColor Red
+    Write-Host 'Run PowerShell as Administrator (or double-click install.cmd, which asks for it)' -ForegroundColor Red
     exit 1
 }
 
 if (-not $Source) { $Source = $PSScriptRoot }
+# Files from a downloaded zip carry the "from the internet" mark, which can block them or trigger prompts.
+Get-ChildItem -LiteralPath $Source -Recurse -File -ErrorAction SilentlyContinue |
+    Unblock-File -ErrorAction SilentlyContinue
 $ProgData = $env:ProgramData
 if (-not $ProgData) { $ProgData = 'C:\ProgramData' }
 $ProgFiles = $env:ProgramFiles
@@ -54,6 +64,8 @@ $Data = Join-Path $ProgData 'csr'
 $InstallDir = Join-Path $ProgFiles 'csr'
 $Exe = Join-Path $InstallDir 'csr.exe'
 $Example = Join-Path $InstallDir 'csr.example.toml'
+$script:RunningNodeDirs = @()
+$script:LightClients = @()
 
 # ---------------------------------------------------------------- output helpers
 function Write-Step([string]$Text) { Write-Host ''; Write-Host "==> $Text" -ForegroundColor Cyan }
@@ -119,10 +131,43 @@ function Get-RpcUrlFromCkbToml([string]$Path) {
     return $null
 }
 
+function Get-CkbConfigDirFromCommandLine([string]$CommandLine) {
+    # The folder given to ckb with -C / --config-dir, or $null. Handles quoted and unquoted paths.
+    if (-not $CommandLine) { return $null }
+    $m = [regex]::Match($CommandLine, '(?:^|\s)(?:-C|--config-dir)(?:\s+|=)(?:"([^"]+)"|(\S+))')
+    if (-not $m.Success) { return $null }
+    $d = $m.Groups[1].Value
+    if (-not $d) { $d = $m.Groups[2].Value }
+    return $d.TrimEnd('\')
+}
+
+function Test-LightClientPath([string]$Path) {
+    # Neuron keeps its light clients under ...\chains\light\<network>: never a full node's key.
+    return ($Path -match '[\\/]chains[\\/]light([\\/]|$)')
+}
+
+function Get-RunningNodeDirs {
+    # Folders of the ckb.exe processes running now (Neuron's internal node included); empty if none.
+    $dirs = @()
+    try {
+        $procs = @(Get-CimInstance Win32_Process -Filter "Name='ckb.exe'" -ErrorAction Stop)
+    } catch {
+        return @()
+    }
+    foreach ($p in $procs) {
+        $d = Get-CkbConfigDirFromCommandLine ([string]$p.CommandLine)
+        if (-not $d -and $p.ExecutablePath) { $d = Split-Path -Parent $p.ExecutablePath }
+        if ($d -and -not (Test-LightClientPath $d) -and (Test-Path -LiteralPath $d -PathType Container)) { $dirs += $d }
+    }
+    return @($dirs | Select-Object -Unique)
+}
+
 function Find-NodeKeys {
-    # Candidate P2P key files: <dir>\data\network\secret_key under -CkbDir, the user profile, Neuron and LocalAppData.
+    # Candidate P2P key files: <dir>\data\network\secret_key under -CkbDir, the running ckb.exe folders, the
+    # user profile, Neuron and LocalAppData. Neuron's light-client keys (chains\light\...) are skipped.
     $roots = @()
     $roots += $CkbDir
+    $roots += $script:RunningNodeDirs
     foreach ($v in @($env:USERPROFILE, (Join-Path $env:APPDATA 'Neuron'), $env:LOCALAPPDATA)) {
         if ($v) { $roots += $v }
     }
@@ -130,9 +175,10 @@ function Find-NodeKeys {
     foreach ($r in $roots) {
         if (-not $r -or -not (Test-Path -LiteralPath $r)) { continue }
         $direct = Join-Path $r 'data\network\secret_key'
-        if (Test-Path -LiteralPath $direct -PathType Leaf) { $found += $direct }
+        if ((Test-Path -LiteralPath $direct -PathType Leaf) -and -not (Test-LightClientPath $direct)) { $found += $direct }
         $hits = Get-ChildItem -LiteralPath $r -Filter 'secret_key' -File -Recurse -Depth 6 -Force -ErrorAction SilentlyContinue
         foreach ($h in $hits) {
+            if (Test-LightClientPath $h.FullName) { continue }
             if ($h.Directory.Name -eq 'network' -and $h.Directory.Parent.Name -eq 'data') { $found += $h.FullName }
         }
     }
@@ -166,8 +212,10 @@ function Find-Nodes {
         $cands += $Rpc
     } else {
         $cands += 'http://127.0.0.1:8114'
+        $cands += 'http://127.0.0.1:9000'   # Neuron's light client (only probed to report it clearly)
         $cands += Get-ConfiguredRpcUrls
-        foreach ($d in $CkbDir) {
+        foreach ($d in @($CkbDir) + @($script:RunningNodeDirs)) {
+            if (-not $d) { continue }
             $u = Get-RpcUrlFromCkbToml (Join-Path $d 'ckb.toml')
             if ($u) { $cands += $u }
         }
@@ -179,11 +227,16 @@ function Find-Nodes {
     $nodes = @()
     $seen = @{}
     $have = @{}
+    $script:LightClients = @()
     foreach ($u in $cands) {
         if ($seen.ContainsKey($u)) { continue }
         $seen[$u] = $true
         $info = Invoke-NodeRpc $u 'get_blockchain_info'
-        if ($null -eq $info -or $info -eq $true) { continue }
+        if ($null -eq $info -or $info -eq $true) {
+            # A light client (e.g. Neuron's testnet mode) answers get_tip_header but not get_blockchain_info.
+            if ($null -ne (Invoke-NodeRpc $u 'get_tip_header')) { $script:LightClients += $u }
+            continue
+        }
         if (-not ($info.PSObject.Properties.Name -contains 'chain')) { continue }
         $net = Get-ChainNetwork ([string]$info.chain)
         if (-not $net -or $have.ContainsKey($net)) { continue }
@@ -197,9 +250,10 @@ function Find-Nodes {
 }
 
 function Get-NodeCkbToml([string]$Url) {
-    # The ckb.toml whose [rpc] address serves $Url, from -CkbDir and the key folders; $null if unknown.
+    # The ckb.toml whose [rpc] address serves $Url, from -CkbDir, the running ckb.exe and the key folders.
     $dirs = @()
     $dirs += $CkbDir
+    $dirs += $script:RunningNodeDirs
     foreach ($k in (Find-NodeKeys)) { $dirs += (Get-KeyNodeDir $k) }
     foreach ($d in $dirs) {
         $t = Join-Path $d 'ckb.toml'
@@ -378,9 +432,11 @@ function Install-Files {
     Copy-Item -LiteralPath (Join-Path $Source 'csr.exe') -Destination $Exe -Force
     Copy-Item -LiteralPath (Join-Path $Source 'csr.example.toml') -Destination $Example -Force
     # keep the uninstaller with the program, so it is still there after the unpacked zip is deleted
-    $uninst = Join-Path $Source 'uninstall.ps1'
-    if (Test-Path -LiteralPath $uninst) {
-        Copy-Item -LiteralPath $uninst -Destination (Join-Path $InstallDir 'uninstall.ps1') -Force
+    foreach ($u in @('uninstall.ps1', 'uninstall.cmd')) {
+        $uninst = Join-Path $Source $u
+        if (Test-Path -LiteralPath $uninst) {
+            Copy-Item -LiteralPath $uninst -Destination (Join-Path $InstallDir $u) -Force
+        }
     }
     $netDest = Join-Path $InstallDir 'networks'
     New-Item -ItemType Directory -Force -Path $netDest | Out-Null
@@ -503,6 +559,28 @@ function Restart-ScheduledTaskSafe([string]$Name) {
     Start-ScheduledTask -TaskName $Name
 }
 
+# ---------------------------------------------------------------- shortcuts and browser
+function Set-DashboardShortcut([string]$Net) {
+    # Start menu entry "CSR\CSR Dashboard (<net>)" for all users; uninstall.ps1 removes the folder.
+    try {
+        $dir = Join-Path $ProgData 'Microsoft\Windows\Start Menu\Programs\CSR'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $url = "http://127.0.0.1:$(Get-DashboardPort $Net)"
+        $file = Join-Path $dir "CSR Dashboard ($Net).url"
+        Set-Content -LiteralPath $file -Value @('[InternetShortcut]', "URL=$url") -Encoding ASCII
+        Write-Ok "Start menu: CSR > CSR Dashboard ($Net)"
+    } catch {
+        Write-Warn "could not create the Start menu shortcut: $($_.Exception.Message)"
+    }
+}
+
+function Open-Dashboards($Nodes) {
+    if ($NoBrowser) { return }
+    foreach ($n in $Nodes) {
+        try { Start-Process "http://127.0.0.1:$(Get-DashboardPort $n.Network)" } catch { }
+    }
+}
+
 # ---------------------------------------------------------------- summary
 function Show-Summary($Nodes) {
     Write-Host ''
@@ -523,14 +601,26 @@ function Show-Summary($Nodes) {
     Write-Host ''
     Write-Host '  Updates     there is no auto-update on Windows (beta): download the new zip and run install.ps1 again.'
     Write-Host '              It keeps your configs, keys and data.'
-    Write-Host "  Uninstall   & '$InstallDir\uninstall.ps1' in an Administrator PowerShell (add -RemoveData to delete the data as well)"
+    Write-Host "  Uninstall   double-click $InstallDir\uninstall.cmd, or run & '$InstallDir\uninstall.ps1' in an"
+    Write-Host '              Administrator PowerShell (add -RemoveData to delete the data as well)'
     Write-Host ''
 }
 
 # ---------------------------------------------------------------- main
 function Install-Csr {
     Write-Step 'Looking for CKB full nodes on this PC'
+    $script:RunningNodeDirs = @(Get-RunningNodeDirs)
+    foreach ($d in $script:RunningNodeDirs) { Write-Ok "running ckb.exe uses $d" }
     $nodes = @(Find-Nodes)
+    if ($nodes.Count -eq 0 -and $script:LightClients.Count -gt 0) {
+        Write-Host ''
+        Write-Host "Error: a CKB light client answers at $($script:LightClients -join ', '), but CSR needs a full node." -ForegroundColor Red
+        Write-Host "       This is usually Neuron in testnet mode, which runs a light client. CSR does not support"
+        Write-Host '       light clients: it must prove a fully synced full node.'
+        Write-Host "       Options: switch Neuron to mainnet (its internal full node), or run ckb.exe as a testnet"
+        Write-Host '       full node and pass -CkbDir <folder with ckb.toml>. See docs/windows.md.'
+        exit 1
+    }
     if ($nodes.Count -eq 0) {
         Write-Host ''
         Write-Host 'Error: no CKB node answers on this PC.' -ForegroundColor Red
@@ -574,8 +664,10 @@ function Install-Csr {
         Register-CsrTask $n.Network
     }
     foreach ($n in $nodes) { Set-DashboardPassword $n.Network }
+    foreach ($n in $nodes) { Set-DashboardShortcut $n.Network }
     Start-Sleep -Seconds 3
     Show-Summary $nodes
+    Open-Dashboards $nodes
 }
 
 Install-Csr

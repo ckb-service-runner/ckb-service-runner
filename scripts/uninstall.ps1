@@ -2,7 +2,9 @@
 CSR uninstaller for Windows (beta). Run it in PowerShell started as Administrator.
 
 It stops and unregisters the scheduled tasks CSR-testnet and CSR-mainnet, removes the firewall rules
-"CSR ping testnet" / "CSR ping mainnet" and removes %ProgramFiles%\csr. The data root %ProgramData%\csr
+"CSR ping testnet" / "CSR ping mainnet", the Start menu folder CSR and %ProgramFiles%\csr.
+Easiest: double-click uninstall.cmd (it asks for Administrator rights); uninstall.cmd -RemoveData from a
+command prompt also deletes the data. The data root %ProgramData%\csr
 (configs, runner keys, wallet, logs) is kept unless -RemoveData is given; then you must type DELETE to confirm.
 It never touches the CKB node.
 #>
@@ -16,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host 'Run PowerShell as Administrator' -ForegroundColor Red
+    Write-Host 'Run PowerShell as Administrator (or double-click uninstall.cmd, which asks for it)' -ForegroundColor Red
     exit 1
 }
 
@@ -47,6 +49,12 @@ foreach ($net in @('testnet', 'mainnet')) {
 Get-Process -Name csr -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -and ($_.Path -eq $Exe) } |
     ForEach-Object { $_.Kill(); [void]$_.WaitForExit(10000) }
+
+$menu = Join-Path $ProgData 'Microsoft\Windows\Start Menu\Programs\CSR'
+if (Test-Path -LiteralPath $menu) {
+    Remove-Item -LiteralPath $menu -Recurse -Force
+    Write-Host '  removed the Start menu folder CSR'
+}
 
 if (Test-Path -LiteralPath $InstallDir) {
     # Windows cannot delete the folder the shell is in (when run as & '...\csr\uninstall.ps1' from there)

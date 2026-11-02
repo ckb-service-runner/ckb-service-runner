@@ -477,7 +477,49 @@ fn runtime() -> tokio::runtime::Runtime {
         .expect("tokio runtime")
 }
 
+/// The hint shown when `csr.exe` is started without arguments from the unpacked Windows zip (double-click in
+/// Explorer): there `install.cmd` lies next to the binary, and a console window would otherwise only flash the
+/// CLI help. `None` anywhere else (an installed binary, Linux), where the normal help is right.
+#[cfg(any(windows, test))]
+fn install_hint(exe_dir: &std::path::Path) -> Option<String> {
+    if !exe_dir.join("install.cmd").is_file() {
+        return None;
+    }
+    Some(format!(
+        "CSR - CKB Service Runner {}\n\n\
+         This is the program itself; it is not installed yet.\n\
+         To install CSR, double-click install.cmd in this folder:\n  {}\n\n\
+         It finds your CKB full node, installs CSR as a background task and opens the dashboard.\n\
+         Command-line help: csr.exe --help",
+        env!("CARGO_PKG_VERSION"),
+        exe_dir.join("install.cmd").display()
+    ))
+}
+
+/// Windows: `csr.exe` started without arguments next to `install.cmd` (double-click from the unpacked zip)
+/// prints the install hint and waits for Enter, so the window does not just flash and close.
+#[cfg(windows)]
+fn double_click_hint() -> Option<ExitCode> {
+    if std::env::args_os().len() != 1 {
+        return None;
+    }
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let hint = install_hint(&dir)?;
+    println!("{hint}\n\nPress Enter to close.");
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+    Some(ExitCode::SUCCESS)
+}
+
+#[cfg(not(windows))]
+fn double_click_hint() -> Option<ExitCode> {
+    None
+}
+
 fn main() -> ExitCode {
+    if let Some(code) = double_click_hint() {
+        return code;
+    }
     // Every file the runner creates (data, database, logs, keys) is private to its user, whatever the
     // caller's umask; this runs before anything is written.
     #[cfg(unix)]
@@ -943,5 +985,26 @@ fn main() -> ExitCode {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod install_hint_tests {
+    use super::install_hint;
+
+    #[test]
+    fn no_hint_without_install_cmd() {
+        let d = super::test_tmp();
+        assert!(install_hint(d.path()).is_none());
+    }
+
+    #[test]
+    fn hint_points_to_install_cmd() {
+        let d = super::test_tmp();
+        std::fs::write(d.path().join("install.cmd"), "@echo off\r\n").unwrap();
+        let h = install_hint(d.path()).expect("hint");
+        assert!(h.contains("install.cmd"));
+        assert!(h.contains(env!("CARGO_PKG_VERSION")));
+        assert!(h.contains("--help"));
     }
 }
