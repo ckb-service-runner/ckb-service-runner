@@ -1,7 +1,8 @@
 # CSR on Windows (beta)
 
 Windows support is a **beta**: x86_64 only, unsigned, no auto-update. Behaviour, config format, ports and the
-mainnet lock are the same as on Linux. Nothing here has been run on a real Windows PC by the authors yet.
+mainnet lock are the same as on Linux. First real install: 2 Nov 2026, Windows 11 with Neuron's internal mainnet
+node (0.5.2), identity proven and ranked by the mainnet monitor.
 
 ## Who it is for
 
@@ -14,25 +15,43 @@ mainnet lock are the same as on Linux. Nothing here has been run on a real Windo
 
 - Windows 10/11 x86_64, PowerShell 5.1 or later, an Administrator account.
 - A synced CKB full node on the same PC with its RPC on loopback (`127.0.0.1`).
-- The **Net** RPC module enabled in the node's `ckb.toml` (`modules = [..., "Net", ...]`); CSR needs it for peers.
-  `ckb.exe` users edit `ckb.toml` and restart the node. **Neuron caveat:** Neuron's internal node may not expose
-  `Net`, and it is unknown whether an edit to its `ckb.toml` survives a Neuron restart (see
-  [open questions](open-questions.md)). If the Net module is missing the installer stops.
+- The **Net** and **Indexer** RPC modules enabled in the node's `ckb.toml` (`modules = [..., "Net", "Indexer", ...]`).
+  `ckb.exe` users edit `ckb.toml` and restart the node. **Neuron's internal mainnet node has both on by default**
+  (checked on a real PC), so Neuron users change nothing. If a module is missing the installer stops.
+
+### Neuron
+
+- Neuron on **mainnet** runs a full node (`ckb.exe`) on RPC `http://127.0.0.1:8114`. Its data lives in the folder
+  chosen in Neuron (Settings, "CKB node data"), e.g. `C:\02_CKB_Blockchain`, with the node key in the standard
+  place `<folder>\data\network\secret_key`. The installer reads this folder from the running `ckb.exe`
+  (its `-C` argument), so no option is needed while Neuron runs.
+- Neuron on **testnet** runs a **light client** on `http://127.0.0.1:9000`; the installer recognises it and stops
+  with "a CKB light client answers ... but CSR needs a full node". Neuron's light clients keep keys under
+  `%APPDATA%\Neuron\chains\light\...`; those are never used.
+- The node may still be syncing: CSR installs anyway and ranks once the node is synced.
 
 ## Install
 
 1. Download `csr-<version>-x86_64-windows.zip` from the GitHub release and check it (see below). Unzip it.
-2. Start PowerShell **as Administrator** (right-click, "Run as administrator") in the unzipped folder.
-3. Run:
+2. Double-click **`install.cmd`** and allow the Administrator prompt. It runs `install.ps1`, removes the
+   "downloaded from the internet" mark from the unpacked files, finds your node, and at the end creates the Start
+   menu folder **CSR** (one "CSR Dashboard (network)" link per instance) and opens the dashboard in your browser.
+   The window stays open until you press a key, so you can read the summary.
 
-   ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass
-   .\install.ps1
-   ```
+Starting `csr.exe` itself from the zip only prints a hint to use `install.cmd`.
+
+With options, start PowerShell **as Administrator** in the unzipped folder instead:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1 -CkbDir C:\path\to\node
+```
 
 Options: `-Rpc <url[]>` node RPC URL(s) (loopback http, e.g. a testnet and a mainnet node),
-`-CkbDir <dir[]>` folder(s) containing a `ckb.toml`, `-NoRanking` (do not join the ranking).
-Without options the installer looks for nodes itself. It copies `csr.exe` to `%ProgramFiles%\csr`, creates
+`-CkbDir <dir[]>` folder(s) containing a `ckb.toml` (or the node's data folder), `-NoRanking` (do not join the
+ranking), `-NoBrowser` (do not open the dashboard at the end).
+Without options the installer looks for nodes itself: RPC `127.0.0.1:8114`, the folders of running `ckb.exe`
+processes (their `-C` argument, which covers Neuron), the user profile and `%APPDATA%\Neuron`. It copies `csr.exe` to `%ProgramFiles%\csr`, creates
 `%ProgramData%\csr` (restricted to SYSTEM and Administrators), writes `csr-<network>.toml`, registers one scheduled
 task per network (`CSR-testnet`, `CSR-mainnet`; at startup, as SYSTEM, restarts on failure) and asks for a
 dashboard password.
@@ -40,8 +59,8 @@ dashboard password.
 ### SmartScreen and unsigned scripts
 
 The zip, `csr.exe` and the scripts are **unsigned**, so SmartScreen ("Windows protected your PC") or an
-execution-policy message may appear; that is why the command above bypasses the policy for that one PowerShell
-session only. Check the download first against the signed `SHA256SUMS` of the release (signed offline; see
+execution-policy message may appear ("More info" > "Run anyway"); `install.cmd` and the command above bypass the
+policy for that one PowerShell session only. Check the download first against the signed `SHA256SUMS` of the release (signed offline; see
 [release.md](release.md)):
 
 ```powershell
@@ -66,14 +85,15 @@ loses availability in the ranking: set the power plan to never sleep for a stead
 
 ## Update
 
-Download the new zip and run its `install.ps1` again. It stops the tasks, replaces `csr.exe` and starts them
+Download the new zip and run its `install.cmd` (or `install.ps1`) again. It stops the tasks, replaces `csr.exe` and starts them
 again; configs, keys and data are kept. There is no auto-update; the dashboard only shows that a new version exists.
 
 ## Uninstall
 
-Run `& "$env:ProgramFiles\csr\uninstall.ps1"` (the installer keeps a copy there) or `.\uninstall.ps1` from the zip, in an
-Administrator PowerShell. It removes the tasks, the firewall rules and
-the program folder. Data in `%ProgramData%\csr` (configs, keys, wallet, logs) is kept unless you pass `-RemoveData` (you must then type DELETE).
+Double-click `C:\Program Files\csr\uninstall.cmd` (the installer keeps a copy there), or run
+`& "$env:ProgramFiles\csr\uninstall.ps1"` in an Administrator PowerShell. It removes the tasks, the firewall rules,
+the Start menu folder CSR and the program folder. From a command prompt, `uninstall.cmd -RemoveData` also deletes
+the data. Data in `%ProgramData%\csr` (configs, keys, wallet, logs) is kept unless you pass `-RemoveData` (you must then type DELETE).
 
 ## Logs
 

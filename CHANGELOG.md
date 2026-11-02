@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.3
+- **Windows installer, easier start** (after the first real Windows installs, 2 Nov 2026):
+  - Double-click `install.cmd` (asks for Administrator rights, bypasses the execution policy for that run, keeps the window open); `uninstall.cmd` likewise, also kept in `%ProgramFiles%\csr` (`uninstall.cmd -RemoveData` deletes the data too).
+  - The installer finds the node folder from the running `ckb.exe` (its `-C` argument). Neuron users with the node data in a folder of their choice get the node identity proven without `-CkbDir`. Neuron's light-client keys (`chains\light\...`) are never used.
+  - A CKB light client (Neuron on testnet, `127.0.0.1:9000`) is now reported as such ("a CKB light client answers ..., but CSR needs a full node") instead of "no CKB node answers", also with `-Rpc`.
+  - Removes the "downloaded from the internet" mark from the unpacked files, adds a Start menu folder **CSR** with a dashboard link per instance, and opens the dashboard at the end (`-NoBrowser` to skip). The uninstaller removes the Start menu folder.
+  - `csr.exe` started without arguments from the unpacked zip shows how to install instead of flashing the CLI help.
+- Docs: Neuron's internal mainnet node has the Net and Indexer modules on by default and keeps its key in `<node data folder>\data\network\secret_key` (`docs/windows.md`, `docs/open-questions.md`).
+- Linux: no behaviour change.
+
 ## 0.5.2
 - **Windows beta** (x86_64, csr-windows W1–W5): `csr-0.5.2-x86_64-windows.zip` with `csr.exe`, `install.ps1` and `uninstall.ps1`. Run `install.ps1` in PowerShell as Administrator: it finds the CKB node (`ckb.exe`, or Neuron's internal mainnet full node), checks the Indexer and Net modules, installs to `%ProgramFiles%\csr` with data in `%ProgramData%\csr` (SYSTEM and Administrators only), proves the node identity, opens only the ping port and starts one scheduled task per network (`CSR-testnet`, `CSR-mainnet`; at startup, as SYSTEM). Same config, ports and data layout as Linux; no auto-update and no code signing (update = run the installer of the new zip again). Guide: `docs/windows.md`.
 - The installer keeps a copy of `uninstall.ps1` in `%ProgramFiles%\csr`, so it is still there after the unpacked zip is deleted; the summary names that path.

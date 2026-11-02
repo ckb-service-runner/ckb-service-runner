@@ -29,8 +29,9 @@ port 8130, mainnet on 8140. Prerequisites, options and the manual steps: **[quic
 
 ## Windows (beta)
 
-A Windows x86_64 beta runs beside `ckb.exe` (or Neuron's internal mainnet full node): download the zip, run
-`install.ps1` in PowerShell as administrator. Unsigned, no auto-update. See **[docs/windows.md](docs/windows.md)**.
+A Windows x86_64 beta runs beside `ckb.exe` (or Neuron's internal mainnet full node): download the zip, unzip it
+and double-click `install.cmd`. It finds the node (Neuron included), sets everything up and opens the dashboard.
+Unsigned, no auto-update. See **[docs/windows.md](docs/windows.md)**.
 
 ## What works today
 
