@@ -49,6 +49,10 @@ GitHub release of `ckb-service-runner/ckb-service-runner`, checks the ed25519 si
    which writes `dist/csr-0.9.0-x86_64-windows.zip`. Then run `scripts/release.sh 0.9.0` as usual: when that zip
    exists it is added to `SHA256SUMS`, so the offline signature covers it. Upload the zip with the other assets.
    Without the zip `release.sh` behaves as before.
+   When the release is published, the `windows-latest-asset.yml` workflow adds a copy named
+   `csr-x86_64-windows.zip` (same bytes), so `releases/latest/download/csr-x86_64-windows.zip` always gives the
+   newest Windows build; the monitor's landing page links to it. Run the workflow by hand (input: the tag) if
+   the copy is missing.
 
 3. Copy `dist/SHA256SUMS` to the offline machine and sign it:
 

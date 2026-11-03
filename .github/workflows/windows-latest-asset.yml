@@ -1,0 +1,37 @@
+name: windows-latest-asset
+
+# Adds a version-free copy of the Windows zip to a release, so that
+# https://github.com/ckb-service-runner/ckb-service-runner/releases/latest/download/csr-x86_64-windows.zip
+# always downloads the newest Windows build (used by the monitor's landing page).
+# The copy has the same bytes as csr-<version>-x86_64-windows.zip, so its hash is the one listed in the signed
+# SHA256SUMS. The runner's updater picks its asset by exact name and ignores this file.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (for example v0.5.3)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add csr-x86_64-windows.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          src=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+                --jq '.assets[].name | select(test("^csr-.+-x86_64-windows\\.zip$"))' | head -n1)
+          if [ -z "$src" ]; then echo "release $TAG has no Windows zip, nothing to do"; exit 0; fi
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$src" --dir dl
+          cp "dl/$src" csr-x86_64-windows.zip
+          gh release upload "$TAG" csr-x86_64-windows.zip --repo "$GITHUB_REPOSITORY" --clobber
+          sha256sum "dl/$src" csr-x86_64-windows.zip
