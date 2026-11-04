@@ -10,6 +10,7 @@ services and earns tips. It never changes your node or its `ckb.toml`.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Live network](https://img.shields.io/badge/live%20network-csr--monitor-2ea44f)](https://csr-monitor.chainsolution.net)
 [![Telegram](https://img.shields.io/badge/chat-Telegram-26A5E4)](https://t.me/ckbrunner)
+[![Install video](https://img.shields.io/badge/install%20video-1%20min-FF0000?logo=youtube&logoColor=white)](https://youtu.be/THpQqQx0Iig)
 
 <p align="center">
   <img src="docs/images/dashboard-testnet.png" width="760" alt="CSR dashboard on testnet: synced CKB node, rank 1 in the CSR monitor, runner wallet with stake, service runtime on with settled jobs and tips">
@@ -32,6 +33,10 @@ port 8130, mainnet on 8140. Prerequisites, options and the manual steps: **[quic
 A Windows x86_64 beta runs beside `ckb.exe` (or Neuron's internal mainnet full node): download the zip, unzip it
 and double-click `install.cmd`. It finds the node (Neuron included), sets everything up and opens the dashboard.
 Unsigned, no auto-update. See **[docs/windows.md](docs/windows.md)**.
+
+**Watch the 1-minute install video:**
+
+<a href="https://youtu.be/THpQqQx0Iig"><img src="https://img.youtube.com/vi/THpQqQx0Iig/hqdefault.jpg" width="480" alt="Video: CKB Service Runner – install in 1 minute (Windows)"></a>
 
 ## What works today
 
