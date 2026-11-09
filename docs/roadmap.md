@@ -13,6 +13,22 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
   3 days are shown as inactive (no rank, not in the gate) and hidden after 30 days; several runners with one peer ID
   count as one node.
 
+## Runner release 0.6.0: on-chain service catalog (planned, spec ready)
+
+- [ ] New type script `csr-service-manifest`: a developer publishes one manifest cell per service (name, version,
+      description, links, code and data cells, args). Only the lock that owns the code cell can publish its
+      manifest. The existing contracts do not change.
+- [ ] Composite services (program + data cells + args, e.g. JavaScript on ckb-js-vm), identified by a service ID
+      (equal to the code hash for single-binary services, so existing job cells keep working).
+- [ ] The runner reads all manifests from its own node once a day (no monitor), lists them on the Services page
+      under "Available on chain" with **Add** and **Add & approve**, lists service IDs that open job cells use
+      without a manifest, and shows "New service available" under *Service runtime* on the Overview. Nothing runs
+      until the admin approves it.
+- [ ] `csr service publish` for app developers, and `docs/publishing-a-service.md`.
+- Goal: **after 0.6.0, new services need no runner update.** Publish a manifest and every runner lists it within a
+  day. Only changes to the runner itself (new host calls, trigger kinds, contract versions or limits) need a
+  release.
+
 ## Phase 0 — Requirements
 
 - [x] Requirements R1–R4, non-goals and the specifications in `spec/`
@@ -45,4 +61,5 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 - [ ] Job assignment from the ranking (minimum reputation and diversity per application)
 - [ ] Probing decentralised onto the runners themselves
 - [ ] Host-interface RFC in nervosnetwork/rfcs
+- [ ] On-chain service catalog and composite services (0.6.0, see above)
 - [ ] First service: CRT (CKB Revocable Timelock)
