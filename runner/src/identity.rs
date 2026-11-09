@@ -99,6 +99,16 @@ fn ckb_hash(data: &[u8]) -> [u8; 32] {
     out
 }
 
+/// The ID the CSR Network Monitor lists: `0x` + hex of the CKB hash of the 33-byte compressed service key.
+pub fn runner_id_from_pubkey_hex(service_pubkey: &str) -> Result<String, String> {
+    let h = service_pubkey.strip_prefix("0x").or_else(|| service_pubkey.strip_prefix("0X")).unwrap_or(service_pubkey);
+    let bytes = hex::decode(h).map_err(|_| "service pubkey is not hex".to_string())?;
+    if bytes.len() != 33 || PublicKey::from_slice(&bytes).is_err() {
+        return Err("service pubkey is not a 33-byte compressed secp256k1 key".into());
+    }
+    Ok(format!("0x{}", hex::encode(ckb_hash(&bytes))))
+}
+
 impl Drop for Identity {
     fn drop(&mut self) {
         self.storage_key.zeroize();
@@ -106,6 +116,11 @@ impl Drop for Identity {
 }
 
 impl Identity {
+    /// The runner ID shown by the dashboard and the monitor.
+    pub fn runner_id(&self) -> String {
+        runner_id_from_pubkey_hex(&self.service_pubkey).unwrap_or_default()
+    }
+
     /// `(runner_lock_args, runner_lock_hash)`: the sighash lock of `blake160(service_pubkey)`, hex with `0x`.
     pub fn runner_lock(&self) -> Result<(String, String), String> {
         let pk =
@@ -520,3 +535,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../acceptance/aiworker-node-identity-runner/node_identity_tests.rs"]
 mod aiworker_node_identity_tests;
+
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-csr-runner-id/runner_id_tests.rs"]
+mod aiworker_runner_id_tests;

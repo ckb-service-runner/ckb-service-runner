@@ -98,6 +98,7 @@ impl AppState {
         let node = self.node.read().unwrap();
         let (state, reason) = runtime_state(cfg.runtime.enabled, &cfg.network, node.report.state);
         let ok_at = self.last_check_ok_at.load(Ordering::Relaxed);
+        let runner_id = crate::identity::runner_id_from_pubkey_hex(&self.service_pubkey).unwrap_or_default();
         json!({
             "network": cfg.network,
             // The other instance on this machine (D32); `null` when not configured.
@@ -117,6 +118,11 @@ impl AppState {
             "uptime_s": self.started.elapsed().as_secs(),
             "peer_id": *self.peer_id.read().unwrap(),
             "service_pubkey": self.service_pubkey,
+            "runner_id": runner_id,
+            "runner_links": cfg.monitors().iter().map(|m| json!({
+                "monitor": m.url,
+                "url": format!("{}/?runner={}", m.url.trim_end_matches('/'), runner_id),
+            })).collect::<Vec<_>>(),
             "r2": {"state": node.report.state.as_str(), "reasons": node.report.reasons},
             "runtime": {"state": state, "reason": reason},
             "mainnet_runtime_unlocked": mainnet_runtime_unlocked(),

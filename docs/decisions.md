@@ -776,3 +776,11 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
 - **Phase 3, package**: `scripts/package-windows.sh` nests files under `csr-<version>-x86_64-windows/` inside the zip; the zip is built from a staging dir (so only listed files can enter). Uses `zip` if present, else Python `zipfile`.
 - **Phase 3, release.sh**: the Windows zip is added to `SHA256SUMS` only when it already exists; otherwise unchanged. Linux output text is unchanged apart from a hint when the zip is included.
 - **Phase 3, docs**: the Net/Neuron caveat is documented as unverified (open question added). The uninstall section defers to the script header for what data is kept.
+
+## csr-runner-id
+
+- **Runner ID**: `runner_id_from_pubkey_hex` accepts only a valid 33-byte compressed secp256k1 key (upper or lower case hex, `0x` prefix optional) and returns lowercase hex. `Identity::runner_id` and `/api/status` fall back to an empty string if the stored key were ever invalid (cannot happen for generated keys); the dashboard then shows "–".
+- **runner_links**: `monitor` is the configured monitor URL (same value the identity proofs use as the monitor label); `url` is that URL without trailing slash + `/?runner=<id>`. The links come from the API, so the assets carry no external URL.
+- **Dashboard**: Runner ID is shown in the node card facts (Overview and Node page) and at the top of the Network page's first card, even when the monitor has no data for the node.
+- No version bump (release is manual); roadmap item ticked with "shipped in 0.6.0".
+- **Node test entry**: Node 22 treats `node --test acceptance/aiworker-csr-runner-id/` as a module path (no directory scan) and fails with MODULE_NOT_FOUND. Node's resolver tries `<dir>.js` before the directory, so `acceptance/aiworker-csr-runner-id.js` imports every `*.test.mjs` in that directory. The acceptance directory itself stays unchanged.

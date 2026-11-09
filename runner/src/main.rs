@@ -671,6 +671,7 @@ fn main() -> ExitCode {
                 Ok(serde_json::json!({
                     "network": cfg.network,
                     "service_pubkey": id.service_pubkey,
+                    "runner_id": id.runner_id(),
                     "runner_lock_args": args,
                     "runner_lock_hash": hash,
                     "runner_address": address::sighash_address(&cfg.network, &raw),
@@ -684,6 +685,7 @@ fn main() -> ExitCode {
                         for k in [
                             "network",
                             "service_pubkey",
+                            "runner_id",
                             "runner_lock_args",
                             "runner_lock_hash",
                             "runner_address",

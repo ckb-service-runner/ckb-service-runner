@@ -28,6 +28,26 @@
     });
     c.appendChild(d);
   }
+  // Runner ID (as the monitor lists it): shortened, full value as title, copy button, one link per monitor.
+  function runnerIdNode(st) {
+    var id = st && st.runner_id;
+    var w = el('span', 'runner-id');
+    if (!id) { w.textContent = '–'; return w; }
+    w.appendChild(el('span', 'mono', id.length > 14 ? id.slice(0, 6) + '…' + id.slice(-4) : id));
+    w.firstChild.title = id;
+    var b = el('button', 'btn', 'Copy'); b.type = 'button';
+    b.addEventListener('click', function () {
+      function done(t) { b.textContent = t; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(id).then(function () { done('Copied'); }, function () { done('Copy failed'); });
+      else done('Copy failed');
+    });
+    w.appendChild(document.createTextNode(' ')); w.appendChild(b);
+    (st.runner_links || []).forEach(function (l) {
+      var a = el('a', '', 'View on monitor'); a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = l.monitor;
+      w.appendChild(document.createTextNode(' ')); w.appendChild(a);
+    });
+    return w;
+  }
   function pill(v) {
     return el('span', 'pill ' + v, v);
   }
@@ -353,6 +373,7 @@
     if (n.tx_pool && n.tx_pool.pending != null) fact('Tx pool', n.tx_pool.pending + ' pending · ' + n.tx_pool.proposed + ' proposed');
     var idn = n.identity && n.identity.state;
     if (idn) fact('Node identity', idn);
+    if (s && s.runner_id) { var ri = el('span', '', 'Runner ID '); ri.appendChild(runnerIdNode(s)); f.appendChild(ri); }
     c.appendChild(f);
     if (full) {
       var g = el('div', 'facts mono');
@@ -655,6 +676,7 @@
         var ping = j.ping || {};
         if (j.warning) cw.insertBefore(el('p', 'msg err', j.warning), cw.children[1] || null);
         if (ping.clock_skew_at) cw.appendChild(el('p', 'msg err', 'Warning: a monitor challenge was outside the 60 s freshness window (last at ' + fmtTime(ping.clock_skew_at) + '). Check this machine\'s clock.'));
+        dl(cw, [['Runner ID', runnerIdNode(state.status)]]);
         if (n) {
           var a = n.attestation || {};
           dl(cr, [['Rank', rankText(n)], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],

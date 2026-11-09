@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- **Runner ID**: the ID the CSR Network Monitor lists (`0x` + blake2b-256 of the service public key) is now shown on the dashboard (Overview and Network, shortened, with a copy button and a "View on monitor" link per monitor), in `/api/status` (`runner_id`, `runner_links`) and in `csr identity` (text and `--json`). Ships in 0.6.0.
+
 ## 0.5.3
 - **Windows installer, easier start** (after the first real Windows installs, 2 Nov 2026):
   - Double-click `install.cmd` (asks for Administrator rights, bypasses the execution policy for that run, keeps the window open); `uninstall.cmd` likewise, also kept in `%ProgramFiles%\csr` (`uninstall.cmd -RemoveData` deletes the data too).
