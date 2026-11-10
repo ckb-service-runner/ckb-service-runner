@@ -803,3 +803,8 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
 - **Phase 2, add from manifest**: `registry::add_from_manifest(db, rpc, script, network, target)` takes the manifest type script too and accepts a Type ID or a manifest out point; the data is re-read from the node by Type ID. Language is the manifest's (or `onchain` if empty). `POST /api/catalog/{type_id}/add` with `{"approve": true}` then calls `registry::act(Approve)`.
 - **Phase 2, CLI scan**: `csr service catalog --refresh` polls the node itself for the R2 state and refuses to scan unless Synced. Dashboard changes (Services page list, "New service available" notice calling `POST /api/catalog/seen`) are not part of this phase.
 - **Phase 2, manifest decoding**: hand-written molecule decoding in `catalog.rs` (no new dependency); re-checks tag, lengths, UTF-8, `https://`, `min_csr` and the Byte32Vec/OutPointVec shapes.
+
+### Phase 3 – Dashboard (csr-service-catalog)
+- Services page has three cards (On this runner, Available on chain, Seen on chain no description); manifest name, version and "Update available" come from `/api/catalog` items with `added`, so `/api/services` is unchanged.
+- Opening the page posts `/api/catalog/seen`; the Overview runtime card shows the notice from `status.catalog` with a dismiss button, whether the runtime is on or off.
+- Only `https://` links become anchors (`rel="noopener noreferrer nofollow"`); descriptions use `textContent` with `white-space: pre-line`. Add & approve is disabled while the mainnet gate is on; the existing mainnet notice is shown at the top.
