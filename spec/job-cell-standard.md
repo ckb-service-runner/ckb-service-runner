@@ -6,7 +6,8 @@ CSR-SPEC-v0.2 §9/§10, deployment plan §3.3–3.5.
 
 ## 1. Job cell
 
-* Type script `csr-job-type`, args = `service_code_hash (32)`.
+* Type script `csr-job-type`, args = `service_code_hash (32)` = the service ID, see `service-manifest.md`; equal to
+  the code hash for single-binary services. The contract does not interpret it.
 * Lock script `csr-job-lock`, args = `registry_type_hash (32)` – the hash of the `csr-registry` type script
   (identical for all registry cells of one deployment). The registry cell dep holds **`RegistryV3`**
   (`registry.md` §2).
@@ -290,3 +291,5 @@ after the chain clock of the config cell). The runs stay waiting and the jobs pa
 started finishes, within `max_job_wall_seconds`.
 
 A service must tolerate being run more than once for one job cell.
+
+App integration (building job cells from a front end, costs, failure modes): [`docs/integrating-an-app.md`](../docs/integrating-an-app.md).

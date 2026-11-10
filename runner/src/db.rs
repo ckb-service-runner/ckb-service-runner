@@ -28,6 +28,48 @@ pub struct ServiceRow {
     pub status: String,
     /// Code cell of an on-chain service (`0x<tx>:<index>`).
     pub outpoint: Option<String>,
+    /// Service ID (`catalog::service_id`); the row key (`code_hash`) holds the same value.
+    pub service_id: Option<String>,
+    /// Data cells of a composite service (`0x<tx>:<index>`, in manifest order).
+    pub data_cells: Vec<String>,
+    /// Script args of a composite service, hex without `0x`.
+    pub args: String,
+    pub manifest_type_id: Option<String>,
+    /// Manifest cell the service was last added from (an update shows when the catalog has a newer one).
+    pub manifest_outpoint: Option<String>,
+}
+
+impl ServiceRow {
+    /// The service ID that job cells name (`code_hash` for rows without one).
+    pub fn id(&self) -> &str {
+        self.service_id.as_deref().unwrap_or(&self.code_hash)
+    }
+}
+
+/// One manifest cell of the on-chain catalog (`catalog.rs`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogRow {
+    pub type_id: String,
+    pub service_id: String,
+    pub code_hash: String,
+    pub outpoint: String,
+    pub publisher_lock_hash: String,
+    pub publisher_address: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub url: String,
+    pub source: String,
+    pub language: String,
+    pub min_csr: String,
+    pub deprecated: bool,
+    pub code_cell: String,
+    pub data_cells: Vec<String>,
+    /// Hex without `0x`.
+    pub args: String,
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
+    pub removed: bool,
 }
 
 /// One run of a job cell (`keeper.rs` has the states).
@@ -197,6 +239,49 @@ impl Db {
             conn.execute_batch("ALTER TABLE samples ADD COLUMN disk_free_gb INTEGER")
                 .map_err(|e| format!("cannot migrate database: {e}"))?;
         }
+        // Added with the service catalog.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS catalog (
+                 type_id TEXT PRIMARY KEY,
+                 service_id TEXT NOT NULL,
+                 code_hash TEXT NOT NULL,
+                 outpoint TEXT NOT NULL,
+                 publisher_lock_hash TEXT NOT NULL,
+                 publisher_address TEXT NOT NULL,
+                 name TEXT NOT NULL,
+                 version TEXT NOT NULL,
+                 description TEXT NOT NULL,
+                 url TEXT NOT NULL,
+                 source TEXT NOT NULL,
+                 language TEXT NOT NULL,
+                 min_csr TEXT NOT NULL,
+                 deprecated INTEGER NOT NULL,
+                 code_cell TEXT NOT NULL,
+                 data_cells TEXT NOT NULL,
+                 args TEXT NOT NULL,
+                 first_seen_ms INTEGER NOT NULL,
+                 last_seen_ms INTEGER NOT NULL,
+                 removed INTEGER NOT NULL DEFAULT 0
+             );",
+        )
+        .map_err(|e| format!("cannot initialise database: {e}"))?;
+        for col in [
+            "service_id",
+            "data_cells",
+            "args",
+            "manifest_type_id",
+            "manifest_outpoint",
+        ] {
+            if conn
+                .prepare(&format!("SELECT {col} FROM services LIMIT 0"))
+                .is_err()
+            {
+                conn.execute_batch(&format!("ALTER TABLE services ADD COLUMN {col} TEXT"))
+                    .map_err(|e| format!("cannot migrate database: {e}"))?;
+            }
+        }
+        conn.execute_batch("UPDATE services SET service_id = code_hash WHERE service_id IS NULL")
+            .map_err(|e| format!("cannot migrate database: {e}"))?;
         Ok(Db {
             conn: Mutex::new(conn),
         })
@@ -206,7 +291,7 @@ impl Db {
     pub fn add_service(&self, code_hash: &str, name: &str, language: &str) -> Result<(), String> {
         let c = self.conn.lock().unwrap();
         c.execute(
-            "INSERT INTO services (code_hash, name, language) VALUES (?1, ?2, ?3)
+            "INSERT INTO services (code_hash, name, language, service_id) VALUES (?1, ?2, ?3, ?1)
              ON CONFLICT(code_hash) DO UPDATE SET name = ?2, language = ?3",
             params![code_hash, name, language],
         )
@@ -225,11 +310,37 @@ impl Db {
         Ok(())
     }
 
+    /// Stores the manifest fields of a service (data cells, args and the manifest it came from).
+    pub fn set_service_manifest(
+        &self,
+        key: &str,
+        data_cells: &[String],
+        args: &str,
+        type_id: &str,
+        manifest_outpoint: &str,
+    ) -> Result<(), String> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "UPDATE services SET service_id = ?1, data_cells = ?2, args = ?3, manifest_type_id = ?4,
+             manifest_outpoint = ?5 WHERE code_hash = ?1",
+            params![
+                key,
+                serde_json::to_string(data_cells).unwrap_or_else(|_| "[]".into()),
+                args,
+                type_id,
+                manifest_outpoint
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn services(&self) -> Result<Vec<ServiceRow>, String> {
         let c = self.conn.lock().unwrap();
         let mut st = c
             .prepare(
-                "SELECT code_hash, name, language, status, outpoint FROM services ORDER BY name, code_hash",
+                "SELECT code_hash, name, language, status, outpoint, service_id, data_cells, args,
+                 manifest_type_id, manifest_outpoint FROM services ORDER BY name, code_hash",
             )
             .map_err(|e| e.to_string())?;
         let rows = st
@@ -240,6 +351,14 @@ impl Db {
                     language: r.get(2)?,
                     status: r.get(3)?,
                     outpoint: r.get(4)?,
+                    service_id: r.get(5)?,
+                    data_cells: r
+                        .get::<_, Option<String>>(6)?
+                        .and_then(|d| serde_json::from_str(&d).ok())
+                        .unwrap_or_default(),
+                    args: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                    manifest_type_id: r.get(8)?,
+                    manifest_outpoint: r.get(9)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -250,7 +369,7 @@ impl Db {
         Ok(self
             .services()?
             .into_iter()
-            .find(|s| s.code_hash == code_hash))
+            .find(|s| s.code_hash == code_hash || s.id() == code_hash))
     }
 
     /// Sets the status of a known service; false if the code hash is unknown.
@@ -263,6 +382,119 @@ impl Db {
             )
             .map_err(|e| e.to_string())?;
         Ok(n > 0)
+    }
+
+    /// Open job cells per service ID (`code_hash` column of `job_cells`) and the sum of their tips, from the
+    /// last discovery.
+    pub fn open_by_service(&self) -> Result<std::collections::HashMap<String, (u64, u64)>, String> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare("SELECT code_hash, COUNT(*), SUM(tip_shannons) FROM job_cells GROUP BY code_hash")
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?.to_ascii_lowercase(),
+                    (r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)? as u64),
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Inserts or updates a catalog entry (keeps `first_seen_ms`), clearing `removed`.
+    pub fn upsert_catalog(&self, r: &CatalogRow) -> Result<(), String> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO catalog (type_id, service_id, code_hash, outpoint, publisher_lock_hash,
+                 publisher_address, name, version, description, url, source, language, min_csr, deprecated,
+                 code_cell, data_cells, args, first_seen_ms, last_seen_ms, removed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 0)
+             ON CONFLICT(type_id) DO UPDATE SET service_id = ?2, code_hash = ?3, outpoint = ?4,
+                 publisher_lock_hash = ?5, publisher_address = ?6, name = ?7, version = ?8, description = ?9,
+                 url = ?10, source = ?11, language = ?12, min_csr = ?13, deprecated = ?14, code_cell = ?15,
+                 data_cells = ?16, args = ?17, last_seen_ms = ?19, removed = 0",
+            params![
+                r.type_id,
+                r.service_id,
+                r.code_hash,
+                r.outpoint,
+                r.publisher_lock_hash,
+                r.publisher_address,
+                r.name,
+                r.version,
+                r.description,
+                r.url,
+                r.source,
+                r.language,
+                r.min_csr,
+                r.deprecated as i64,
+                r.code_cell,
+                serde_json::to_string(&r.data_cells).unwrap_or_else(|_| "[]".into()),
+                r.args,
+                r.first_seen_ms,
+                r.last_seen_ms
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Marks every entry whose Type ID is not in `live` as removed.
+    pub fn mark_catalog_removed(&self, live: &[String]) -> Result<(), String> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare("SELECT type_id FROM catalog WHERE removed = 0")
+            .map_err(|e| e.to_string())?;
+        let ids: Vec<String> = st
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        for id in ids.iter().filter(|i| !live.contains(i)) {
+            c.execute("UPDATE catalog SET removed = 1 WHERE type_id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// All catalog entries, removed ones included.
+    pub fn catalog(&self) -> Result<Vec<CatalogRow>, String> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare(
+                "SELECT type_id, service_id, code_hash, outpoint, publisher_lock_hash, publisher_address, name,
+                 version, description, url, source, language, min_csr, deprecated, code_cell, data_cells, args,
+                 first_seen_ms, last_seen_ms, removed FROM catalog ORDER BY name, type_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| {
+                Ok(CatalogRow {
+                    type_id: r.get(0)?,
+                    service_id: r.get(1)?,
+                    code_hash: r.get(2)?,
+                    outpoint: r.get(3)?,
+                    publisher_lock_hash: r.get(4)?,
+                    publisher_address: r.get(5)?,
+                    name: r.get(6)?,
+                    version: r.get(7)?,
+                    description: r.get(8)?,
+                    url: r.get(9)?,
+                    source: r.get(10)?,
+                    language: r.get(11)?,
+                    min_csr: r.get(12)?,
+                    deprecated: r.get::<_, i64>(13)? != 0,
+                    code_cell: r.get(14)?,
+                    data_cells: serde_json::from_str(&r.get::<_, String>(15)?).unwrap_or_default(),
+                    args: r.get(16)?,
+                    first_seen_ms: r.get(17)?,
+                    last_seen_ms: r.get(18)?,
+                    removed: r.get::<_, i64>(19)? != 0,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
     /// Replaces the set of discovered job cells by the live cells seen at `block`.

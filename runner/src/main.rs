@@ -1,6 +1,7 @@
 mod address;
 mod app;
 mod attest;
+mod catalog;
 mod chain;
 mod config;
 mod consent;
@@ -14,6 +15,7 @@ mod network;
 mod node;
 mod password;
 mod ping;
+mod publish;
 mod registry;
 mod renew;
 mod resources;
@@ -298,11 +300,70 @@ enum ServiceAction {
         #[arg(long)]
         manifest: PathBuf,
     },
-    /// Register a service from its code cell (prints {code_hash, name})
+    /// Register a service from its code cell (prints {code_hash, name}) or from a manifest of the catalog
     AddOnchain {
-        /// 0x<tx hash>:<index>
+        /// Code cell of a single-binary service: 0x<tx hash>:<index>
+        #[arg(long, required_unless_present = "manifest", conflicts_with = "manifest")]
+        outpoint: Option<String>,
+        /// Manifest of the catalog: its Type ID (0x + 64 hex) or the out point of the manifest cell
         #[arg(long)]
-        outpoint: String,
+        manifest: Option<String>,
+        /// With --manifest: also approve the service
+        #[arg(long, requires = "manifest")]
+        approve: bool,
+    },
+    /// Publish, update, deprecate or destroy a service manifest on chain (developer tool; uses --key, not the
+    /// runner wallet)
+    Publish {
+        /// Code cell of the program: 0x<tx hash>:<index>
+        #[arg(long)]
+        code_outpoint: Option<String>,
+        /// Data cell (repeat, at most 4, in the order the service loads them)
+        #[arg(long)]
+        data_outpoint: Vec<String>,
+        /// Script args of the service as hex (at most 64 bytes)
+        #[arg(long)]
+        args: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        description_file: Option<PathBuf>,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        language: Option<String>,
+        /// First runner version that can run the service (X.Y.Z)
+        #[arg(long)]
+        min_csr: Option<String>,
+        /// Update the manifest with this Type ID (only the given fields change)
+        #[arg(long, value_name = "TYPE_ID", conflicts_with_all = ["destroy", "code_outpoint", "data_outpoint", "args"])]
+        update: Option<String>,
+        /// With --update: mark the service deprecated
+        #[arg(long, requires = "update")]
+        deprecate: bool,
+        /// Destroy the manifest with this Type ID (the capacity returns to the publisher)
+        #[arg(long, value_name = "TYPE_ID")]
+        destroy: Option<String>,
+        /// File with the publisher's secp256k1 key (hex)
+        #[arg(long)]
+        key: PathBuf,
+        /// Build and check the transaction, do not send it
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List the on-chain service catalog (read from your own node)
+    Catalog {
+        /// Scan the node now
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// List registered services
     List {
@@ -671,6 +732,7 @@ fn main() -> ExitCode {
                 Ok(serde_json::json!({
                     "network": cfg.network,
                     "service_pubkey": id.service_pubkey,
+                    "runner_id": id.runner_id(),
                     "runner_lock_args": args,
                     "runner_lock_hash": hash,
                     "runner_address": address::sighash_address(&cfg.network, &raw),
@@ -684,6 +746,7 @@ fn main() -> ExitCode {
                         for k in [
                             "network",
                             "service_pubkey",
+                            "runner_id",
                             "runner_lock_args",
                             "runner_lock_hash",
                             "runner_address",
@@ -857,6 +920,64 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Service {
+            action:
+                ServiceAction::Publish {
+                    code_outpoint,
+                    data_outpoint,
+                    args,
+                    name,
+                    version,
+                    description,
+                    description_file,
+                    url,
+                    source,
+                    language,
+                    min_csr,
+                    update,
+                    deprecate,
+                    destroy,
+                    key,
+                    dry_run,
+                },
+        } => {
+            let r = (|| -> Result<serde_json::Value, String> {
+                let cfg = load_config(&cli)?;
+                let mode = match (update, destroy) {
+                    (Some(id), _) => publish::Mode::Update(id.clone()),
+                    (None, Some(id)) => publish::Mode::Destroy(id.clone()),
+                    (None, None) => publish::Mode::Create,
+                };
+                let a = publish::PublishArgs {
+                    mode,
+                    code_outpoint: code_outpoint.clone(),
+                    data_outpoints: data_outpoint.clone(),
+                    args: args.clone(),
+                    name: name.clone(),
+                    version: version.clone(),
+                    description: description.clone(),
+                    description_file: description_file.clone(),
+                    url: url.clone(),
+                    source: source.clone(),
+                    language: language.clone(),
+                    min_csr: min_csr.clone(),
+                    deprecate: *deprecate,
+                    key: key.clone(),
+                    dry_run: *dry_run,
+                };
+                runtime().block_on(publish::run(&cfg, &a))
+            })();
+            match r {
+                Ok(v) => {
+                    println!("{v}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Command::Jobs {
             action: JobsAction::Plan { json },
         } => {
@@ -905,13 +1026,92 @@ fn main() -> ExitCode {
                         println!("{}", registry::add_local(&db, manifest)?);
                         return Ok(());
                     }
-                    ServiceAction::AddOnchain { outpoint } => {
-                        let v = runtime().block_on(registry::add_onchain(
+                    ServiceAction::AddOnchain {
+                        outpoint,
+                        manifest,
+                        approve,
+                    } => {
+                        let Some(target) = manifest else {
+                            let v = runtime().block_on(registry::add_onchain(
+                                &db,
+                                &cfg.node.rpc_url,
+                                outpoint.as_deref().unwrap_or(""),
+                            ))?;
+                            println!("{v}");
+                            return Ok(());
+                        };
+                        let script = chain::manifest_script(&cfg)?
+                            .ok_or(catalog::NO_SCRIPT.to_string())?;
+                        let rpc = node::rpc::RpcClient::new(&cfg.node.rpc_url);
+                        let v = runtime().block_on(registry::add_from_manifest(
                             &db,
-                            &cfg.node.rpc_url,
-                            outpoint,
+                            &rpc,
+                            &script,
+                            &cfg.network,
+                            target,
                         ))?;
-                        println!("{v}");
+                        if !*approve {
+                            println!("{v}");
+                            return Ok(());
+                        }
+                        let id = v["service_id"].as_str().unwrap_or("").to_string();
+                        let e = registry::act(
+                            &db,
+                            &mut cfg,
+                            &cfg_path,
+                            &root,
+                            &id,
+                            registry::Action::Approve,
+                        )
+                        .map_err(|e| e.message())?;
+                        println!("{e}");
+                        return Ok(());
+                    }
+                    ServiceAction::Catalog { refresh, json } => {
+                        if let Some(why) = catalog::off_reason(&cfg)? {
+                            return Err(format!("the catalog is off: {why}"));
+                        }
+                        if *refresh {
+                            let client = node::rpc::RpcClient::new(&cfg.node.rpc_url);
+                            let polled = runtime().block_on(node::poll(&client, &cfg.network));
+                            if polled.report.state != node::r2::R2State::Synced {
+                                return Err(format!(
+                                    "node not synced (R2: {}), cannot scan",
+                                    polled.report.state.as_str()
+                                ));
+                            }
+                            let r = runtime().block_on(catalog::scan(&db, &cfg))?;
+                            eprintln!(
+                                "{} manifest(s) on chain, {} new, {} invalid",
+                                r.live,
+                                r.new.len(),
+                                r.invalid
+                            );
+                        }
+                        let v = catalog::catalog_json(&db, &cfg)?;
+                        if *json {
+                            println!("{v}");
+                        } else {
+                            for i in v["items"].as_array().into_iter().flatten() {
+                                println!(
+                                    "{} {} {} {} added={} jobs={} {}",
+                                    i["type_id"].as_str().unwrap_or(""),
+                                    i["name"].as_str().unwrap_or(""),
+                                    i["version"].as_str().unwrap_or(""),
+                                    i["service_id"].as_str().unwrap_or(""),
+                                    i["added"],
+                                    i["open_jobs"],
+                                    i["description"].as_str().unwrap_or("")
+                                );
+                            }
+                            for u in v["unknown"].as_array().into_iter().flatten() {
+                                println!(
+                                    "{} (seen on chain, no manifest) jobs={}",
+                                    u["service_id"].as_str().unwrap_or(""),
+                                    u["open_jobs"]
+                                );
+                            }
+                        }
                         return Ok(());
                     }
                     ServiceAction::List { json } => {
@@ -936,7 +1136,9 @@ fn main() -> ExitCode {
                     ServiceAction::Revoke { code_hash } => (code_hash, registry::Action::Revoke),
                     ServiceAction::Enable { code_hash } => (code_hash, registry::Action::Enable),
                     ServiceAction::Disable { code_hash } => (code_hash, registry::Action::Disable),
-                    ServiceAction::RunLocal { .. } => unreachable!("handled above"),
+                    ServiceAction::RunLocal { .. } | ServiceAction::Publish { .. } => {
+                        unreachable!("handled above")
+                    }
                 };
                 let e = registry::act(&db, &mut cfg, &cfg_path, &root, hash, act)
                     .map_err(|e| e.message())?;

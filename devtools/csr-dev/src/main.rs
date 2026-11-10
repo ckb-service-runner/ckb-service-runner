@@ -25,12 +25,13 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const CONTRACTS: [(&str, &str); 5] = [
+const CONTRACTS: [(&str, &str); 6] = [
     ("config_type", "csr-config-type"),
     ("dual_lock", "csr-dual-lock"),
     ("registry", "csr-registry"),
     ("job_type", "csr-job-type"),
     ("job_lock", "csr-job-lock"),
+    ("service_manifest", "csr-service-manifest"),
 ];
 const WEEK_MS: u64 = 7 * 24 * 3600 * 1000;
 /// SHA-256 of the vendored anyone-can-pay binary (`devtools/vendor/SHA256SUMS`).

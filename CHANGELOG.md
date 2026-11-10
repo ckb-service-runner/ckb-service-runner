@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- **JavaScript job builder and integration guide** (csr-app-sdk): `sdk/js/csr-job.mjs`, a dependency-free ES module to encode the `Job`, build the job cell, cell deps and `CSRW` watch payload from a web front end (the runner test `js_sdk_vectors_decode` checks the runner decodes what it encodes), and `docs/integrating-an-app.md` (pattern, costs, failure modes; worked example CrowdCell auto-settle). No contract or runner change.
+- **Service catalog** (D47–D52): the new contract `csr-service-manifest` (a manifest cell per service, bound to the lock that owns the code cell), composite services (service ID = hash over code hash, args and data cells; unchanged code hash for a single binary), a daily catalog scan from the runner's own node, the Services page with description and links and a "New service available" notice on the Overview. `csr service publish` (create, `--update`, `--deprecate`, `--destroy`; `--dry-run`) for developers, `csr service catalog [--refresh]` and `csr service add-onchain --manifest`. `csr-dev deploy-contracts` deploys the manifest script (`scripts.service_manifest`). **New services need no runner update.** Guide: `docs/publishing-a-service.md`; spec: `spec/service-manifest.md`.
+- **Runner ID**: the ID the CSR Network Monitor lists (`0x` + blake2b-256 of the service public key) is now shown on the dashboard (Overview and Network, shortened, with a copy button and a "View on monitor" link per monitor), in `/api/status` (`runner_id`, `runner_links`) and in `csr identity` (text and `--json`). Ships in 0.6.0.
+
 ## 0.5.3
 - **Windows installer, easier start** (after the first real Windows installs, 2 Nov 2026):
   - Double-click `install.cmd` (asks for Administrator rights, bypasses the execution policy for that run, keeps the window open); `uninstall.cmd` likewise, also kept in `%ProgramFiles%\csr` (`uninstall.cmd -RemoveData` deletes the data too).

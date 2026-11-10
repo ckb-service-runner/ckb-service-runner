@@ -22,7 +22,7 @@ use std::path::Path;
 
 pub const CKB: u64 = 100_000_000;
 /// Fee reserve when picking runner wallet cells; the exact fee comes out of the change.
-const FEE_RESERVE: u64 = 1_000_000;
+pub(crate) const FEE_RESERVE: u64 = 1_000_000;
 
 const SIGHASH_CODE_HASH: H256 =
     h256!("0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8");
@@ -44,7 +44,7 @@ fn hx(b: impl AsRef<[u8]>) -> String {
 }
 
 /// Occupied capacity in shannons (1 byte = 1 CKB shannon-unit of 1e8).
-fn occupied(lock: &Script, type_: Option<&Script>, data_len: usize) -> u64 {
+pub(crate) fn occupied(lock: &Script, type_: Option<&Script>, data_len: usize) -> u64 {
     let script = |s: &Script| 32 + 1 + s.args().raw_data().len() as u64;
     (8 + script(lock) + type_.map(script).unwrap_or(0) + data_len as u64) * CKB
 }
@@ -127,12 +127,12 @@ fn sighash_args(lock: &Script) -> Option<[u8; 20]> {
     .flatten()
 }
 
-fn out_point_str(op: &OutPoint) -> String {
+pub(crate) fn out_point_str(op: &OutPoint) -> String {
     let i: u32 = op.index().unpack();
     format!("{}:{i}", hx(op.tx_hash().as_slice()))
 }
 
-fn out_point_from(tx_hash: &str, index: u32) -> Result<OutPoint, String> {
+pub(crate) fn out_point_from(tx_hash: &str, index: u32) -> Result<OutPoint, String> {
     let hash: H256 = tx_hash
         .trim_start_matches("0x")
         .parse()
@@ -151,7 +151,7 @@ pub struct Cell {
     pub data: Vec<u8>,
 }
 
-fn parse_cell(c: &Value) -> Result<Cell, String> {
+pub(crate) fn parse_cell(c: &Value) -> Result<Cell, String> {
     let lock: json::Script =
         serde_json::from_value(c["output"]["lock"].clone()).map_err(|e| e.to_string())?;
     Ok(Cell {
@@ -201,6 +201,8 @@ struct Deployments {
     /// `csr-config-type` (contracts v3); `None` in a v2 deployment, whose config cell is a plain Type ID
     /// cell and whose registry takes the config type hash as args.
     config_type: Option<Deployed>,
+    /// `csr-service-manifest`; `None` when the deployment has no manifest script (the catalog is off).
+    service_manifest: Option<Deployed>,
     /// Type hash of the registry script of this deployment (args of the job lock).
     registry_type_hash: Vec<u8>,
     /// Args of the config cell's type script (its Type ID, the `config_id`).
@@ -292,7 +294,13 @@ fn parse_deployments(text: &str, source: &str) -> Result<Deployments, String> {
     } else {
         Some(load_deployed(&v, "config_type", f)?)
     };
+    let service_manifest = if v["scripts"]["service_manifest"].is_null() {
+        None
+    } else {
+        Some(load_deployed(&v, "service_manifest", f)?)
+    };
     let d = Deployments {
+        service_manifest,
         dual: load_deployed(&v, "dual_lock", f)?,
         registry: load_deployed(&v, "registry", f)?,
         job_type: load_deployed(&v, "job_type", f)?,
@@ -321,6 +329,66 @@ fn parse_deployments(text: &str, source: &str) -> Result<Deployments, String> {
         }
     }
     Ok(d)
+}
+
+/// Cell dep of the secp256k1_blake160 dep group (found in the genesis block).
+pub(crate) async fn secp_dep_of(rpc: &RpcClient) -> Result<CellDep, String> {
+    let call = |m: &'static str, p: Value| async move {
+        rpc.call(m, p).await.map_err(|e| format!("{m}: {e}"))
+    };
+    let block = call("get_block_by_number", json!(["0x0"])).await?;
+    let block: json::BlockView = serde_json::from_value(block).map_err(|e| e.to_string())?;
+    for tx in &block.transactions {
+        for (i, data) in tx.inner.outputs_data.iter().enumerate() {
+            let Ok(vec) = packed::OutPointVec::from_slice(data.as_bytes()) else {
+                continue;
+            };
+            for member in vec.into_iter() {
+                let r = call(
+                    "get_live_cell",
+                    json!([json::OutPoint::from(member), false]),
+                )
+                .await?;
+                let ty = r["cell"]["output"]["type"].clone();
+                let Ok(ty) = serde_json::from_value::<json::Script>(ty) else {
+                    continue;
+                };
+                if script_hash(&Script::from(ty)) == SIGHASH_CODE_HASH {
+                    let op = OutPoint::new_builder()
+                        .tx_hash(tx.hash.pack())
+                        .index(Pack::<packed::Uint32>::pack(&(i as u32)))
+                        .build();
+                    return Ok(CellDep::new_builder()
+                        .out_point(op)
+                        .dep_type(packed::Byte::new(DepType::DepGroup as u8))
+                        .build());
+                }
+            }
+        }
+    }
+    Err("secp256k1_blake160 dep group not found in the genesis block".into())
+}
+
+/// The manifest type script (empty args) and the cell dep of its code, for the publishing tool.
+/// `None` when the deployment has no manifest script (mainnet until it is deployed).
+pub fn manifest_deployment(cfg: &Config) -> Result<Option<(Script, CellDep)>, String> {
+    if cfg.network == "mainnet" {
+        return Ok(None);
+    }
+    Ok(load_deployments(cfg)?
+        .service_manifest
+        .map(|d| (d.script(&[]), d.cell_dep())))
+}
+
+/// The `csr-service-manifest` type script of the configured deployment (empty args: the search prefix of the
+/// catalog scan). `None` when the deployment has no manifest script (mainnet until it is deployed).
+pub fn manifest_script(cfg: &Config) -> Result<Option<json::Script>, String> {
+    if cfg.network == "mainnet" {
+        return Ok(None);
+    }
+    Ok(load_deployments(cfg)?
+        .service_manifest
+        .map(|d| json::Script::from(d.script(&[]))))
 }
 
 /// Type hash of the configured registry deployment (`registry_type_hash` of `CSR-ATTEST-v2`).
@@ -659,7 +727,7 @@ pub fn refresh_registry_data(existing: &[u8], attestation: &Value) -> Result<Vec
 
 /// Signs the sighash group made of inputs `0..group` (runner wallet cells) with the service key. Witness 0
 /// keeps its other fields (the consent in `output_type` is covered by the signature).
-fn sign_wallet_inputs(
+pub(crate) fn sign_wallet_inputs(
     tx: &TransactionView,
     group: usize,
     key: &secp256k1::SecretKey,
@@ -710,7 +778,7 @@ fn sign_wallet_inputs(
         .build())
 }
 
-fn code_dep(op: OutPoint) -> CellDep {
+pub(crate) fn code_dep(op: OutPoint) -> CellDep {
     CellDep::new_builder()
         .out_point(op)
         .dep_type(packed::Byte::new(DepType::Code as u8))
@@ -785,6 +853,7 @@ impl Chain {
             job_type: none(),
             job_lock: none(),
             config_type: None,
+            service_manifest: None,
             registry_type_hash: vec![],
             config_type_args: vec![],
             config_type_hash: H256::default(),
@@ -921,38 +990,7 @@ impl Chain {
 
     /// Cell dep of the secp256k1_blake160 dep group (found in the genesis block).
     async fn secp_dep(&self) -> Result<CellDep, String> {
-        let block = self.call("get_block_by_number", json!(["0x0"])).await?;
-        let block: json::BlockView = serde_json::from_value(block).map_err(|e| e.to_string())?;
-        for tx in &block.transactions {
-            for (i, data) in tx.inner.outputs_data.iter().enumerate() {
-                let Ok(vec) = packed::OutPointVec::from_slice(data.as_bytes()) else {
-                    continue;
-                };
-                for member in vec.into_iter() {
-                    let r = self
-                        .call(
-                            "get_live_cell",
-                            json!([json::OutPoint::from(member), false]),
-                        )
-                        .await?;
-                    let ty = r["cell"]["output"]["type"].clone();
-                    let Ok(ty) = serde_json::from_value::<json::Script>(ty) else {
-                        continue;
-                    };
-                    if script_hash(&Script::from(ty)) == SIGHASH_CODE_HASH {
-                        let op = OutPoint::new_builder()
-                            .tx_hash(tx.hash.pack())
-                            .index(Pack::<packed::Uint32>::pack(&(i as u32)))
-                            .build();
-                        return Ok(CellDep::new_builder()
-                            .out_point(op)
-                            .dep_type(packed::Byte::new(DepType::DepGroup as u8))
-                            .build());
-                    }
-                }
-            }
-        }
-        Err("secp256k1_blake160 dep group not found in the genesis block".into())
+        secp_dep_of(&self.rpc).await
     }
 
     /// The refusal when the runner wallet cannot pay a transaction.

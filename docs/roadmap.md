@@ -6,9 +6,9 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 
 ## Next runner release: 0.5.4 (planned, not scheduled)
 
-- [ ] Dashboard: show the **Runner ID** (the ID the CSR Network Monitor lists, a hash of the runner's service key)
+- [x] Dashboard: show the **Runner ID** (the ID the CSR Network Monitor lists, a hash of the runner's service key)
       on the Overview and Network pages, with a link to the runner's entry on the monitor. Today an operator cannot
-      match their node to a row of the public ranking.
+      match their node to a row of the public ranking. Shipped in 0.6.0 (with the service catalog, no separate 0.5.4 release).
 - Monitor side, no runner release needed (csr-network-monitor D45/D46, Nov 2026): runners without an ok probe for
   3 days are shown as inactive (no rank, not in the gate) and hidden after 30 days; several runners with one peer ID
   count as one node.
@@ -24,7 +24,8 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
       under "Available on chain" with **Add** and **Add & approve**, lists service IDs that open job cells use
       without a manifest, and shows "New service available" under *Service runtime* on the Overview. Nothing runs
       until the admin approves it.
-- [ ] `csr service publish` for app developers, and `docs/publishing-a-service.md`.
+- [x] `csr service publish` for app developers, and `docs/publishing-a-service.md`.
+- [x] JavaScript job builder and app integration guide (first user: CrowdCell): `sdk/js/csr-job.mjs`, `docs/integrating-an-app.md`.
 - Goal: **after 0.6.0, new services need no runner update.** Publish a manifest and every runner lists it within a
   day. Only changes to the runner itself (new host calls, trigger kinds, contract versions or limits) need a
   release.
@@ -60,6 +61,6 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 - [ ] Security audit before mainnet
 - [ ] Job assignment from the ranking (minimum reputation and diversity per application)
 - [ ] Probing decentralised onto the runners themselves
-- [ ] Host-interface RFC in nervosnetwork/rfcs
+- [ ] Host-interface RFC in nervosnetwork/rfcs (draft in `docs/rfc/`)
 - [ ] On-chain service catalog and composite services (0.6.0, see above)
 - [ ] First service: CRT (CKB Revocable Timelock)

@@ -28,6 +28,26 @@
     });
     c.appendChild(d);
   }
+  // Runner ID (as the monitor lists it): shortened, full value as title, copy button, one link per monitor.
+  function runnerIdNode(st) {
+    var id = st && st.runner_id;
+    var w = el('span', 'runner-id');
+    if (!id) { w.textContent = '–'; return w; }
+    w.appendChild(el('span', 'mono', id.length > 14 ? id.slice(0, 6) + '…' + id.slice(-4) : id));
+    w.firstChild.title = id;
+    var b = el('button', 'btn', 'Copy'); b.type = 'button';
+    b.addEventListener('click', function () {
+      function done(t) { b.textContent = t; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(id).then(function () { done('Copied'); }, function () { done('Copy failed'); });
+      else done('Copy failed');
+    });
+    w.appendChild(document.createTextNode(' ')); w.appendChild(b);
+    (st.runner_links || []).forEach(function (l) {
+      var a = el('a', '', 'View on monitor'); a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = l.monitor;
+      w.appendChild(document.createTextNode(' ')); w.appendChild(a);
+    });
+    return w;
+  }
   function pill(v) {
     return el('span', 'pill ' + v, v);
   }
@@ -353,6 +373,7 @@
     if (n.tx_pool && n.tx_pool.pending != null) fact('Tx pool', n.tx_pool.pending + ' pending · ' + n.tx_pool.proposed + ' proposed');
     var idn = n.identity && n.identity.state;
     if (idn) fact('Node identity', idn);
+    if (s && s.runner_id) { var ri = el('span', '', 'Runner ID '); ri.appendChild(runnerIdNode(s)); f.appendChild(ri); }
     c.appendChild(f);
     if (full) {
       var g = el('div', 'facts mono');
@@ -523,6 +544,19 @@
             .then(function () { cb.disabled = locked; });
         });
         cr.appendChild(tg);
+        var cg = s.catalog || {};
+        if (cg.unseen > 0) {
+          var nb = el('div', 'catalog-notice');
+          var nm = cg.unseen === 1 && cg.newest && cg.newest.name ? 'New service available: ' + cg.newest.name : cg.unseen + ' new services available';
+          nb.appendChild(el('span', '', nm + ' '));
+          var nl = el('a', '', 'View'); nl.href = '#/services'; nb.appendChild(nl);
+          var nd = el('button', 'btn', 'Dismiss'); nd.type = 'button';
+          nd.addEventListener('click', function () {
+            api('/api/catalog/seen', { method: 'POST', body: {} }).then(function () { if (state.status && state.status.catalog) state.status.catalog.unseen = 0; paintRuntime(); }).catch(function () {});
+          });
+          nb.appendChild(nd);
+          cr.appendChild(nb);
+        }
         if (!jobs.length) cr.appendChild(el('p', 'note', locked ? 'Services start on mainnet with CSR 1.x (Phase 2).' : 'No jobs yet. The node earns once apps such as CRT post jobs.'));
         }
       }).catch(function () {});
@@ -655,6 +689,7 @@
         var ping = j.ping || {};
         if (j.warning) cw.insertBefore(el('p', 'msg err', j.warning), cw.children[1] || null);
         if (ping.clock_skew_at) cw.appendChild(el('p', 'msg err', 'Warning: a monitor challenge was outside the 60 s freshness window (last at ' + fmtTime(ping.clock_skew_at) + '). Check this machine\'s clock.'));
+        dl(cw, [['Runner ID', runnerIdNode(state.status)]]);
         if (n) {
           var a = n.attestation || {};
           dl(cr, [['Rank', rankText(n)], ['Availability 7 d', pct(n.availability.d7)], ['Availability 30 d', pct(n.availability.d30)],
@@ -847,20 +882,119 @@
   };
 
   pages.services = function (root) {
-    var c = card('Services');
+    var c = card('On this runner');
+    var cat = card('Available on chain');
+    var unk = card('Seen on chain, no description');
     var msg = el('p', 'msg');
-    root.appendChild(c); root.appendChild(msg);
+    [c, cat, unk, msg].forEach(function (x) { root.appendChild(x); });
+    lockedTop(root);
+    api('/api/catalog/seen', { method: 'POST', body: {} }).catch(function () {});
+    function fail(x) { msg.className = 'msg err'; msg.textContent = x.message; }
     function act(hash, verb) {
       api('/api/services/' + hash + '/' + verb, { method: 'POST', body: {} }).then(function () {
         msg.className = 'msg'; msg.textContent = '';
         load();
-      }).catch(function (x) { msg.className = 'msg err'; msg.textContent = x.message; });
+      }).catch(fail);
+    }
+    function short(s) { return s && s.length > 20 ? s.slice(0, 10) + '…' + s.slice(-8) : (s || ''); }
+    function copyBtn(text) {
+      var b = el('button', 'btn', 'Copy'); b.type = 'button';
+      b.addEventListener('click', function () {
+        function done(t) { b.textContent = t; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { done('Copied'); }, function () { done('Copy failed'); });
+        else done('Copy failed');
+      });
+      return b;
+    }
+    function chip(text, cls) { return el('span', 'chip' + (cls ? ' ' + cls : ''), text); }
+    // Links are text; only https:// URLs become anchors, and they are never fetched (D50).
+    function linkNode(label, u) {
+      var row = el('div', 'catalog-link');
+      row.appendChild(el('span', 'k', label + ' '));
+      if (typeof u === 'string' && u.startsWith('https://')) {
+        var a = el('a', '', u); a.href = u; a.target = '_blank'; a.rel = 'noopener noreferrer nofollow'; row.appendChild(a);
+      } else row.appendChild(el('span', 'mono', u));
+      return row;
+    }
+    function loadCatalog() {
+      api('/api/catalog').then(function (j) {
+        clear(cat); clear(unk);
+        var hd = el('p', 'note');
+        if (!j.enabled) {
+          hd.textContent = 'Catalog off: ' + (j.reason || 'unknown reason');
+          cat.appendChild(hd);
+        } else {
+          hd.appendChild(document.createTextNode('Catalog read from your node · last scan ' + (j.last_scan_ms ? fmtDate(j.last_scan_ms) : 'never') + ' · '));
+          var rf = el('button', 'btn', 'Refresh'); rf.type = 'button';
+          rf.addEventListener('click', function () {
+            rf.disabled = true;
+            api('/api/catalog/refresh', { method: 'POST', body: {} }).then(function () { setTimeout(loadCatalog, 2000); })
+              .catch(function (x) { fail(x); rf.disabled = false; });
+          });
+          hd.appendChild(rf);
+          cat.appendChild(hd);
+          if (j.last_error) cat.appendChild(el('p', 'msg err', 'Last scan failed: ' + j.last_error));
+        }
+        var locked = !!lockedMsg();
+        var items = (j.items || []).filter(function (i) { return !i.added; });
+        if (j.enabled && !items.length) cat.appendChild(el('p', 'note', 'No services published on chain that you have not added.'));
+        items.forEach(function (i) {
+          var box = el('div', 'catalog-item');
+          var t = el('div', 'catalog-title');
+          t.appendChild(el('b', '', i.name || '(unnamed)'));
+          if (i.version) t.appendChild(el('span', 'mono', ' ' + i.version));
+          if (i.language) t.appendChild(chip(i.language));
+          if (i.deprecated) t.appendChild(chip('Deprecated', 'warn'));
+          if (!i.runnable) t.appendChild(chip('Needs CSR ≥ ' + i.min_csr, 'bad'));
+          box.appendChild(t);
+          var d = el('p', 'catalog-desc', i.description || ''); d.style.whiteSpace = 'pre-line'; box.appendChild(d);
+          if (i.url) box.appendChild(linkNode('Link', i.url));
+          if (i.source) box.appendChild(linkNode('Source', i.source));
+          var pub = el('div', 'catalog-link');
+          pub.appendChild(el('span', 'k', 'Publisher '));
+          pub.appendChild(el('span', 'mono', short(i.publisher_address)));
+          if (i.publisher_address) pub.appendChild(copyBtn(i.publisher_address));
+          box.appendChild(pub);
+          box.appendChild(el('p', 'note', 'First seen ' + fmtDate(i.first_seen_ms) + ' · open jobs ' + (i.open_jobs || 0) + ' · tips waiting ' + ckbShort(i.tips_waiting_shannons || 0) + ' CKB'));
+          var row = el('div', 'row');
+          function add(label, approve, off) {
+            var b = el('button', 'btn', label); b.type = 'button'; b.disabled = off;
+            b.addEventListener('click', function () {
+              b.disabled = true;
+              api('/api/catalog/' + i.type_id + '/add', { method: 'POST', body: approve ? { approve: true } : {} })
+                .then(function () { msg.className = 'msg'; msg.textContent = ''; load(); })
+                .catch(function (x) { fail(x); b.disabled = off; });
+            });
+            row.appendChild(b);
+          }
+          add('Add', false, !i.runnable);
+          add('Add & approve', true, !i.runnable || locked);
+          box.appendChild(row);
+          box.appendChild(el('p', 'note', 'Published by the address shown. Not reviewed by CSR. Approve only code you trust.'));
+          cat.appendChild(box);
+        });
+        var un = j.unknown || [];
+        if (!un.length) { unk.hidden = true; return; }
+        unk.hidden = false;
+        un.forEach(function (u) {
+          var box = el('div', 'catalog-item');
+          box.appendChild(el('div', 'mono', u.service_id));
+          box.appendChild(el('p', 'note', 'Open jobs ' + (u.open_jobs || 0) + ' · tips waiting ' + ckbShort(u.tips_waiting_shannons || 0) + ' CKB'));
+          box.appendChild(el('p', 'note', 'No manifest published. Ask the app developer, or add it by out point with '));
+          box.lastChild.appendChild(el('code', '', 'csr service add-onchain'));
+          box.lastChild.appendChild(document.createTextNode('.'));
+          unk.appendChild(box);
+        });
+      }).catch(function (x) { clear(cat); cat.appendChild(el('p', 'msg err', x.message)); });
     }
     function load() {
-      api('/api/services').then(function (list) {
+      loadCatalog();
+      Promise.all([api('/api/services'), api('/api/catalog').catch(function () { return { items: [] }; })]).then(function (res) {
+        var list = res[0], byId = {};
+        (res[1].items || []).forEach(function (i) { if (i.added) byId[(i.service_id || '').toLowerCase()] = i; });
         clear(c);
         if (!list.length) {
-          var p = el('p', 'note', 'Services become available once the Service Runtime is active. Developers can test locally with ');
+          var p = el('p', 'note', 'Services published on chain appear below. Nothing runs until you approve it. Developers can test locally with ');
           p.appendChild(el('code', '', 'csr service add-local'));
           p.appendChild(document.createTextNode('.'));
           c.appendChild(p);
@@ -872,7 +1006,15 @@
         t.appendChild(h);
         list.forEach(function (s) {
           var r = el('tr');
-          [s.name, s.language, s.code_hash].forEach(function (x) { r.appendChild(el('td', '', x)); });
+          var mf = byId[(s.service_id || s.code_hash || '').toLowerCase()] || {};
+          var nm = el('td', '', mf.name || s.name);
+          if (mf.version) nm.appendChild(el('span', 'mono', ' ' + mf.version));
+          if (mf.update_available) nm.appendChild(chip('Update available', 'warn'));
+          r.appendChild(nm);
+          r.appendChild(el('td', '', s.language));
+          var ch = el('td', '', s.code_hash);
+          if (s.service_id && s.service_id !== s.code_hash) ch.appendChild(el('div', 'note', 'Service ID ' + s.service_id));
+          r.appendChild(ch);
           var st = el('td'); st.appendChild(pill(s.status)); r.appendChild(st);
           [s.storage_bytes + ' B', s.jobs, s.earned_shannons].forEach(function (x) { r.appendChild(el('td', '', String(x))); });
           var a = el('td');
@@ -880,7 +1022,7 @@
           verbs.forEach(function (v) {
             var b = el('button', 'btn', v);
             b.type = 'button';
-            b.addEventListener('click', function () { act(s.code_hash, v); });
+            b.addEventListener('click', function () { act(s.service_id || s.code_hash, v); });
             a.appendChild(b);
           });
           r.appendChild(a);

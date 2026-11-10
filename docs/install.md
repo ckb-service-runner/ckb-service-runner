@@ -76,6 +76,21 @@ sudo -u csr csr --data-root /var/lib/csr check
 `csr detect` finds the node and its type; `csr check` runs the node checks (synced, `Indexer` module,
 full node, peers) and prints what is wrong.
 
+### Service catalog
+
+The runner reads the on-chain service catalog from its own node (manifest cells of `csr-service-manifest`, never from
+the monitor). The `[catalog]` section controls it:
+
+```toml
+[catalog]
+enabled = true     # scan for service manifests (also while the service runtime is off)
+scan_hours = 24    # 1..=168; the runner also scans at start and on demand (Services page, `csr service catalog --refresh`)
+```
+
+The catalog only lists services; nothing runs without your click (add, approve, enable). `runtime.allowed_services`
+holds service IDs; for a single-binary service this is its code hash. The catalog is off with the reason "no manifest
+script in this deployment" on a network where `csr-service-manifest` is not deployed yet.
+
 ## Start the service
 
 ```sh

@@ -33,6 +33,8 @@ build csr-dual-lock
 # csr-config-type uses ckb_std::type_id (ckb-types, bytes): its atomics are RISC-V A instructions, so it is
 # referenced with hash type data2 (VM version 2, which has the A extension).
 build csr-config-type
+# csr-service-manifest (Type ID via ckb_std::type_id, like csr-config-type): data2, independent of the others.
+build csr-service-manifest
 # Test-only: a byte-different build of the job lock (another embedded constant) for the contract tests
 # (job_two_lock_versions_share_refund_rejected). Never deployed.
 mkdir -p "$ROOT/contracts/build/test"

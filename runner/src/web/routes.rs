@@ -30,6 +30,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         )
         .route("/api/services", get(services))
         .route("/api/services/{hash}/{verb}", post(service_action))
+        .route("/api/catalog", get(catalog))
+        .route("/api/catalog/refresh", post(catalog_refresh))
+        .route("/api/catalog/seen", post(catalog_seen))
+        .route("/api/catalog/{type_id}/add", post(catalog_add))
         .route("/api/runner-cell", get(super::operator::runner_cell))
         .route("/api/wallet", get(super::operator::wallet_status))
         .route("/api/wallet/send", post(super::operator::wallet_send))
@@ -154,6 +158,83 @@ async fn service_action(State(s): St, Path((hash, verb)): Path<(String, String)>
             };
             (code, Json(json!({"error": e.message()}))).into_response()
         }
+    }
+}
+
+async fn catalog(State(s): St) -> Response {
+    let cfg = s.config.read().unwrap().clone();
+    match crate::catalog::catalog_json(&s.db, &cfg) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => db_error(e),
+    }
+}
+
+async fn catalog_refresh(State(s): St) -> Response {
+    let cfg = s.config.read().unwrap().clone();
+    match crate::catalog::off_reason(&cfg) {
+        Ok(None) => {}
+        Ok(Some(why)) => {
+            return (StatusCode::CONFLICT, Json(json!({"error": "off", "detail": why}))).into_response()
+        }
+        Err(e) => return (StatusCode::CONFLICT, Json(json!({"error": "off", "detail": e}))).into_response(),
+    }
+    if s.catalog_busy.load(std::sync::atomic::Ordering::Acquire) {
+        return (StatusCode::CONFLICT, Json(json!({"error": "busy"}))).into_response();
+    }
+    let st = s.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::catalog::scan_guarded(&st, &cfg).await {
+            if e != "busy" {
+                tracing::warn!("service catalog scan failed: {e}");
+            }
+        }
+    });
+    (StatusCode::ACCEPTED, Json(json!({"started": true}))).into_response()
+}
+
+async fn catalog_seen(State(s): St) -> Response {
+    match crate::catalog::clear_unseen(&s.db) {
+        Ok(()) => Json(json!({"unseen": 0})).into_response(),
+        Err(e) => db_error(e),
+    }
+}
+
+/// Adds the service of a manifest; `{"approve": true}` also approves it (as `POST /api/services/{id}/approve`).
+async fn catalog_add(
+    State(s): St,
+    Path(type_id): Path<String>,
+    body: Option<Json<Value>>,
+) -> Response {
+    use crate::registry::{act, Action, ActionError};
+    let approve = body.is_some_and(|b| b.0["approve"] == true);
+    let bad = |m: String| (StatusCode::BAD_REQUEST, Json(json!({"error": m}))).into_response();
+    let cfg = s.config.read().unwrap().clone();
+    let script = match crate::chain::manifest_script(&cfg) {
+        Ok(Some(sc)) => sc,
+        Ok(None) => return (StatusCode::CONFLICT, Json(json!({"error": crate::catalog::NO_SCRIPT}))).into_response(),
+        Err(e) => return bad(e),
+    };
+    let rpc = crate::node::rpc::RpcClient::new(&cfg.node.rpc_url);
+    let added =
+        match crate::registry::add_from_manifest(&s.db, &rpc, &script, &cfg.network, &type_id).await {
+            Ok(v) => v,
+            Err(e) => return bad(e),
+        };
+    if !approve {
+        return Json(added).into_response();
+    }
+    let id = added["service_id"].as_str().unwrap_or("").to_string();
+    let _guard = s.config_write.lock().unwrap();
+    let mut cfg = s.config.read().unwrap().clone();
+    let root = storage_root(&s);
+    match act(&s.db, &mut cfg, &s.config_path, &root, &id, Action::Approve) {
+        Ok(e) => {
+            *s.config.write().unwrap() = cfg;
+            tracing::info!("service {id}: added from the catalog and approved");
+            Json(e).into_response()
+        }
+        Err(ActionError::Unknown) => bad("unknown service".into()),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.message()}))).into_response(),
     }
 }
 

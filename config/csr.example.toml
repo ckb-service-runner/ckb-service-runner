@@ -31,8 +31,12 @@ pubkey = ""                         # empty = network default; 0x + 66 hex (comp
 
 [runtime]
 enabled = false
-allowed_services = []               # code hashes: 0x + 64 hex characters each
+allowed_services = []               # service IDs (the code hash for single-binary services): 0x + 64 hex characters each
 min_ckb_per_mcycle = 0.0
+
+[catalog]
+enabled = true                      # read the on-chain service catalog from your own node (nothing runs without your click)
+scan_hours = 24                     # 1..=168, how often the node is scanned for service manifests
 
 [limits]
 max_concurrent_jobs = 2             # 1..=64

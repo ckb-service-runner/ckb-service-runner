@@ -1,0 +1,97 @@
+[
+  {
+    "job": {
+      "tipShannons": "200000000",
+      "maxFeeShannons": "100000",
+      "maxCycles": "70000000",
+      "payload": "0x",
+      "expiryBlock": "23000000",
+      "refundLockHash": "0xabababababababababababababababababababababababababababababababab",
+      "remainingRuns": 1,
+      "trigger": {
+        "kind": "OnDemand"
+      }
+    },
+    "encoded": "0x74000000240000002c000000340000003c00000044000000480000005000000070000000000000000400000000c2eb0b00000000a086010000000000801d2c040000000000000000c0f35e0100000000abababababababababababababababababababababababababababababababab01000000"
+  },
+  {
+    "job": {
+      "tipShannons": "200000000",
+      "maxFeeShannons": "100000",
+      "maxCycles": "70000000",
+      "payload": "0x0102",
+      "expiryBlock": "23000000",
+      "refundLockHash": "0xabababababababababababababababababababababababababababababababab",
+      "remainingRuns": 1,
+      "trigger": {
+        "kind": "AtBlock",
+        "block": "123"
+      }
+    },
+    "encoded": "0x820000002400000038000000400000004800000050000000560000005e0000007e0000000100000010000000080000007b0000000000000000c2eb0b00000000a086010000000000801d2c0400000000020000000102c0f35e0100000000abababababababababababababababababababababababababababababababab01000000"
+  },
+  {
+    "job": {
+      "tipShannons": "200000000",
+      "maxFeeShannons": "100000",
+      "maxCycles": "70000000",
+      "payload": "0x",
+      "expiryBlock": "23000000",
+      "refundLockHash": "0xabababababababababababababababababababababababababababababababab",
+      "remainingRuns": 1,
+      "trigger": {
+        "kind": "AtEpoch",
+        "epoch": "7"
+      }
+    },
+    "encoded": "0x800000002400000038000000400000004800000050000000540000005c0000007c000000020000001000000008000000070000000000000000c2eb0b00000000a086010000000000801d2c040000000000000000c0f35e0100000000abababababababababababababababababababababababababababababababab01000000"
+  },
+  {
+    "job": {
+      "tipShannons": "200000000",
+      "maxFeeShannons": "100000",
+      "maxCycles": "70000000",
+      "payload": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "expiryBlock": "23000000",
+      "refundLockHash": "0xabababababababababababababababababababababababababababababababab",
+      "remainingRuns": 1,
+      "trigger": {
+        "kind": "AtTimestamp",
+        "timestampMs": "1794261707299"
+      }
+    },
+    "encoded": "0xe40000002400000038000000400000004800000050000000b8000000c0000000e000000003000000100000000800000023ea54c2a101000000c2eb0b00000000a086010000000000801d2c0400000000640000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5ac0f35e0100000000abababababababababababababababababababababababababababababababab01000000"
+  },
+  {
+    "job": {
+      "tipShannons": "200000000",
+      "maxFeeShannons": "100000",
+      "maxCycles": "70000000",
+      "payload": "0x",
+      "expiryBlock": "23000000",
+      "refundLockHash": "0xabababababababababababababababababababababababababababababababab",
+      "remainingRuns": 5,
+      "trigger": {
+        "kind": "Every",
+        "blocks": "20"
+      }
+    },
+    "encoded": "0x800000002400000038000000400000004800000050000000540000005c0000007c000000040000001000000008000000140000000000000000c2eb0b00000000a086010000000000801d2c040000000000000000c0f35e0100000000abababababababababababababababababababababababababababababababab05000000"
+  },
+  {
+    "job": {
+      "tipShannons": "0",
+      "maxFeeShannons": "100000",
+      "maxCycles": "70000000",
+      "payload": "0xff",
+      "expiryBlock": "18446744073709551615",
+      "refundLockHash": "0xabababababababababababababababababababababababababababababababab",
+      "remainingRuns": 1,
+      "trigger": {
+        "kind": "AtBlock",
+        "block": "18446744073709551615"
+      }
+    },
+    "encoded": "0x810000002400000038000000400000004800000050000000550000005d0000007d000000010000001000000008000000ffffffffffffffff0000000000000000a086010000000000801d2c040000000001000000ffffffffffffffffffabababababababababababababababababababababababababababababababab01000000"
+  }
+]

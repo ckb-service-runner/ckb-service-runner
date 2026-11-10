@@ -12,6 +12,7 @@
 │  └──────┬───────┘                │   • runtime: CKB-VM sandbox (R3)      │ │
 │         │ P2P                    │   • service storage (R4)              │ │
 │         │                        │   • runner wallet, registration       │ │
+│         │                        │   • service catalog (manifests)       │ │
 │         │                        │   • dashboard + settings (web UI)     │ │
 └─────────┼────────────────────────┴───────────────────────────────────────┴─┘
           │
@@ -123,6 +124,21 @@ With `runtime.enabled`, `csr run` discovers job cells (`csr-job-lock`/`csr-job-t
 services and sends the run transaction: inputs `[runner wallet cell, job cell, skeleton inputs…]`. The tip goes to
 the runner wallet; the fee comes from the job cell. The **runner wallet** is the set of plain cells of the service
 key's lock. It pays the registration and the fees and receives the tips; surplus is swept to `sweep_address`.
+
+## Service catalog
+
+Services are found on chain, not announced. A developer publishes a **manifest cell** (type `csr-service-manifest`,
+`spec/service-manifest.md`). Every runner reads the manifests from **its own node** (indexer `get_cells` on the
+manifest type script: node → runner; no monitor, no central list, no external fetch) at start, once a day and on
+"Refresh", stores them in its database and shows them on the Services page. A new manifest raises one "New service
+available" notice on the Overview. Service IDs that open job cells name but that have no manifest are listed as "seen
+on chain". Dashboard and CLI never fetch a link of a manifest.
+
+A service is identified by its **service ID**: the code hash for a single binary, otherwise
+`blake2b("CSR-SERVICE-v1" ‖ code hash ‖ args ‖ data hashes)`; the keeper loads the code cell, the data cells and the
+args from the chain and refuses a mismatch. The admin adds, approves, enables, disables or revokes as before; nothing
+runs without the admin's click. Publishing a new service needs no runner update (D52); a new host call, trigger kind,
+contract version or fixed limit does.
 
 ## Registration
 
