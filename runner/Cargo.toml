@@ -1,6 +1,6 @@
 [package]
 name = "csr"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2021"
 description = "CSR - CKB Service Runner"
 
