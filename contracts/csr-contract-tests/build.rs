@@ -3,9 +3,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-const BINARIES: [&str; 6] = [
+const BINARIES: [&str; 7] = [
     "release/csr-dual-lock",
     "release/csr-config-type",
+    "release/csr-service-manifest",
     "release/csr-registry",
     "release/csr-job-type",
     "release/csr-job-lock",

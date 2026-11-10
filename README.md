@@ -150,6 +150,11 @@ Build the example services with `bash scripts/build-services.sh`, then
 Register with `csr service add-local --manifest PATH` or `csr service add-onchain`, manage with `csr service list|approve|revoke|enable|disable`
 or on the dashboard. `csr jobs plan --json` shows the job selection. Host interface: `spec/host-interface.md`; job cells: `spec/job-cell-standard.md`.
 
+Developers publish a service with an on-chain **service manifest** (`spec/service-manifest.md`): a cell that names the
+code cell, the data cells and args, a description and links, bound to the lock that owns the code. Job cells name the
+**service ID** (the code hash for a single binary, otherwise a hash over code, args and data). Publishing a new service
+needs no runner update; the admin still adds and approves it.
+
 ## Runner wallet, stake and registration
 
 Setup needs one transfer and one signed message; tips collect in the runner wallet and are swept to your address.
@@ -190,5 +195,5 @@ stake. Testers on testnet can ask the project for the 10,000 testnet CKB stake.
 | [`docs/roadmap.md`](docs/roadmap.md), [`docs/open-questions.md`](docs/open-questions.md) | what is done and what is open |
 | [`docs/decisions.md`](docs/decisions.md) | design decisions and their reasons |
 | [`docs/testing.md`](docs/testing.md), [`docs/release.md`](docs/release.md) | devnet tests, making a release (developers) |
-| [`spec/`](spec/) | registry, job cells, host interface, ping protocol, monitor API |
+| [`spec/`](spec/) | registry, job cells, service manifest, host interface, ping protocol, monitor API |
 | [`CHANGELOG.md`](CHANGELOG.md) | changes per release |

@@ -7,6 +7,7 @@ array Signature [byte; 65];
 array Uint32 [byte; 4];
 array Uint64 [byte; 8];
 vector Bytes <byte>;
+vector Byte32Vec <Byte32>;
 
 // --- registry ---------------------------------------------------------------
 
@@ -15,6 +16,8 @@ struct OutPoint {
     tx_hash: Byte32,
     index:   Uint32,
 }
+
+vector OutPointVec <OutPoint>;
 
 // Fields signed by the monitor (`CSR-ATTEST-v2`, decision D21 A):
 // message = blake2b_ckb("CSR-ATTEST-v2" ‖ molecule(AttestationBodyV2)). `expiry_ms` is the attestation expiry,
@@ -76,4 +79,24 @@ table Job {
     expiry_block:     Uint64,
     refund_lock_hash: Byte32,
     remaining_runs:   Uint32,
+}
+
+// --- service manifest -------------------------------------------------------
+
+// Data of a `csr-service-manifest` cell (spec/service-manifest.md).
+table ServiceManifestV1 {
+    version_tag:  byte,        // 1
+    code_hash:    Byte32,      // data hash of the program (data2)
+    code_cell:    OutPoint,    // where the program lives
+    data_hashes:  Byte32Vec,   // 0..4 data cells, in cell-dep order
+    data_cells:   OutPointVec, // same length and order as data_hashes
+    args:         Bytes,       // 0..64 bytes, passed as the service script args
+    name:         Bytes,       // UTF-8, 1..48 bytes
+    version:      Bytes,       // UTF-8, 1..16 bytes, e.g. "1.0.0"
+    description:  Bytes,       // UTF-8, 0..512 bytes, plain text
+    url:          Bytes,       // empty or https:// URL, <= 128 bytes
+    source:       Bytes,       // empty or https:// URL (e.g. GitHub), <= 128 bytes
+    language:     Bytes,       // UTF-8, <= 16 bytes ("rust", "c", "js", ...)
+    min_csr:      Bytes,       // empty or "X.Y.Z", the first runner version that can run it
+    deprecated:   byte,        // 0 or 1
 }

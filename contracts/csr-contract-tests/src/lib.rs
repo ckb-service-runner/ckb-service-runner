@@ -35,9 +35,10 @@ pub const DAO_TYPE_CODE_HASH: [u8; 32] = [
     0x76, 0xc9, 0x26, 0xf3, 0x78, 0xd3, 0xf8, 0x1c, 0xf3, 0xe7, 0xe1, 0x3f, 0x2e,
 ];
 
-pub const CONTRACT_NAMES: [&str; 5] = [
+pub const CONTRACT_NAMES: [&str; 6] = [
     "csr-dual-lock",
     "csr-config-type",
+    "csr-service-manifest",
     "csr-registry",
     "csr-job-type",
     "csr-job-lock",
@@ -95,6 +96,7 @@ pub struct Env {
     pub ctx: Context,
     pub dual_lock: OutPoint,
     pub config_type: OutPoint,
+    pub manifest_type: OutPoint,
     pub registry: OutPoint,
     pub job_type: OutPoint,
     pub job_lock: OutPoint,
@@ -111,6 +113,7 @@ impl Env {
         let mut ctx = Context::new_with_deterministic_rng();
         let dual_lock = ctx.deploy_cell(load_contract("csr-dual-lock"));
         let config_type = ctx.deploy_cell(load_contract("csr-config-type"));
+        let manifest_type = ctx.deploy_cell(load_contract("csr-service-manifest"));
         let registry = ctx.deploy_cell(load_contract("csr-registry"));
         let job_type = ctx.deploy_cell(load_contract("csr-job-type"));
         let job_lock = ctx.deploy_cell(load_contract("csr-job-lock"));
@@ -119,7 +122,7 @@ impl Env {
             std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/secp256k1_data")).expect("secp data").into(),
         );
         let always_success = ctx.deploy_cell(ckb_testtool::builtin::ALWAYS_SUCCESS.clone());
-        Env { ctx, dual_lock, config_type, registry, job_type, job_lock, secp, secp_data, always_success, seed: 1 }
+        Env { ctx, dual_lock, config_type, manifest_type, registry, job_type, job_lock, secp, secp_data, always_success, seed: 1 }
     }
 
     /// Script referencing a deployed binary by data hash (hash type data1).
@@ -160,6 +163,13 @@ impl Env {
     pub fn config_type_script(&mut self, id: &[u8; 32]) -> Script {
         self.ctx
             .build_script_with_hash_type(&self.config_type, ScriptHashType::Data2, Bytes::copy_from_slice(id))
+            .expect("deployed")
+    }
+
+    /// `csr-service-manifest` with `args = id` (the manifest's Type ID).
+    pub fn manifest_type_script(&mut self, id: &[u8; 32]) -> Script {
+        self.ctx
+            .build_script_with_hash_type(&self.manifest_type, ScriptHashType::Data2, Bytes::copy_from_slice(id))
             .expect("deployed")
     }
 

@@ -6,7 +6,8 @@ CSR-SPEC-v0.2 §9/§10, deployment plan §3.3–3.5.
 
 ## 1. Job cell
 
-* Type script `csr-job-type`, args = `service_code_hash (32)`.
+* Type script `csr-job-type`, args = `service_code_hash (32)` = the service ID, see `service-manifest.md`; equal to
+  the code hash for single-binary services. The contract does not interpret it.
 * Lock script `csr-job-lock`, args = `registry_type_hash (32)` – the hash of the `csr-registry` type script
   (identical for all registry cells of one deployment). The registry cell dep holds **`RegistryV3`**
   (`registry.md` §2).
