@@ -24,7 +24,7 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
       under "Available on chain" with **Add** and **Add & approve**, lists service IDs that open job cells use
       without a manifest, and shows "New service available" under *Service runtime* on the Overview. Nothing runs
       until the admin approves it.
-- [ ] `csr service publish` for app developers, and `docs/publishing-a-service.md`.
+- [x] `csr service publish` for app developers, and `docs/publishing-a-service.md`.
 - Goal: **after 0.6.0, new services need no runner update.** Publish a manifest and every runner lists it within a
   day. Only changes to the runner itself (new host calls, trigger kinds, contract versions or limits) need a
   release.

@@ -152,8 +152,18 @@ or on the dashboard. `csr jobs plan --json` shows the job selection. Host interf
 
 Developers publish a service with an on-chain **service manifest** (`spec/service-manifest.md`): a cell that names the
 code cell, the data cells and args, a description and links, bound to the lock that owns the code. Job cells name the
-**service ID** (the code hash for a single binary, otherwise a hash over code, args and data). Publishing a new service
-needs no runner update; the admin still adds and approves it.
+**service ID** (the code hash for a single binary, otherwise a hash over code, args and data).
+
+**New services need no runner update: publish a manifest and every runner lists it within a day.** Each runner reads
+the manifests from its own node (no monitor, no central list) at start, daily and on "Refresh", shows them on the
+Services page and a "New service available" notice on the Overview. The admin still adds, approves and enables the
+service: nothing runs without that click. A runner update is only needed for changes to the runner itself: a new host
+call (7001–7099), a new trigger kind, new contract versions or higher fixed limits (`min_csr` in the manifest tells
+admins which version a service needs).
+
+`csr service catalog [--refresh]` lists the catalog; `csr service add-onchain --manifest TYPE_ID [--approve]` adds a
+service from it. Developers: `csr service publish --code-outpoint OP … --key FILE` (also `--update`, `--deprecate`,
+`--destroy`), see [`docs/publishing-a-service.md`](docs/publishing-a-service.md).
 
 ## Runner wallet, stake and registration
 
@@ -195,5 +205,6 @@ stake. Testers on testnet can ask the project for the 10,000 testnet CKB stake.
 | [`docs/roadmap.md`](docs/roadmap.md), [`docs/open-questions.md`](docs/open-questions.md) | what is done and what is open |
 | [`docs/decisions.md`](docs/decisions.md) | design decisions and their reasons |
 | [`docs/testing.md`](docs/testing.md), [`docs/release.md`](docs/release.md) | devnet tests, making a release (developers) |
+| [`docs/publishing-a-service.md`](docs/publishing-a-service.md) | for app developers: publish a service and its manifest |
 | [`spec/`](spec/) | registry, job cells, service manifest, host interface, ping protocol, monitor API |
 | [`CHANGELOG.md`](CHANGELOG.md) | changes per release |

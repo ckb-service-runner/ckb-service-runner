@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local CKB devnet harness: start | mine N | status | stop | reset
+# Local CKB devnet harness: start | mine N | status | stop | reset | catalog-demo
 set -u
 
 CKB_VERSION="0.210.0"
@@ -113,11 +113,44 @@ cmd_stop() {
   return 0
 }
 
+# Chain side of the service catalog test (docs/testing.md, "Service catalog on the devnet"): publishes hello-rust and
+# hello-js (composite) manifests, updates one and destroys the other. CSR_CONFIG = the runner's config file.
+cmd_catalog_demo() {
+  local csr="$ROOT/target/debug/csr" dev="$ROOT/target/debug/csr-dev"
+  [ -x "$csr" ] && [ -x "$dev" ] || die "build csr and csr-dev first (cargo build, cargo build -p csr-dev)"
+  [ -f "$ROOT/deployments/devnet.json" ] || die "run csr-dev deploy-contracts first"
+  local key="$DEVNET/publisher.key" cfg=()
+  [ -f "$key" ] || die "write the genesis key to $key (see docs/testing.md)"
+  [ -n "${CSR_CONFIG:-}" ] && cfg=(--config "$CSR_CONFIG")
+  local rust="$ROOT/services/rust/target/riscv64imac-unknown-none-elf/release/hello"
+  local jsvm="$ROOT/services/vendor/ckb-js-vm" js="$ROOT/services/js/hello/hello.js"
+  local jsargs="0x0000bbfb00c9cf21861fe697330f2097ddca64922660e94feb4e77a319ddabaa607104"
+  deploy() { "$dev" --rpc "$RPC_URL" --json deploy-service --elf "$1" | sed "s/.*\"tx_hash\":\"\([^\"]*\)\".*/\1/"; }
+  publish() { "$csr" "${cfg[@]}" service publish --key "$key" "$@"; }
+  field() { sed "s/.*\"$1\":\"\([^\"]*\)\".*/\1/"; }
+  local r_tx j_tx d_tx
+  r_tx="$(deploy "$rust")"; j_tx="$(deploy "$jsvm")"; d_tx="$(deploy "$js")"; cmd_mine 10
+  local a b
+  a="$(publish --code-outpoint "$r_tx:0" --name hello-rust --version 1.0.0 --description "Says hello" --language rust)" || die "publish hello-rust failed"
+  b="$(publish --code-outpoint "$j_tx:0" --data-outpoint "$d_tx:0" --args "$jsargs" --name hello-js --version 1.0.0 --description "Says hello from JavaScript" --language js)" || die "publish hello-js failed"
+  cmd_mine 10
+  echo "hello-rust: type_id $(echo "$a" | field type_id) service_id $(echo "$a" | field service_id)"
+  echo "hello-js:   type_id $(echo "$b" | field type_id) service_id $(echo "$b" | field service_id)"
+  echo "devnet: Refresh the catalog, check the notice, Add & approve both, post jobs with csr-dev job --code-hash <service ID>."
+  echo "devnet: then press Enter to update hello-rust and destroy hello-js."
+  read -r _ || true
+  publish --update "$(echo "$a" | field type_id)" --description "Says hello, updated" >/dev/null || die "update failed"
+  publish --destroy "$(echo "$b" | field type_id)" >/dev/null || die "destroy failed"
+  cmd_mine 10
+  echo "devnet: Refresh: hello-rust shows 'Update available', hello-js left the catalog (and keeps running)."
+}
+
 case "${1:-}" in
   start) cmd_start ;;
   mine) shift; cmd_mine "${1:-}" ;;
   status) cmd_status ;;
   stop) cmd_stop ;;
+  catalog-demo) cmd_catalog_demo ;;
   reset) cmd_stop; rm -rf "$DEVNET" ;;
-  *) echo "usage: devnet.sh start|mine N|status|stop|reset" >&2; exit 2 ;;
+  *) echo "usage: devnet.sh start|mine N|status|stop|reset|catalog-demo" >&2; exit 2 ;;
 esac

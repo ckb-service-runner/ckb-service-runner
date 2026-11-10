@@ -225,7 +225,7 @@ fn parse_raw(c: &Value, network: &str) -> Option<RawManifest> {
     })
 }
 
-async fn wait_indexer(rpc: &RpcClient) -> Result<(), String> {
+pub(crate) async fn wait_indexer(rpc: &RpcClient) -> Result<(), String> {
     for _ in 0..100 {
         let tip = rpc
             .call("get_tip_header", json!([]))
@@ -557,7 +557,6 @@ pub fn catalog_json(db: &Db, cfg: &Config) -> Result<Value, String> {
     }))
 }
 
-#[cfg(test)]
 pub fn encode_manifest(m: &Manifest) -> Vec<u8> {
     fn bytes(b: &[u8]) -> Vec<u8> {
         [(b.len() as u32).to_le_bytes().to_vec(), b.to_vec()].concat()

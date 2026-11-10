@@ -15,6 +15,7 @@ mod network;
 mod node;
 mod password;
 mod ping;
+mod publish;
 mod registry;
 mod renew;
 mod resources;
@@ -310,6 +311,51 @@ enum ServiceAction {
         /// With --manifest: also approve the service
         #[arg(long, requires = "manifest")]
         approve: bool,
+    },
+    /// Publish, update, deprecate or destroy a service manifest on chain (developer tool; uses --key, not the
+    /// runner wallet)
+    Publish {
+        /// Code cell of the program: 0x<tx hash>:<index>
+        #[arg(long)]
+        code_outpoint: Option<String>,
+        /// Data cell (repeat, at most 4, in the order the service loads them)
+        #[arg(long)]
+        data_outpoint: Vec<String>,
+        /// Script args of the service as hex (at most 64 bytes)
+        #[arg(long)]
+        args: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        description_file: Option<PathBuf>,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        language: Option<String>,
+        /// First runner version that can run the service (X.Y.Z)
+        #[arg(long)]
+        min_csr: Option<String>,
+        /// Update the manifest with this Type ID (only the given fields change)
+        #[arg(long, value_name = "TYPE_ID", conflicts_with_all = ["destroy", "code_outpoint", "data_outpoint", "args"])]
+        update: Option<String>,
+        /// With --update: mark the service deprecated
+        #[arg(long, requires = "update")]
+        deprecate: bool,
+        /// Destroy the manifest with this Type ID (the capacity returns to the publisher)
+        #[arg(long, value_name = "TYPE_ID")]
+        destroy: Option<String>,
+        /// File with the publisher's secp256k1 key (hex)
+        #[arg(long)]
+        key: PathBuf,
+        /// Build and check the transaction, do not send it
+        #[arg(long)]
+        dry_run: bool,
     },
     /// List the on-chain service catalog (read from your own node)
     Catalog {
@@ -874,6 +920,64 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Service {
+            action:
+                ServiceAction::Publish {
+                    code_outpoint,
+                    data_outpoint,
+                    args,
+                    name,
+                    version,
+                    description,
+                    description_file,
+                    url,
+                    source,
+                    language,
+                    min_csr,
+                    update,
+                    deprecate,
+                    destroy,
+                    key,
+                    dry_run,
+                },
+        } => {
+            let r = (|| -> Result<serde_json::Value, String> {
+                let cfg = load_config(&cli)?;
+                let mode = match (update, destroy) {
+                    (Some(id), _) => publish::Mode::Update(id.clone()),
+                    (None, Some(id)) => publish::Mode::Destroy(id.clone()),
+                    (None, None) => publish::Mode::Create,
+                };
+                let a = publish::PublishArgs {
+                    mode,
+                    code_outpoint: code_outpoint.clone(),
+                    data_outpoints: data_outpoint.clone(),
+                    args: args.clone(),
+                    name: name.clone(),
+                    version: version.clone(),
+                    description: description.clone(),
+                    description_file: description_file.clone(),
+                    url: url.clone(),
+                    source: source.clone(),
+                    language: language.clone(),
+                    min_csr: min_csr.clone(),
+                    deprecate: *deprecate,
+                    key: key.clone(),
+                    dry_run: *dry_run,
+                };
+                runtime().block_on(publish::run(&cfg, &a))
+            })();
+            match r {
+                Ok(v) => {
+                    println!("{v}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Command::Jobs {
             action: JobsAction::Plan { json },
         } => {
@@ -1032,7 +1136,9 @@ fn main() -> ExitCode {
                     ServiceAction::Revoke { code_hash } => (code_hash, registry::Action::Revoke),
                     ServiceAction::Enable { code_hash } => (code_hash, registry::Action::Enable),
                     ServiceAction::Disable { code_hash } => (code_hash, registry::Action::Disable),
-                    ServiceAction::RunLocal { .. } => unreachable!("handled above"),
+                    ServiceAction::RunLocal { .. } | ServiceAction::Publish { .. } => {
+                        unreachable!("handled above")
+                    }
                 };
                 let e = registry::act(&db, &mut cfg, &cfg_path, &root, hash, act)
                     .map_err(|e| e.message())?;
