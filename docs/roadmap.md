@@ -25,6 +25,7 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
       without a manifest, and shows "New service available" under *Service runtime* on the Overview. Nothing runs
       until the admin approves it.
 - [x] `csr service publish` for app developers, and `docs/publishing-a-service.md`.
+- [x] JavaScript job builder and app integration guide (first user: CrowdCell): `sdk/js/csr-job.mjs`, `docs/integrating-an-app.md`.
 - Goal: **after 0.6.0, new services need no runner update.** Publish a manifest and every runner lists it within a
   day. Only changes to the runner itself (new host calls, trigger kinds, contract versions or limits) need a
   release.

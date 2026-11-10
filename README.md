@@ -206,5 +206,6 @@ stake. Testers on testnet can ask the project for the 10,000 testnet CKB stake.
 | [`docs/decisions.md`](docs/decisions.md) | design decisions and their reasons |
 | [`docs/testing.md`](docs/testing.md), [`docs/release.md`](docs/release.md) | devnet tests, making a release (developers) |
 | [`docs/publishing-a-service.md`](docs/publishing-a-service.md) | for app developers: publish a service and its manifest |
+| [`docs/integrating-an-app.md`](docs/integrating-an-app.md) | for app developers: add job cells to your app's transactions (CrowdCell auto-settle example) |
 | [`spec/`](spec/) | registry, job cells, service manifest, host interface, ping protocol, monitor API |
 | [`CHANGELOG.md`](CHANGELOG.md) | changes per release |

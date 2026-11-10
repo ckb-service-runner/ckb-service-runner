@@ -72,3 +72,5 @@ has no manifest, runners list it as "seen on chain" without a description.
 
 A runner update is only needed for changes to the runner itself: a new host call (7001–7099), a new trigger kind,
 new contract versions or higher fixed limits. Set `--min-csr` if your service needs a newer runner.
+
+To add job cells for your service to your own app's transactions, see [`integrating-an-app.md`](integrating-an-app.md).

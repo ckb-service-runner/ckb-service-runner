@@ -825,3 +825,5 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
 - **Strict decode**: `decodeJob` rejects wrong sizes, offsets and trailing bytes.
 - **Node 22 directory arg**: `sdk/js/test.js` loads `sdk/js/test/*.test.mjs` so `node --test sdk/js/test/` works (same trick as the acceptance dirs). `test/gen-vectors.mjs` regenerates `vectors.json`.
 - **Cross-check**: `jobs::tests::js_sdk_vectors_decode` reads `sdk/js/test/vectors.json` via `CARGO_MANIFEST_DIR`; no runner behaviour changed. The integration guide is Phase 2.
+- **Phase 2 – guide**: `docs/integrating-an-app.md` presents CrowdCell auto-settle as a pattern only; margin, tip and tipping when the bot settled first stay CrowdCell's decision. Reclaim after expiry is described with the SDK's `jobCellDeps` and an absolute-block `since`.
+- Added `acceptance/aiworker-csr-app-sdk.js` (same loader trick as `sdk/js/test.js`) so `node --test acceptance/aiworker-csr-app-sdk/` works on Node 22.

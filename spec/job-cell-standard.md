@@ -291,3 +291,5 @@ after the chain clock of the config cell). The runs stay waiting and the jobs pa
 started finishes, within `max_job_wall_seconds`.
 
 A service must tolerate being run more than once for one job cell.
+
+App integration (building job cells from a front end, costs, failure modes): [`docs/integrating-an-app.md`](../docs/integrating-an-app.md).
