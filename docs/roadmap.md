@@ -4,7 +4,7 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 
 ## Current phase: Phase 2 – Service Runtime on testnet (A8b polish done)
 
-## Next runner release: 0.5.4 (planned, not scheduled)
+## Runner release 0.5.4 (merged into 0.6.0)
 
 - [x] Dashboard: show the **Runner ID** (the ID the CSR Network Monitor lists, a hash of the runner's service key)
       on the Overview and Network pages, with a link to the runner's entry on the monitor. Today an operator cannot
@@ -13,14 +13,22 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
   3 days are shown as inactive (no rank, not in the gate) and hidden after 30 days; several runners with one peer ID
   count as one node.
 
-## Runner release 0.6.0: on-chain service catalog (planned, spec ready)
+## Next runner release: 0.6.1 (planned, not scheduled)
 
-- [ ] New type script `csr-service-manifest`: a developer publishes one manifest cell per service (name, version,
+- [ ] Dashboard, Runner ID layout (owner feedback on 0.6.0): remove the copy button and the separate
+      "View on monitor" link next to the Runner ID. Show the **full** Runner ID on its own line directly below
+      **Tip hash** and **Node ID** (same monospace facts block), and make the ID itself the link to the runner's
+      row on the monitor (`<monitor>/?runner=<id>`; with several monitors, the first one). Same on the Network
+      page. No shortened form.
+
+## Runner release 0.6.0: on-chain service catalog (released 10 Nov 2026)
+
+- [x] New type script `csr-service-manifest`: a developer publishes one manifest cell per service (name, version,
       description, links, code and data cells, args). Only the lock that owns the code cell can publish its
       manifest. The existing contracts do not change.
-- [ ] Composite services (program + data cells + args, e.g. JavaScript on ckb-js-vm), identified by a service ID
+- [x] Composite services (program + data cells + args, e.g. JavaScript on ckb-js-vm), identified by a service ID
       (equal to the code hash for single-binary services, so existing job cells keep working).
-- [ ] The runner reads all manifests from its own node once a day (no monitor), lists them on the Services page
+- [x] The runner reads all manifests from its own node once a day (no monitor), lists them on the Services page
       under "Available on chain" with **Add** and **Add & approve**, lists service IDs that open job cells use
       without a manifest, and shows "New service available" under *Service runtime* on the Overview. Nothing runs
       until the admin approves it.
@@ -62,5 +70,5 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 - [ ] Job assignment from the ranking (minimum reputation and diversity per application)
 - [ ] Probing decentralised onto the runners themselves
 - [ ] Host-interface RFC in nervosnetwork/rfcs (draft in `docs/rfc/`)
-- [ ] On-chain service catalog and composite services (0.6.0, see above)
+- [x] On-chain service catalog and composite services (0.6.0, see above)
 - [ ] First service: CRT (CKB Revocable Timelock)
