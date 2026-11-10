@@ -403,6 +403,50 @@ mod tests {
     }
 
     #[test]
+    fn js_sdk_vectors_decode() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../sdk/js/test/vectors.json");
+        let vectors: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let vectors = vectors.as_array().unwrap();
+        assert!(vectors.len() >= 6);
+        let num = |v: &serde_json::Value| v.as_str().unwrap().parse::<u64>().unwrap();
+        let hex = |s: &str| -> Vec<u8> {
+            (2..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        for v in vectors {
+            let input = &v["job"];
+            let raw = RawJob {
+                outpoint: "0x01:0".into(),
+                service_code_hash: "0xaa".into(),
+                capacity: 1,
+                block: 2,
+                data: hex(v["encoded"].as_str().unwrap()),
+            };
+            let j = decode(&raw).expect("runner decodes the SDK encoding");
+            let t = &input["trigger"];
+            let expected = match t["kind"].as_str().unwrap() {
+                "OnDemand" => Trigger::OnDemand,
+                "AtBlock" => Trigger::AtBlock(num(&t["block"])),
+                "AtEpoch" => Trigger::AtEpoch(num(&t["epoch"])),
+                "AtTimestamp" => Trigger::AtTimestamp(num(&t["timestampMs"])),
+                "Every" => Trigger::Every(num(&t["blocks"])),
+                k => panic!("unknown kind {k}"),
+            };
+            assert_eq!(j.trigger, expected);
+            assert_eq!(j.tip_shannons, num(&input["tipShannons"]));
+            assert_eq!(j.max_fee_shannons, num(&input["maxFeeShannons"]));
+            assert_eq!(j.max_cycles, num(&input["maxCycles"]));
+            assert_eq!(j.payload, hex(input["payload"].as_str().unwrap()));
+            assert_eq!(j.expiry_block, num(&input["expiryBlock"]));
+            assert_eq!(j.refund_lock_hash, hex(input["refundLockHash"].as_str().unwrap()));
+            assert_eq!(j.remaining_runs as u64, input["remainingRuns"].as_u64().unwrap());
+        }
+    }
+
+    #[test]
     fn decodes_job_data() {
         let mut trig = 4u32.to_le_bytes().to_vec();
         trig.extend(table(&[7u64.to_le_bytes().to_vec()]));

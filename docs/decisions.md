@@ -817,3 +817,11 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
 - **Devnet**: `csr-dev deploy-contracts` deploys six contracts (`scripts.service_manifest`); with `--keep-config … --reuse-unchanged` an old file without that entry simply deploys it. `scripts/devnet.sh catalog-demo` scripts the chain side of the test; the runner side (Add & approve, jobs) stays manual in `docs/testing.md` because it needs a registered runner and a dashboard.
 - **Verified on a real devnet** (ckb 0.210.0): create (single binary and composite with a data cell and args), update, deprecate, destroy and `catalog --refresh` after each; a new transaction right after another one needs enough blocks (about 10) before the indexer shows it.
 - **Node test entry**: as in csr-runner-id, `acceptance/aiworker-csr-service-catalog.js` loads every `*.test.mjs` of the acceptance directory so `node --test acceptance/aiworker-csr-service-catalog/` works on Node 22.
+
+## csr-app-sdk
+
+- **Phase 1 – `sdk/js/csr-job.mjs`**: one dependency-free ES module (BigInt for u64, small BigInt-based blake2b-256 with the `ckb-default-hash` personalization). Lock args are the deployment's `registry_type_hash`, type args the service ID, both `data2`; `loadDeployment` requires `job_type`, `job_lock` and `registry_type_hash`.
+- **Empty molecule table** (`OnDemand`) is the 4 bytes `04 00 00 00`, as the runner expects.
+- **Strict decode**: `decodeJob` rejects wrong sizes, offsets and trailing bytes.
+- **Node 22 directory arg**: `sdk/js/test.js` loads `sdk/js/test/*.test.mjs` so `node --test sdk/js/test/` works (same trick as the acceptance dirs). `test/gen-vectors.mjs` regenerates `vectors.json`.
+- **Cross-check**: `jobs::tests::js_sdk_vectors_decode` reads `sdk/js/test/vectors.json` via `CARGO_MANIFEST_DIR`; no runner behaviour changed. The integration guide is Phase 2.
