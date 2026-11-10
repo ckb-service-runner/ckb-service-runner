@@ -61,6 +61,6 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 - [ ] Security audit before mainnet
 - [ ] Job assignment from the ranking (minimum reputation and diversity per application)
 - [ ] Probing decentralised onto the runners themselves
-- [ ] Host-interface RFC in nervosnetwork/rfcs
+- [ ] Host-interface RFC in nervosnetwork/rfcs (draft in `docs/rfc/`)
 - [ ] On-chain service catalog and composite services (0.6.0, see above)
 - [ ] First service: CRT (CKB Revocable Timelock)
