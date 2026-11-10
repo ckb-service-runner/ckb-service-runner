@@ -127,7 +127,7 @@ fn u64_at(d: &[u8], off: usize) -> Option<u64> {
 }
 
 /// Splits a molecule table into its fields (strict: offsets ascending, no trailing bytes).
-fn table_fields(d: &[u8], count: usize) -> Option<Vec<&[u8]>> {
+pub fn table_fields(d: &[u8], count: usize) -> Option<Vec<&[u8]>> {
     if u32_at(d, 0)? as usize != d.len() {
         return None;
     }
@@ -277,7 +277,7 @@ pub fn allowlist(db: &Db, cfg: &Config) -> Result<Vec<String>, String> {
         .services()?
         .into_iter()
         .filter(|s| s.status == ENABLED)
-        .map(|s| s.code_hash.to_ascii_lowercase())
+        .map(|s| s.id().to_ascii_lowercase())
         .filter(|h| allowed.contains(&h.trim_start_matches("0x").to_string()))
         .collect())
 }

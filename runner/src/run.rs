@@ -19,6 +19,7 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
 const RESOURCE_INTERVAL: Duration = Duration::from_secs(5);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+const CATALOG_INTERVAL: Duration = Duration::from_secs(60);
 const RENEW_INTERVAL: Duration = Duration::from_secs(30 * 60);
 /// The consumed-cell watch asks for the tip at this pace (a new block is ~8–10 s apart).
 const CONSUMED_INTERVAL: Duration = Duration::from_secs(10);
@@ -369,6 +370,7 @@ pub async fn run(
         identity_status: RwLock::new(identity_status.clone()),
         identity_proofs: Default::default(),
         net_rpc_missing: Default::default(),
+        catalog_busy: Default::default(),
     });
     tracing::info!(
         "csr {} started on {} ({}), service key {}",
@@ -602,6 +604,61 @@ pub async fn run(
             }
         });
         names.insert(h.id(), "keeper loop");
+    }
+
+    // Catalog: scan the node for service manifests at start, every `catalog.scan_hours` and on demand
+    // (also while the runtime is off). The R2 guard must be Synced; otherwise try again in 30 minutes.
+    {
+        let state = state.clone();
+        let mut stop = stop_rx.clone();
+        let h = tasks.spawn(async move {
+            let p = period(CATALOG_INTERVAL);
+            let mut tick = interval_at(TokioInstant::now() + Duration::from_secs(1), p);
+            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            let mut retry_at: i64 = 0;
+            let mut first = true;
+            let mut off_logged = false;
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {},
+                    _ = stop.changed() => return,
+                }
+                let cfg = state.config.read().unwrap().clone();
+                match crate::catalog::off_reason(&cfg) {
+                    Ok(None) => {}
+                    other => {
+                        if !off_logged {
+                            off_logged = true;
+                            tracing::info!(
+                                "service catalog is off: {}",
+                                other.unwrap_or_else(|e| Some(e)).unwrap_or_default()
+                            );
+                        }
+                        continue;
+                    }
+                }
+                let now_ms = crate::catalog::now_ms();
+                let last: i64 = state
+                    .db
+                    .get_setting(crate::catalog::LAST_SCAN)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                let due = first || now_ms >= last + cfg.catalog.scan_hours as i64 * 3_600_000;
+                if !due || now_ms < retry_at {
+                    continue;
+                }
+                first = false;
+                if let Err(e) = crate::catalog::scan_guarded(&state, &cfg).await {
+                    if e != "busy" {
+                        tracing::warn!("service catalog scan failed, trying again in 30 minutes: {e}");
+                        retry_at = now_ms + crate::catalog::RETRY_MS;
+                    }
+                }
+            }
+        });
+        names.insert(h.id(), "catalog scan");
     }
 
     // Consumed-cell watch: on every new block check the out points of all delete_on_consume rules

@@ -58,6 +58,8 @@ pub struct AppState {
     pub net_rpc_missing: AtomicBool,
     /// Last update check and the lock of check/stage.
     pub update: crate::update::Cache,
+    /// A catalog scan is running.
+    pub catalog_busy: AtomicBool,
 }
 
 /// Shown when the node's Net RPC module is off (`add_node` and `get_peers` are "method not found").
@@ -130,6 +132,7 @@ impl AppState {
             "registration_locked": crate::network::registration_locked(&cfg.network),
             "node_identity": self.identity_status.read().unwrap().state,
             "update": self.update.cached_json(),
+            "catalog": crate::catalog::status_json(&self.db),
             "ranking": {
                 "join": cfg.ranking.join,
                 "ping_mode": cfg.ranking.ping_mode,

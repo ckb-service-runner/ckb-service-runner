@@ -21,6 +21,7 @@ pub struct Config {
     pub logging: LoggingCfg,
     pub payout: PayoutCfg,
     pub registry: RegistryCfg,
+    pub catalog: CatalogCfg,
     /// Only valid with `network = "devnet"` (debug builds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub devnet: Option<DevnetCfg>,
@@ -168,6 +169,23 @@ pub struct LoggingCfg {
     pub level: String,
 }
 
+/// The on-chain service catalog (`catalog.rs`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct CatalogCfg {
+    pub enabled: bool,
+    pub scan_hours: u64,
+}
+
+impl Default for CatalogCfg {
+    fn default() -> Self {
+        CatalogCfg {
+            enabled: true,
+            scan_hours: 24,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -183,6 +201,7 @@ impl Default for Config {
             logging: LoggingCfg::default(),
             payout: PayoutCfg::default(),
             registry: RegistryCfg::default(),
+            catalog: CatalogCfg::default(),
             devnet: None,
         }
     }
@@ -525,13 +544,14 @@ impl Config {
             1,
             u64::MAX,
         )?;
+        range("catalog.scan_hours", self.catalog.scan_hours, 1, 168)?;
         for h in &self.runtime.allowed_services {
             let ok = h.strip_prefix("0x").is_some_and(|x| {
                 x.len() == 64 && x.bytes().all(|b| b.is_ascii_hexdigit())
             });
             if !ok {
                 return Err(format!(
-                    "runtime.allowed_services entries must be 0x + 64 hex chars (a code hash), got \"{h}\""
+                    "runtime.allowed_services entries must be 0x + 64 hex chars (a service ID), got \"{h}\""
                 ));
             }
         }

@@ -201,6 +201,8 @@ struct Deployments {
     /// `csr-config-type` (contracts v3); `None` in a v2 deployment, whose config cell is a plain Type ID
     /// cell and whose registry takes the config type hash as args.
     config_type: Option<Deployed>,
+    /// `csr-service-manifest`; `None` when the deployment has no manifest script (the catalog is off).
+    service_manifest: Option<Deployed>,
     /// Type hash of the registry script of this deployment (args of the job lock).
     registry_type_hash: Vec<u8>,
     /// Args of the config cell's type script (its Type ID, the `config_id`).
@@ -292,7 +294,13 @@ fn parse_deployments(text: &str, source: &str) -> Result<Deployments, String> {
     } else {
         Some(load_deployed(&v, "config_type", f)?)
     };
+    let service_manifest = if v["scripts"]["service_manifest"].is_null() {
+        None
+    } else {
+        Some(load_deployed(&v, "service_manifest", f)?)
+    };
     let d = Deployments {
+        service_manifest,
         dual: load_deployed(&v, "dual_lock", f)?,
         registry: load_deployed(&v, "registry", f)?,
         job_type: load_deployed(&v, "job_type", f)?,
@@ -321,6 +329,17 @@ fn parse_deployments(text: &str, source: &str) -> Result<Deployments, String> {
         }
     }
     Ok(d)
+}
+
+/// The `csr-service-manifest` type script of the configured deployment (empty args: the search prefix of the
+/// catalog scan). `None` when the deployment has no manifest script (mainnet until it is deployed).
+pub fn manifest_script(cfg: &Config) -> Result<Option<json::Script>, String> {
+    if cfg.network == "mainnet" {
+        return Ok(None);
+    }
+    Ok(load_deployments(cfg)?
+        .service_manifest
+        .map(|d| json::Script::from(d.script(&[]))))
 }
 
 /// Type hash of the configured registry deployment (`registry_type_hash` of `CSR-ATTEST-v2`).
@@ -785,6 +804,7 @@ impl Chain {
             job_type: none(),
             job_lock: none(),
             config_type: None,
+            service_manifest: None,
             registry_type_hash: vec![],
             config_type_args: vec![],
             config_type_hash: H256::default(),

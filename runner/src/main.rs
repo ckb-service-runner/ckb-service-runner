@@ -1,6 +1,7 @@
 mod address;
 mod app;
 mod attest;
+mod catalog;
 mod chain;
 mod config;
 mod consent;
@@ -298,11 +299,25 @@ enum ServiceAction {
         #[arg(long)]
         manifest: PathBuf,
     },
-    /// Register a service from its code cell (prints {code_hash, name})
+    /// Register a service from its code cell (prints {code_hash, name}) or from a manifest of the catalog
     AddOnchain {
-        /// 0x<tx hash>:<index>
+        /// Code cell of a single-binary service: 0x<tx hash>:<index>
+        #[arg(long, required_unless_present = "manifest", conflicts_with = "manifest")]
+        outpoint: Option<String>,
+        /// Manifest of the catalog: its Type ID (0x + 64 hex) or the out point of the manifest cell
         #[arg(long)]
-        outpoint: String,
+        manifest: Option<String>,
+        /// With --manifest: also approve the service
+        #[arg(long, requires = "manifest")]
+        approve: bool,
+    },
+    /// List the on-chain service catalog (read from your own node)
+    Catalog {
+        /// Scan the node now
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// List registered services
     List {
@@ -907,13 +922,92 @@ fn main() -> ExitCode {
                         println!("{}", registry::add_local(&db, manifest)?);
                         return Ok(());
                     }
-                    ServiceAction::AddOnchain { outpoint } => {
-                        let v = runtime().block_on(registry::add_onchain(
+                    ServiceAction::AddOnchain {
+                        outpoint,
+                        manifest,
+                        approve,
+                    } => {
+                        let Some(target) = manifest else {
+                            let v = runtime().block_on(registry::add_onchain(
+                                &db,
+                                &cfg.node.rpc_url,
+                                outpoint.as_deref().unwrap_or(""),
+                            ))?;
+                            println!("{v}");
+                            return Ok(());
+                        };
+                        let script = chain::manifest_script(&cfg)?
+                            .ok_or(catalog::NO_SCRIPT.to_string())?;
+                        let rpc = node::rpc::RpcClient::new(&cfg.node.rpc_url);
+                        let v = runtime().block_on(registry::add_from_manifest(
                             &db,
-                            &cfg.node.rpc_url,
-                            outpoint,
+                            &rpc,
+                            &script,
+                            &cfg.network,
+                            target,
                         ))?;
-                        println!("{v}");
+                        if !*approve {
+                            println!("{v}");
+                            return Ok(());
+                        }
+                        let id = v["service_id"].as_str().unwrap_or("").to_string();
+                        let e = registry::act(
+                            &db,
+                            &mut cfg,
+                            &cfg_path,
+                            &root,
+                            &id,
+                            registry::Action::Approve,
+                        )
+                        .map_err(|e| e.message())?;
+                        println!("{e}");
+                        return Ok(());
+                    }
+                    ServiceAction::Catalog { refresh, json } => {
+                        if let Some(why) = catalog::off_reason(&cfg)? {
+                            return Err(format!("the catalog is off: {why}"));
+                        }
+                        if *refresh {
+                            let client = node::rpc::RpcClient::new(&cfg.node.rpc_url);
+                            let polled = runtime().block_on(node::poll(&client, &cfg.network));
+                            if polled.report.state != node::r2::R2State::Synced {
+                                return Err(format!(
+                                    "node not synced (R2: {}), cannot scan",
+                                    polled.report.state.as_str()
+                                ));
+                            }
+                            let r = runtime().block_on(catalog::scan(&db, &cfg))?;
+                            eprintln!(
+                                "{} manifest(s) on chain, {} new, {} invalid",
+                                r.live,
+                                r.new.len(),
+                                r.invalid
+                            );
+                        }
+                        let v = catalog::catalog_json(&db, &cfg)?;
+                        if *json {
+                            println!("{v}");
+                        } else {
+                            for i in v["items"].as_array().into_iter().flatten() {
+                                println!(
+                                    "{} {} {} {} added={} jobs={} {}",
+                                    i["type_id"].as_str().unwrap_or(""),
+                                    i["name"].as_str().unwrap_or(""),
+                                    i["version"].as_str().unwrap_or(""),
+                                    i["service_id"].as_str().unwrap_or(""),
+                                    i["added"],
+                                    i["open_jobs"],
+                                    i["description"].as_str().unwrap_or("")
+                                );
+                            }
+                            for u in v["unknown"].as_array().into_iter().flatten() {
+                                println!(
+                                    "{} (seen on chain, no manifest) jobs={}",
+                                    u["service_id"].as_str().unwrap_or(""),
+                                    u["open_jobs"]
+                                );
+                            }
+                        }
                         return Ok(());
                     }
                     ServiceAction::List { json } => {

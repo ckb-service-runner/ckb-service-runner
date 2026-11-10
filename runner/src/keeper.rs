@@ -103,9 +103,58 @@ struct Executed {
     outcome: Result<(runtime::Outcome, Option<Vec<u8>>), String>,
 }
 
+/// What a run of a service needs: the program, the data cells (cell deps) and the script args.
+#[derive(Debug)]
+pub struct Loaded {
+    pub program: Vec<u8>,
+    pub data_cells: Vec<Vec<u8>>,
+    pub args: Vec<u8>,
+}
+
+impl Loaded {
+    pub fn vtx(&self, payload: Vec<u8>) -> VirtualTx {
+        VirtualTx::new(
+            self.program.clone(),
+            self.data_cells.clone(),
+            self.args.clone(),
+            payload,
+        )
+    }
+}
+
+/// Checks the program and the data cells read from the chain (`cells`: out point to data, `None` = not live)
+/// against the service ID of `row`.
+pub fn assemble(
+    row: &crate::db::ServiceRow,
+    program: Vec<u8>,
+    cells: &HashMap<String, Option<Vec<u8>>>,
+) -> Result<Loaded, String> {
+    let mut data_cells = Vec::new();
+    for c in &row.data_cells {
+        match cells.get(c) {
+            Some(Some(d)) => data_cells.push(d.clone()),
+            _ => return Err(format!("data cell {c} is not live")),
+        }
+    }
+    let args = hex::decode(&row.args).map_err(|_| "the stored script args are not hex")?;
+    let hashes: Vec<[u8; 32]> = data_cells.iter().map(|d| ckb_hash(d)).collect();
+    let id = crate::catalog::service_id(&ckb_hash(&program), &args, &hashes);
+    if hex_of(&id) != row.id().to_ascii_lowercase() {
+        return Err(format!(
+            "the code and data cells of the service do not match its service ID {}",
+            row.id()
+        ));
+    }
+    Ok(Loaded {
+        program,
+        data_cells,
+        args,
+    })
+}
+
 pub struct Keeper {
     chain: Arc<Chain>,
-    /// Service code by code hash (verified against the hash).
+    /// Service programs by service ID (verified against it).
     code: HashMap<String, Vec<u8>>,
 }
 
@@ -297,25 +346,34 @@ impl Keeper {
         Ok(())
     }
 
-    /// The service code from its code cell (cached, checked against the code hash).
-    async fn code(&mut self, st: &AppState, code_hash: &str) -> Result<Vec<u8>, String> {
-        if let Some(c) = self.code.get(code_hash) {
-            return Ok(c.clone());
+    /// The service's program, data cells and args from the chain. The program is cached by service ID;
+    /// the data cells are read at every batch (a dead one fails the run). Everything is checked against
+    /// the service ID.
+    async fn load(&mut self, st: &AppState, id: &str) -> Result<Loaded, String> {
+        let row = st.db.service(id)?.ok_or(
+            "the service's code cell is unknown (add it with `csr service add-onchain`)",
+        )?;
+        let program = match self.code.get(id) {
+            Some(c) => c.clone(),
+            None => {
+                let op = row.outpoint.clone().ok_or(
+                    "the service's code cell is unknown (add it with `csr service add-onchain`)",
+                )?;
+                let (_, data) = self
+                    .chain
+                    .live_cell(&op)
+                    .await?
+                    .ok_or_else(|| format!("the code cell {op} is not live"))?;
+                data
+            }
+        };
+        let mut cells = HashMap::new();
+        for c in &row.data_cells {
+            cells.insert(c.clone(), self.chain.live_cell(c).await?.map(|(_, d)| d));
         }
-        let op =
-            st.db.service(code_hash)?.and_then(|s| s.outpoint).ok_or(
-                "the service's code cell is unknown (add it with `csr service add-onchain`)",
-            )?;
-        let (_, data) = self
-            .chain
-            .live_cell(&op)
-            .await?
-            .ok_or_else(|| format!("the code cell {op} is not live"))?;
-        if hex_of(&ckb_hash(&data)) != code_hash {
-            return Err(format!("the code cell {op} does not hold {code_hash}"));
-        }
-        self.code.insert(code_hash.to_string(), data.clone());
-        Ok(data)
+        let loaded = assemble(&row, program, &cells)?;
+        self.code.insert(id.to_string(), loaded.program.clone());
+        Ok(loaded)
     }
 
     /// Runs the batch in the sandbox: different services in parallel, runs of one service one
@@ -342,7 +400,7 @@ impl Keeper {
         let storage_root = st.net_dir.join(&cfg.storage.path);
         let block_info = [tip.number, tip.epoch, tip.median_ms];
         for (code_hash, runs) in groups {
-            let elf = match self.code(st, &code_hash).await {
+            let loaded = match self.load(st, &code_hash).await {
                 Ok(e) => e,
                 Err(e) => {
                     for (id, job) in runs {
@@ -376,8 +434,7 @@ impl Keeper {
             handles.push(tokio::task::spawn_blocking(move || {
                 runs.into_iter()
                     .map(|(id, job)| {
-                        let mut vtx =
-                            VirtualTx::new(elf.clone(), vec![], vec![], job.payload.clone());
+                        let mut vtx = loaded.vtx(job.payload.clone());
                         vtx.input.capacity = job.capacity;
                         if let Ok((h, i)) = crate::chain::parse_out_point(&job.outpoint) {
                             if let Ok(Ok(h)) =
@@ -405,7 +462,7 @@ impl Keeper {
                             max_memory_mb: limits.max_vm_memory_mb,
                             max_wall_seconds: limits.max_job_wall_seconds,
                         };
-                        let outcome = runtime::run(&elf, state, lim).map(|(o, s)| (o, s.skeleton));
+                        let outcome = runtime::run(&loaded.program, state, lim).map(|(o, s)| (o, s.skeleton));
                         Executed {
                             run_id: id,
                             job,
@@ -681,6 +738,79 @@ pub fn earnings_json(st: &AppState) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(program: &[u8], args: &[u8], data: &[Vec<u8>]) -> crate::db::ServiceRow {
+        let hashes: Vec<[u8; 32]> = data.iter().map(|d| ckb_hash(d)).collect();
+        let id = hex_of(&crate::catalog::service_id(&ckb_hash(program), args, &hashes));
+        crate::db::ServiceRow {
+            code_hash: id.clone(),
+            name: "x".into(),
+            language: "onchain".into(),
+            status: "approved_enabled".into(),
+            outpoint: Some("0x01:0".into()),
+            service_id: Some(id),
+            data_cells: (0..data.len()).map(|i| format!("0xcc:{i}")).collect(),
+            args: hex::encode(args),
+            manifest_type_id: None,
+            manifest_outpoint: None,
+        }
+    }
+
+    fn cells(data: &[Vec<u8>]) -> HashMap<String, Option<Vec<u8>>> {
+        data.iter()
+            .enumerate()
+            .map(|(i, d)| (format!("0xcc:{i}"), Some(d.clone())))
+            .collect()
+    }
+
+    #[test]
+    fn composite_service_gets_data_cells_and_args() {
+        let (program, args) = (vec![1u8, 2, 3], vec![7u8, 8]);
+        let data = vec![vec![4u8; 5], vec![6u8; 2]];
+        let r = row(&program, &args, &data);
+        let l = assemble(&r, program.clone(), &cells(&data)).unwrap();
+        let vtx = l.vtx(vec![0xee]);
+        assert_eq!(vtx.script().args, args);
+        assert_eq!(vtx.cell_deps.len(), 3);
+        assert_eq!(vtx.cell_deps[0].data, program);
+        assert_eq!(vtx.cell_deps[1].data, data[0]);
+        assert_eq!(vtx.cell_deps[2].data, data[1]);
+        // A data cell that holds other data does not match the service ID.
+        let mut bad = cells(&data);
+        bad.insert("0xcc:1".into(), Some(vec![0]));
+        assert!(assemble(&r, program, &bad).unwrap_err().contains("service ID"));
+    }
+
+    #[test]
+    fn single_binary_service_unchanged() {
+        let program = vec![9u8; 10];
+        let r = row(&program, &[], &[]);
+        assert_eq!(r.id(), hex_of(&ckb_hash(&program)));
+        let l = assemble(&r, program.clone(), &HashMap::new()).unwrap();
+        let vtx = l.vtx(vec![]);
+        assert!(vtx.script().args.is_empty());
+        assert_eq!(vtx.cell_deps.len(), 1);
+        // A row without a service ID falls back to the code hash.
+        let old = crate::db::ServiceRow {
+            service_id: None,
+            ..r
+        };
+        assert!(assemble(&old, program, &HashMap::new()).is_ok());
+        assert!(assemble(&old, vec![1], &HashMap::new()).is_err());
+    }
+
+    #[test]
+    fn dead_data_cell_fails_the_run() {
+        let program = vec![1u8, 2];
+        let data = vec![vec![5u8]];
+        let r = row(&program, &[], &data);
+        let mut c = cells(&data);
+        c.insert("0xcc:0".into(), None);
+        assert_eq!(
+            assemble(&r, program, &c).err().unwrap(),
+            "data cell 0xcc:0 is not live"
+        );
+    }
 
     #[test]
     fn pool_conflicts_are_recognised() {
