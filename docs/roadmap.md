@@ -20,6 +20,12 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
       **Tip hash** and **Node ID** (same monospace facts block), and make the ID itself the link to the runner's
       row on the monitor (`<monitor>/?runner=<id>`; with several monitors, the first one). Same on the Network
       page. No shortened form.
+- [ ] Host interface: implement `random_bytes` (7050), required by CRT (CKB Revocable Timelock). The host fills a
+      VM buffer with `len` bytes from the operating system's CSPRNG (`len` 1–1024; `11` above 1024, `12` for 0),
+      available in every mode including `csr service run-local`, cost `500 + ceil(len / 4)` cycles, the bytes never
+      logged or stored by the host. It lets a CRT service create a fresh secret key per switch inside the sandbox,
+      which the runner can later destroy. The number is already reserved, so no existing service changes;
+      7051 `prekey_decrypt` stays reserved. Includes a `randtest` example service and tests.
 
 ## Runner release 0.6.0: on-chain service catalog (released 10 Nov 2026)
 
@@ -71,4 +77,4 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 - [ ] Probing decentralised onto the runners themselves
 - [ ] Host-interface RFC in nervosnetwork/rfcs (draft in `docs/rfc/`)
 - [x] On-chain service catalog and composite services (0.6.0, see above)
-- [ ] First service: CRT (CKB Revocable Timelock)
+- [ ] First service: CRT (CKB Revocable Timelock); needs `random_bytes` (7050), planned for 0.6.1
