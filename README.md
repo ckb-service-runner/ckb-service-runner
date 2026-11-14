@@ -69,7 +69,7 @@ What the runner does:
   no new run starts while it fails.
 - **Ranking.** With `ranking.join = true` the CSR Network Monitor pings the node (inbound or outbound), checks it daily over P2P and ranks it.
 - **Node identity.** The service key and the node's P2P key sign a binding, so the monitor can prove that the service key belongs to the node's peer ID.
-- **Services in a RISC-V sandbox (CKB-VM).** Approved services run with a small host interface (`spec/host-interface.md`), encrypted storage and limits.
+- **Services in a RISC-V sandbox (CKB-VM).** Approved services run with a small host interface (`spec/host-interface.md`), encrypted storage, a CSPRNG call and limits.
 - **Jobs and tips.** With `runtime.enabled = true`, `csr run` discovers job cells, runs the approved service, sends the run transaction and collects the **tip**.
 - **Runner wallet.** The plain cells of the runner's own key: it pays the registration and the fees, receives the tips and sweeps surplus to your address.
 - **Registration with a Nervos DAO stake.** A registry cell references a DAO deposit of at least 10,000 CKB that stays in your wallet; you consent once by signing a text.

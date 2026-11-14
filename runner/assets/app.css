@@ -94,6 +94,8 @@ h3{margin:.9rem 0 .35rem;font-size:.95rem}
 .kv>span:last-child{text-align:right;min-width:0;overflow-wrap:anywhere}
 .facts{display:flex;flex-wrap:wrap;gap:.3rem 1.3rem;font-size:.85rem;color:var(--mut)}
 .facts b{color:var(--fg);font-weight:600}
+.facts.ids{flex-direction:column;gap:.2rem;margin-top:.4rem;overflow-wrap:anywhere}
+.runner-id{overflow-wrap:anywhere}
 .links{display:flex;flex-wrap:wrap;gap:.5rem}
 
 /* node hero */

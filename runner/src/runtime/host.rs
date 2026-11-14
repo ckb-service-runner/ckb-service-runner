@@ -20,6 +20,8 @@ const SYSCALL_CYCLES: u64 = 500;
 pub const NODE_CALL_CYCLES: u64 = 100_000;
 /// The debug call (2177) reads at most this many bytes looking for the terminating zero.
 pub const MAX_DEBUG_SCAN: usize = 1024;
+/// Most bytes one `random_bytes` (7050) call returns.
+pub const MAX_RANDOM_BYTES: u64 = 1024;
 
 /// Cycles for moving `bytes` between the VM and the host: one cycle per 4 bytes, rounded up.
 pub fn data_cycles(bytes: usize) -> u64 {
@@ -434,6 +436,24 @@ impl Host {
                     _ => SVC_QUOTA_EXCEEDED,
                 }
             }
+            // random_bytes(addr, len): `len` bytes from the operating system's CSPRNG (OsRng), in
+            // every mode. The bytes go only to VM memory: never logged, captured or stored by the host.
+            7050 => {
+                if a1 == 0 {
+                    return Ok(SVC_INVALID_ARGUMENT);
+                }
+                if a1 > MAX_RANDOM_BYTES {
+                    return Ok(SVC_TOO_LARGE);
+                }
+                let mut buf = vec![0u8; a1 as usize];
+                rand::RngCore::try_fill_bytes(&mut rand::rngs::OsRng, &mut buf)
+                    .map_err(|e| Error::External(format!("csr:os_rng_failed: {e}")))?;
+                m.add_cycles(data_cycles(buf.len()))?;
+                let stored = m.memory_mut().store_bytes(a0, &buf);
+                buf.iter_mut().for_each(|b| *b = 0);
+                stored?;
+                SVC_OK
+            }
             // sign(msg32, sig_out64)
             7020 => {
                 let Some((key, code_hash)) = &st.signer else {
@@ -553,6 +573,111 @@ fn witness_at(vtx: &VirtualTx, index: u64, source: u64) -> Result<usize, u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ckb_vm::machine::{DefaultCoreMachine, VERSION2};
+    use ckb_vm::memory::sparse::SparseMemory;
+    use ckb_vm::{CoreMachine, ISA_B, ISA_IMC, ISA_MOP};
+
+    type Core = DefaultCoreMachine<u64, SparseMemory<u64>>;
+
+    const ADDR: u64 = 0x1000;
+
+    /// A local-mode host (no store, chain or signer), as `csr service run-local` uses.
+    fn local_host() -> Host {
+        Host {
+            state: Arc::new(Mutex::new(HostState::new(
+                super::super::vtx::VirtualTx::new(vec![], vec![], vec![], vec![]),
+                [0; 3],
+            ))),
+        }
+    }
+
+    /// Calls `random_bytes(ADDR, len)`; returns (return code, the `len` bytes at ADDR, cycles).
+    fn draw(host: &mut Host, len: u64) -> (u64, Vec<u8>, u64) {
+        let mut m = Core::new(ISA_IMC | ISA_B | ISA_MOP, VERSION2, u64::MAX);
+        m.set_register(A7, 7050);
+        m.set_register(A0, ADDR);
+        m.set_register(A1, len);
+        assert!(host.ecall(&mut m).unwrap());
+        let code = m.registers()[A0];
+        let n = len.min(MAX_RANDOM_BYTES + 1);
+        let bytes = m.memory_mut().load_bytes(ADDR, n).unwrap().to_vec();
+        (code, bytes, m.cycles())
+    }
+
+    #[test]
+    fn random_bytes_fills_len() {
+        let mut h = local_host();
+        let (code, a, cycles) = draw(&mut h, 32);
+        assert_eq!(code, SVC_OK);
+        assert_eq!(a.len(), 32);
+        assert!(
+            a.iter().any(|b| *b != 0),
+            "32 random bytes are not all zero"
+        );
+        assert_eq!(cycles, 500 + 8);
+        let (_, b, _) = draw(&mut h, 32);
+        assert_ne!(a, b, "two draws differ");
+        let (code, full, cycles) = draw(&mut h, MAX_RANDOM_BYTES);
+        assert_eq!(code, SVC_OK);
+        assert_eq!(cycles, 500 + 256);
+        assert!(full.iter().any(|b| *b != 0));
+    }
+
+    #[test]
+    fn random_bytes_len_zero_is_12() {
+        let (code, bytes, _) = draw(&mut local_host(), 0);
+        assert_eq!(code, SVC_INVALID_ARGUMENT);
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn random_bytes_len_over_1024_is_11() {
+        let (code, bytes, _) = draw(&mut local_host(), MAX_RANDOM_BYTES + 1);
+        assert_eq!(code, SVC_TOO_LARGE);
+        assert!(bytes.iter().all(|b| *b == 0), "nothing written");
+    }
+
+    #[test]
+    fn random_bytes_local_mode_works() {
+        let mut h = local_host();
+        {
+            let st = h.state.lock().unwrap();
+            assert!(st.store.is_none() && st.chain.is_none() && st.signer.is_none());
+        }
+        let (code, bytes, _) = draw(&mut h, 16);
+        assert_eq!(code, SVC_OK);
+        assert!(bytes.iter().any(|b| *b != 0));
+    }
+
+    #[test]
+    fn random_bytes_never_in_debug() {
+        let mut h = local_host();
+        let (_, bytes, _) = draw(&mut h, 32);
+        let st = h.state.lock().unwrap();
+        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        assert!(
+            st.debug.iter().all(|l| !l.contains(&hex)),
+            "bytes in the debug capture"
+        );
+        assert!(st.result.is_none() && st.skeleton.is_none());
+        let src = include_str!("host.rs");
+        let arm = &src[src.find("7050 => {").unwrap()..];
+        let arm = &arm[..arm.find("// sign(msg32").unwrap()];
+        for forbidden in [
+            "log::",
+            "tracing::",
+            "debug.push",
+            "println!",
+            "eprintln!",
+            "st.result",
+            "store.",
+        ] {
+            assert!(
+                !arm.contains(forbidden),
+                "random_bytes must not use {forbidden}"
+            );
+        }
+    }
 
     #[test]
     fn out_point_vec_is_a_molecule_fixvec() {

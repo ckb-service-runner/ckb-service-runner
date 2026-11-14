@@ -65,6 +65,7 @@ Calls that write a buffer follow CKB's partial loading: `len_ptr` points to a u6
 | 7020 | `sign(msg32, sig_out64)` | see below |
 | 7030 | `tx_skeleton_put(addr, len)` | stores the transaction skeleton; the last call wins |
 | 7031 | `result_put(addr, len)` | result bytes; more than 65,536 bytes stops the run with `result_too_large` |
+| 7050 | `random_bytes(addr, len)` | `len` bytes (1–1024) from the operating system's CSPRNG; 11 above 1024, 12 for 0; never logged or stored by the host |
 
 **`chain_read`.** `kind` 0: live cell output (molecule `CellOutput`); 1: live cell data; both with `key` = 36-byte out point. `kind` 2: header (molecule `Header`); 3: transaction (molecule `Transaction`); both with `key` = 32-byte hash. Returns 0, 1 (dead or unknown) or 12 (unknown kind).
 
@@ -80,7 +81,7 @@ A failing node request stops the run (`script_error`). Time spent waiting for th
 
 ### Reserved numbers
 
-7050 (`random_bytes`) and 7051 (`prekey_decrypt`) are reserved and return 2. Every other number in 7001–7099 not listed above also returns 2, so a service can probe for support and later versions can add calls without breaking old services. A service must not rely on any reserved number.
+7051 (`prekey_decrypt`) is reserved and returns 2. Every other number in 7001–7099 not listed above also returns 2, so a service can probe for support and later versions can add calls without breaking old services. A service must not rely on any reserved number.
 
 ### Cycle cost
 
@@ -132,5 +133,5 @@ CKB Service Runner (this repository): the host in the runner, the normative `spe
 2. Is a shared range preferable to a single `spawn`-style or `exec`-style extension, now that CKB has process syscalls? The reference host does not provide them.
 3. Should the cycle price (500 per call, 1 per 4 bytes, 100,000 per node call) be normative, or left to runners?
 4. Should `chain_read` and `cells_query` be pinned to a block, to make runs reproducible by third parties?
-5. Reserved calls (7050, 7051) are placeholders for randomness and prekey decryption; should they be specified here or left out?
+5. The reserved call 7051 is a placeholder for prekey decryption; should it be specified here or left out?
 6. Is domain-separated signing with a per-service key sufficient, or should a standard key-derivation scheme be specified?

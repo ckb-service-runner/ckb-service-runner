@@ -83,6 +83,12 @@ Also checked there: a second runner (or a restart) does not show the notice agai
 `csr --network mainnet service publish …` is refused. The contract rules have their own tests
 (`contracts/csr-contract-tests/tests/manifest.rs`).
 
+### Random bytes (`randtest`, 0.6.1)
+
+`node --test acceptance/v0.6.1/randtest.test.mjs` (services built): `randtest` draws 32 random bytes twice with
+`random_bytes` (7050), then asks for 1025 and 0 bytes; the two draws differ, neither is all zeros, the return codes
+are `0 0 11 12`, and the bytes never appear in the debug capture. Unit tests: `cargo test -p csr random_bytes`.
+
 ### Keeper jobs and the race test (A3c)
 
 `node --test --test-concurrency=1 acceptance/a8/p4.test.mjs` (devnet running, `bash scripts/build-services.sh` done): an `every:2` job runs three times and the runner wallet grows by exactly the three tips; two CSR instances with separate data roots share the devnet node and race for one job, exactly one settles (its wallet gains the tip), the other ends in `Lost` at no cost. The A3c float versions of these tests were removed in Oct 2026. Manual demo steps: `docs/milestones/A3c.md`.

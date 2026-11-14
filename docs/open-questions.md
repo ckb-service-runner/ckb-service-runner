@@ -9,5 +9,5 @@
 - Audit decisions still open: when the mainnet gate opens per release (D4 A pauses only before a run starts, so a
   long run is never interrupted: is that acceptable on mainnet?), and whether the monitor should expose
   `identity_proven` directly instead of the dashboard inferring it from `check_type`.
-- CRT: prekey support (`prekey_decrypt`, `random_bytes`) is reserved and returns 2.
+- CRT: `prekey_decrypt` (7051) stays reserved; `random_bytes` (7050) shipped in 0.6.1.
 - Windows / Neuron: still open — whether the module list of Neuron's internal node stays as it is after a Neuron update, and how Neuron on macOS/Linux lays out its node folder.
