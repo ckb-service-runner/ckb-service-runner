@@ -56,7 +56,8 @@ entry and the full data length on return; at most `size` bytes starting at `offs
 | 7020 | `sign(msg32, sig_out64)` | see below |
 | 7030 | `tx_skeleton_put(addr, len)` | stores the transaction skeleton (see below); the last call wins |
 | 7031 | `result_put(addr, len)` | result bytes; more than **65,536** bytes stops the run with `result_too_large` |
-| 7050, 7051 | `random_bytes`, `prekey_decrypt` | reserved, return 2 |
+| 7050 | `random_bytes(addr, len)` | writes `len` bytes from the operating system's CSPRNG to `addr`; 0, 11 when `len` > 1024, 12 when `len` = 0; works in every mode, including `csr service run-local`; see below |
+| 7051 | `prekey_decrypt` | reserved, returns 2 |
 
 Other numbers in 7001–7099 return 2. Numbers outside CKB's set and 7001–7099 stop the run with
 status `unknown_syscall`. The CKB `debug` syscall output is collected (max 64 lines, 1 KB each); `debug` scans at most 1024 bytes (`MAX_DEBUG_SCAN`) for the terminating zero, so a longer line is cut.
@@ -76,6 +77,14 @@ Available when CSR runs an on-chain job (`csr run`); `csr service run-local` ret
 
 A failing node request stops the run (`script_error`). The VM time spent waiting for the node counts
 towards the wall-time limit.
+
+## Random bytes (7050, since 0.6.1)
+
+The host fills `len` bytes (1–1024) from the operating system's CSPRNG (`OsRng`); there is no seeded or
+deterministic fallback. Cost: 500 + ceil(`len` / 4) cycles. An unwritable address stops the run like any other
+memory fault. The bytes are never logged, captured as debug output or stored by the host; a service that keeps
+them stores them itself (`kv_put` + `kv_mark_secret`). Use: a fresh secret only this runner knows, for example
+a key the runner can later destroy (CRT).
 
 ## Transaction skeleton (A3c)
 

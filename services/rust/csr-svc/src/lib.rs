@@ -9,6 +9,7 @@ pub const KV_DELETE: u64 = 7012;
 pub const KV_MARK_SECRET: u64 = 7013;
 pub const DELETE_ON_CONSUME: u64 = 7014;
 pub const SIGN: u64 = 7020;
+pub const RANDOM_BYTES: u64 = 7050;
 
 /// Raw RISC-V `ecall` with up to six arguments.
 ///
@@ -105,4 +106,10 @@ pub fn delete_on_consume(key: &[u8], outpoint: &[u8; 36]) -> u64 {
 /// `sign(msg32, sig_out64)`.
 pub fn sign(msg: &[u8; 32], sig: &mut [u8; 64]) -> u64 {
     unsafe { syscall(SIGN, [msg.as_ptr() as u64, sig.as_mut_ptr() as u64, 0, 0, 0, 0]) }
+}
+
+/// `random_bytes(addr, len)`: fills `buf` from the host's OS CSPRNG. 0 ok; 11 when `buf` is over 1024
+/// bytes; 12 when it is empty.
+pub fn random_bytes(buf: &mut [u8]) -> u64 {
+    unsafe { syscall(RANDOM_BYTES, [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0]) }
 }

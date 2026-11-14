@@ -28,25 +28,17 @@
     });
     c.appendChild(d);
   }
-  // Runner ID (as the monitor lists it): shortened, full value as title, copy button, one link per monitor.
+  // Runner ID (as the monitor lists it): the full ID, itself the link to the runner's row on the monitor
+  // (the first monitor when there are several). No copy button, no shortened form (0.6.1).
   function runnerIdNode(st) {
     var id = st && st.runner_id;
-    var w = el('span', 'runner-id');
-    if (!id) { w.textContent = '–'; return w; }
-    w.appendChild(el('span', 'mono', id.length > 14 ? id.slice(0, 6) + '…' + id.slice(-4) : id));
-    w.firstChild.title = id;
-    var b = el('button', 'btn', 'Copy'); b.type = 'button';
-    b.addEventListener('click', function () {
-      function done(t) { b.textContent = t; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(id).then(function () { done('Copied'); }, function () { done('Copy failed'); });
-      else done('Copy failed');
-    });
-    w.appendChild(document.createTextNode(' ')); w.appendChild(b);
-    (st.runner_links || []).forEach(function (l) {
-      var a = el('a', '', 'View on monitor'); a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = l.monitor;
-      w.appendChild(document.createTextNode(' ')); w.appendChild(a);
-    });
-    return w;
+    if (!id) return el('span', 'mono', '–');
+    var l = (st.runner_links || [])[0];
+    if (!l) return el('span', 'mono runner-id', id);
+    var a = el('a', 'mono runner-id', id);
+    a.href = l.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.title = 'View on monitor' + (l.monitor ? ' (' + l.monitor + ')' : '');
+    return a;
   }
   function pill(v) {
     return el('span', 'pill ' + v, v);
@@ -373,14 +365,13 @@
     if (n.tx_pool && n.tx_pool.pending != null) fact('Tx pool', n.tx_pool.pending + ' pending · ' + n.tx_pool.proposed + ' proposed');
     var idn = n.identity && n.identity.state;
     if (idn) fact('Node identity', idn);
-    if (s && s.runner_id) { var ri = el('span', '', 'Runner ID '); ri.appendChild(runnerIdNode(s)); f.appendChild(ri); }
     c.appendChild(f);
-    if (full) {
-      var g = el('div', 'facts mono');
-      if (n.tip_hash) g.appendChild(el('span', '', 'Tip hash ' + n.tip_hash));
-      if (n.node_id) g.appendChild(el('span', '', 'Node ID ' + n.node_id));
-      c.appendChild(g);
-    }
+    // Monospace block, one line each: Tip hash and Node ID (Node page), then the Runner ID (both pages).
+    var g = el('div', 'facts mono ids');
+    if (full && n.tip_hash) g.appendChild(el('span', '', 'Tip hash ' + n.tip_hash));
+    if (full && n.node_id) g.appendChild(el('span', '', 'Node ID ' + n.node_id));
+    if (s && s.runner_id) { var ri = el('span', '', 'Runner ID '); ri.appendChild(runnerIdNode(s)); g.appendChild(ri); }
+    if (g.children.length) c.appendChild(g);
     if (n.identity && n.identity.message && idn !== 'proven') c.appendChild(el('p', idn === 'unknown' ? 'msg' : 'msg err', n.identity.message));
     if (n.net_rpc_hint) c.appendChild(el('p', 'msg err', n.net_rpc_hint));
     var lk = el('div', 'links'), L = links();
@@ -728,6 +719,7 @@
     [hero, g, cpeer].forEach(function (x) { root.appendChild(x); });
     function load() {
       api('/api/node').then(function (n) {
+        lastNode = n;
         nodeHero(hero, n, state.status, true);
         ci.textContent = '';
         var idn = n.identity || {};
@@ -760,6 +752,9 @@
         kv(chs, [['Most behind', max == null ? '–' : max + ' blocks'], ['In sync (≤ 2 blocks)', inSync == null ? '–' : pct(inSync)]]);
       }).catch(function () {});
     }
+    // The status (Runner ID) may arrive after the first node answer: redraw the node card then.
+    var lastNode = null;
+    onStatus = function () { if (lastNode) nodeHero(hero, lastNode, state.status, true); };
     load();
     timers.push(setInterval(load, 10000));
   };

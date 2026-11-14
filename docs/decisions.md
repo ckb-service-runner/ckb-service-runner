@@ -827,3 +827,13 @@ testnet-only until the Phase 2 gate below is met. Work items: AIWorker specs `mo
 - **Cross-check**: `jobs::tests::js_sdk_vectors_decode` reads `sdk/js/test/vectors.json` via `CARGO_MANIFEST_DIR`; no runner behaviour changed. The integration guide is Phase 2.
 - **Phase 2 – guide**: `docs/integrating-an-app.md` presents CrowdCell auto-settle as a pattern only; margin, tip and tipping when the bot settled first stay CrowdCell's decision. Reclaim after expiry is described with the SDK's `jobCellDeps` and an absolute-block `since`.
 - Added `acceptance/aiworker-csr-app-sdk.js` (same loader trick as `sdk/js/test.js`) so `node --test acceptance/aiworker-csr-app-sdk/` works on Node 22.
+
+## csr-random-bytes (0.6.1, requested by CRT)
+
+- **D53: `random_bytes` (7050) is implemented** with the operating system's CSPRNG through `rand::rngs::OsRng`
+  (rand 0.8, already a runner dependency; it reads `getrandom`). No seeded or deterministic fallback: if the OS
+  source fails, the run stops (`csr:os_rng_failed`). `len` 1–1024 (11 above, 12 for 0), cost 500 + ceil(len / 4)
+  cycles, available in every mode including `csr service run-local`. The host copies the bytes only into VM
+  memory, zeroes its own buffer afterwards, and never logs, captures or stores them. 7051 `prekey_decrypt` stays
+  reserved. Why: a CKB-VM service has no entropy source, and the alternatives (deriving from `sign`, chain data,
+  the owner's client, the job payload) are deterministic or public, so a CRT key could never be truly destroyed.
