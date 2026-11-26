@@ -4,6 +4,37 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 
 ## Current phase: Phase 2 – Service Runtime on testnet (A8b polish done)
 
+## Runner release 0.7: security hardening (planned)
+
+Community feedback (Telegram, Nov 2026) on the Windows beta: it runs as SYSTEM, reads the node's P2P identity key
+and is not code-signed. On Linux CSR already runs as its own `csr` user with systemd sandboxing; 0.7 brings Windows
+to the same level and documents the security model for every platform.
+
+Least privilege
+- [ ] Windows: run CSR as a native Windows service under its own limited account (virtual account
+      `NT SERVICE\CSR-<network>`) instead of a scheduled task as SYSTEM; no `RunLevel Highest`.
+- [ ] Windows installer: grant that account read access to the one node `secret_key` file and full control of
+      `%ProgramData%\csr` only (SYSTEM removed from the data root ACL).
+- [ ] Installer key search: look only in known locations (`-CkbDir`, running `ckb.exe` folders, Neuron's internal
+      mainnet node); a wider search only after the operator agrees; print every path read.
+- [ ] Node P2P key: read only while signing the node-identity proof, then zeroize; not kept in memory.
+- [ ] Ping: bind to `127.0.0.1` when `ping_mode = "outbound"`; open the inbound firewall rule only for inbound modes.
+
+Signed and verifiable releases
+- [ ] Authenticode-signed `csr.exe`, `install.ps1` and `uninstall.ps1` (depends on approval by a code-signing
+      provider, e.g. an open-source signing program). Until then: the offline-signed `SHA256SUMS` stays the way to
+      verify a download, shown in the README and release notes.
+- [ ] Build provenance: release binaries built by GitHub Actions from the tag, with a provenance attestation
+      (`actions/attest-build-provenance`), so anyone can check a binary came from the published source.
+
+Transparency
+- [ ] `docs/security-model.md`: what CSR reads (node RPC, the node's P2P key file), what it never touches (wallet
+      keystores, including Neuron's), what leaves the machine (signed proof, ping statistics; the monitor stores no
+      IP address), privileges per platform, known gaps. Linked from the README and the monitor site.
+- [ ] `SECURITY.md` status updated: mainnet runs as a dashboard only; the Service Runtime stays off on mainnet.
+- [ ] Independent security audit scheduled as a milestone before the mainnet Service Runtime (see Phase 2), with a
+      funding proposal (e.g. Community Fund DAO).
+
 ## Runner release 0.5.4 (merged into 0.6.0)
 
 - [x] Dashboard: show the **Runner ID** (the ID the CSR Network Monitor lists, a hash of the runner's service key)
