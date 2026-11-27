@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- Packaging: `license = "MIT"` in the runner, tools and service crates (the repository has been MIT-licensed from the start; contracts unchanged).
+- Docs: `docs/release.md` names the artifacts to use and the `gh` version needed for `gh attestation verify`; `docs/windows.md` states that Authenticode signing is planned for 0.7.x.
+
 ## 0.7.0
 - **Security hardening**:
   - Windows: CSR runs as a native Windows service per network (`CSR-<network>`) under the virtual service account `NT SERVICE\CSR-<network>`, no longer as SYSTEM. Existing scheduled-task installs are migrated; data and keys are kept.

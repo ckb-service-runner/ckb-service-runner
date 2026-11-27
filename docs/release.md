@@ -37,7 +37,10 @@ ed25519 signature of `SHA256SUMS` made offline with the release key.
 
 1. Set the version in `runner/Cargo.toml` and update `CHANGELOG.md`; merge; push the tag `vX.Y.Z`.
    `release-build` fails if the tag and the `Cargo.toml` version differ.
-2. Wait for `release-build` (Linux on ubuntu-22.04, Windows on windows-latest) and download the artifacts:
+2. Wait for `release-build` (Linux on ubuntu-22.04, Windows on windows-latest) and download the artifacts.
+   Use the run named **release-build** (tag `vX.Y.Z`) and the artifacts `csr-linux-x86_64-release` and
+   `csr-windows-x86_64-release`; the artifact `csr-windows-x86_64` of the ordinary `windows` workflow is a different build
+   and has no attestation. `gh attestation verify` needs `gh` 2.49 or newer.
 
    ```sh
    gh run download <run-id> -n csr-linux-x86_64-release -n csr-windows-x86_64-release -D ci/
