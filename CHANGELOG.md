@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+- **Security hardening (0.7, part 1)**:
+  - Windows: CSR runs as a native Windows service per network (`CSR-<network>`) under the virtual service account `NT SERVICE\CSR-<network>`, no longer as SYSTEM. Existing scheduled-task installs are migrated; data and keys are kept.
+  - Windows: the data root `%ProgramData%\csr` no longer grants SYSTEM; the node's P2P key file gets one read-only ACE for the service account, which the uninstaller removes again.
+  - Windows: the installer searches for node key files only in known places (`-CkbDir`, running `ckb.exe` folders, `%APPDATA%\Neuron`); the wide search needs `-SearchWide` and a yes; every key candidate is printed.
+  - The node's P2P key is no longer kept in memory: only the path and peer ID are kept, the key is re-read for each identity proof and erased right after signing.
+  - Ping port: no firewall rule in `outbound` mode (an old rule is removed); the inbound rule exists only for `inbound`/`both`.
+  - Release provenance: release binaries are built by GitHub Actions from the tag (`release-build`) with a build provenance attestation (`gh attestation verify`); `scripts/release.sh <version> --ci-dir <dir>` uses them. `SHA256SUMS` is still signed offline.
+
 ## 0.6.1
 - **Host interface: `random_bytes` (7050)**, requested by CRT. A service gets `len` bytes (1–1024) from the operating system's CSPRNG (`OsRng`); 11 above 1024, 12 for 0; cost 500 + ceil(len / 4) cycles; available in every mode including `csr service run-local`. The host never logs, captures or stores the bytes. 7051 `prekey_decrypt` stays reserved; no other number changes, so existing services are unaffected. New example service `randtest` (`services/rust/randtest`) and the test `acceptance/v0.6.1/randtest.test.mjs`. Decision D53.
 - **Dashboard: Runner ID layout** (owner feedback on 0.6.0): the full Runner ID on its own line in the monospace block (on the Node page below **Tip hash** and **Node ID**), the ID itself linking to the runner's row on the monitor (first monitor if several). The copy button, the shortened form and the separate "View on monitor" link are gone. Same on the CSR monitor page. The Node page also redraws once the status arrives, so the ID shows on a direct page load.

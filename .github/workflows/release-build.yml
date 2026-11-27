@@ -1,0 +1,78 @@
+name: release-build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Check version against tag
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          v="$(sed -n 's/^version = "\(.*\)"/\1/p' runner/Cargo.toml | head -1)"
+          if [ "$v" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "runner/Cargo.toml version $v does not match tag $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+      - name: Build
+        run: cargo build --release -p csr --locked
+      - name: Package
+        run: |
+          v="$(sed -n 's/^version = "\(.*\)"/\1/p' runner/Cargo.toml | head -1)"
+          bash scripts/package.sh
+          install -m 0755 target/release/csr "dist/csr-${v}-x86_64-linux"
+          rm -f dist/SHA256SUMS
+          ls -l dist
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/csr-*-x86_64-linux
+            dist/csr-*-linux-x86_64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: csr-linux-x86_64-release
+          path: |
+            dist/csr-*-x86_64-linux
+            dist/csr-*-linux-x86_64.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Check version against tag
+        if: github.event_name != 'workflow_dispatch'
+        shell: bash
+        run: |
+          v="$(sed -n 's/^version = "\(.*\)"/\1/p' runner/Cargo.toml | head -1)"
+          if [ "$v" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "runner/Cargo.toml version $v does not match tag $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+      - name: Build
+        run: cargo build --release -p csr --locked
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/release/csr.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: csr-windows-x86_64-release
+          path: target/release/csr.exe
