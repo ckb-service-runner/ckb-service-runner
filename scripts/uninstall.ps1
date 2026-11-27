@@ -1,8 +1,10 @@
 <#
 CSR uninstaller for Windows (beta). Run it in PowerShell started as Administrator.
 
-It stops and unregisters the scheduled tasks CSR-testnet and CSR-mainnet, removes the firewall rules
-"CSR ping testnet" / "CSR ping mainnet", the Start menu folder CSR and %ProgramFiles%\csr.
+For each network (testnet, mainnet) it removes the read-only entry the installer added on the CKB node's P2P key
+file for NT SERVICE\CSR-<network> (nothing else in the node's folders is touched), stops and deletes the Windows
+service CSR-<network>, unregisters a scheduled task CSR-<network> left by an older install (0.5.x/0.6.x), and
+removes the firewall rule "CSR ping <network>". Then it removes the Start menu folder CSR and %ProgramFiles%\csr.
 Easiest: double-click uninstall.cmd (it asks for Administrator rights); uninstall.cmd -RemoveData from a
 command prompt also deletes the data. The data root %ProgramData%\csr
 (configs, runner keys, wallet, logs) is kept unless -RemoveData is given; then you must type DELETE to confirm.
@@ -30,14 +32,49 @@ $Data = Join-Path $ProgData 'csr'
 $InstallDir = Join-Path $ProgFiles 'csr'
 $Exe = Join-Path $InstallDir 'csr.exe'
 
+function Remove-KeyEntry([string]$Net) {
+    # Takes back the one read entry the installer added on the node's key file. The account's SID only
+    # resolves while the service exists, so this runs before the service is deleted.
+    $cfg = Join-Path $Data "csr-$Net.toml"
+    if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return }
+    $key = $null
+    $cur = ''
+    foreach ($line in (Get-Content -LiteralPath $cfg)) {
+        if ($line -match '^\s*\[([^\]]+)\]') { $cur = $Matches[1]; continue }
+        if ($cur -eq 'node' -and $line -match '^\s*p2p_key_file\s*=\s*"([^"]*)"') { $key = $Matches[1].Replace('\\', '\'); break }
+    }
+    if (-not $key -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { return }
+    try {
+        $sid = (New-Object Security.Principal.NTAccount("NT SERVICE\CSR-$Net")).Translate([Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        Write-Host "  could not resolve NT SERVICE\CSR-$Net; the key file $key was left as it is"
+        return
+    }
+    $null = & icacls.exe $key /remove "*$sid"
+    if ($LASTEXITCODE -eq 0) { Write-Host "  removed read access of NT SERVICE\CSR-$Net from $key" }
+    else { Write-Host "  could not remove the entry of NT SERVICE\CSR-$Net from $key" }
+}
+
+function Remove-Service([string]$Name) {
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $svc) { Write-Host "  service $Name not found"; return }
+    if ($svc.Status -ne 'Stopped') {
+        Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
+        try { $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) } catch { }
+    }
+    $null = & sc.exe delete $Name
+    if ($LASTEXITCODE -eq 0) { Write-Host "  removed service $Name" }
+    else { Write-Host "  could not delete service $Name (exit code $LASTEXITCODE)" }
+}
+
 foreach ($net in @('testnet', 'mainnet')) {
     $name = "CSR-$net"
+    Remove-KeyEntry $net
+    Remove-Service $name
     if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
         Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $name -Confirm:$false
-        Write-Host "  removed task $name"
-    } else {
-        Write-Host "  task $name not found"
+        Write-Host "  removed old scheduled task $name"
     }
     $rule = Get-NetFirewallRule -DisplayName "CSR ping $net" -ErrorAction SilentlyContinue
     if ($rule) {

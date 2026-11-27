@@ -42,7 +42,7 @@ test('installer: strict mode, admin check, beta header', () => {
 test('installer: required functions and parameters', () => {
   const t = read('scripts', 'install.ps1');
   for (const f of ['Get-ChainNetwork', 'Get-InstancePorts', 'Invoke-NodeRpc', 'Get-RpcUrlFromCkbToml',
-    'Find-NodeKeys', 'Find-Nodes', 'Write-InstanceConfig', 'Set-PeerUrl', 'Register-CsrTask', 'Show-Summary']) {
+    'Find-NodeKeys', 'Find-Nodes', 'Write-InstanceConfig', 'Set-PeerUrl', 'Register-CsrService', 'Show-Summary']) {
     assert.match(t, new RegExp(`function\\s+${f}\\b`, 'i'), f);
   }
   for (const p of ['Rpc', 'CkbDir', 'NoRanking', 'Source']) assert.match(t, new RegExp(`\\$${p}\\b`), p);
@@ -70,14 +70,13 @@ test('installer: data root, binary location, Neuron hints', () => {
   assert.match(t, /"Net"|'Net'|\bNet\b module/);
 });
 
-test('installer: scheduled task per network as SYSTEM, at startup, restarts', () => {
+test('installer: one service per network under a virtual account', () => {
   const t = read('scripts', 'install.ps1');
-  assert.match(t, /Register-ScheduledTask/);
-  assert.match(t, /CSR-/);
-  assert.match(t, /-AtStartup/);
-  assert.match(t, /SYSTEM/);
-  assert.match(t, /RestartCount/);
-  assert.match(t, /ExecutionTimeLimit/);
+  assert.match(t, /sc\.exe/);
+  assert.match(t, /NT SERVICE\\CSR-/);
+  assert.match(t, /windows-service/);
+  assert.match(t, /delayed-auto/);
+  assert.match(t, /failureflag/);
 });
 
 test('installer: firewall opens only the ping port', () => {
