@@ -457,9 +457,7 @@ function Install-Files {
         Remove-LegacyTask $net
     }
     # a running csr.exe would keep the file locked
-    Get-Process -Name csr -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and ($_.Path -eq $Exe) } |
-        ForEach-Object { $_.Kill(); [void]$_.WaitForExit(10000) }
+    Stop-RunningCsr
     $old = ''
     if (Test-Path -LiteralPath $Exe) {
         $o = Invoke-Csr 'testnet' @('version')
@@ -586,6 +584,27 @@ function Remove-LegacyTask([string]$Net) {
     Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $name -Confirm:$false
     Write-Ok "removed the old scheduled task $name (the service takes over; data and keys are kept)"
+}
+
+function Stop-RunningCsr {
+    # Ends a csr.exe of the install folder that still runs (a task or service that has not finished stopping).
+    # Waits up to 30 seconds. Stop-Process, then taskkill (it enables the debug privilege, which a process of
+    # another account such as SYSTEM or a service account needs). Never ends with a raw stack trace.
+    $deadline = (Get-Date).AddSeconds(30)
+    $tries = 0
+    while ($true) {
+        $procs = @(Get-Process -Name csr -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -eq $Exe) })
+        if ($procs.Count -eq 0) { return }
+        if ((Get-Date) -gt $deadline) {
+            Stop-Install "csr.exe is still running and cannot be stopped (process id $($procs[0].Id)). Stop the CSR service in services.msc or restart the PC, then run the installer again."
+        }
+        foreach ($p in $procs) {
+            try { Stop-Process -Id $p.Id -Force -ErrorAction Stop }
+            catch { $null = & taskkill.exe /F /PID $p.Id 2>&1 }
+        }
+        $tries++
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 function Stop-CsrService([string]$Net) {

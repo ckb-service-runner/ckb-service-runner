@@ -143,3 +143,11 @@ test('docs describe the service, not the SYSTEM task', () => {
   assert.doesNotMatch(d, /as SYSTEM/);
   assert.doesNotMatch(d, /Get-ScheduledTask CSR-/);
 });
+
+test('a running csr.exe is stopped robustly (issue 32: "Access is denied" from Process.Kill)', () => {
+  for (const [name, src] of [['install.ps1', inst], ['uninstall.ps1', un]]) {
+    assert.doesNotMatch(src, /\.Kill\(\)/, `${name} must not call Process.Kill()`);
+    assert.match(src, /Stop-RunningCsr/, name);
+    assert.match(src, /taskkill/i, name);
+  }
+});
