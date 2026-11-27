@@ -357,7 +357,11 @@ function Get-TomlValue([string]$Path, [string]$Section, [string]$Key) {
     $cur = ''
     foreach ($line in (Read-Lines $Path)) {
         if ($line -match '^\s*\[([^\]]+)\]') { $cur = $Matches[1]; continue }
-        if ($cur -eq $Section -and $line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*"([^"]*)"')) { return $Matches[1] }
+        # The runner rewrites the file with single-quoted (literal) strings; the installer writes double-quoted ones.
+        if ($cur -eq $Section -and $line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*(?:"([^"]*)"|''([^'']*)'')')) {
+            if ($null -ne $Matches[1] -and $Matches[1] -ne '') { return $Matches[1] }
+            return $Matches[2]
+        }
     }
     return $null
 }
