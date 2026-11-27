@@ -4,7 +4,7 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 
 ## Current phase: Phase 2 – Service Runtime on testnet (A8b polish done)
 
-## Runner release 0.7: security hardening (in progress)
+## Runner release 0.7.0: security hardening (merged 27 Nov 2026, release pending)
 
 Community feedback (Telegram, Nov 2026) on the Windows beta: it runs as SYSTEM, reads the node's P2P identity key
 and is not code-signed. On Linux CSR already runs as its own `csr` user with systemd sandboxing; 0.7 brings Windows

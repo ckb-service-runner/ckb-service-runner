@@ -1,7 +1,7 @@
 # Changelog
 
-## Unreleased
-- **Security hardening (0.7, part 1)**:
+## 0.7.0
+- **Security hardening**:
   - Windows: CSR runs as a native Windows service per network (`CSR-<network>`) under the virtual service account `NT SERVICE\CSR-<network>`, no longer as SYSTEM. Existing scheduled-task installs are migrated; data and keys are kept.
   - Windows: the data root `%ProgramData%\csr` no longer grants SYSTEM; the node's P2P key file gets one read-only ACE for the service account, which the uninstaller removes again.
   - Windows: the installer searches for node key files only in known places (`-CkbDir`, running `ckb.exe` folders, `%APPDATA%\Neuron`); the wide search needs `-SearchWide` and a yes; every key candidate is printed.
