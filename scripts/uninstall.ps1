@@ -41,7 +41,7 @@ function Remove-KeyEntry([string]$Net) {
     $cur = ''
     foreach ($line in (Get-Content -LiteralPath $cfg)) {
         if ($line -match '^\s*\[([^\]]+)\]') { $cur = $Matches[1]; continue }
-        if ($cur -eq 'node' -and $line -match '^\s*p2p_key_file\s*=\s*(?:"([^"]*)"|''([^'']*)'')') { $key = (($Matches[1], $Matches[2]) | Where-Object { $_ })[0].Replace('\\', '\'); break }
+        if ($cur -eq 'node' -and $line -match '^\s*p2p_key_file\s*=\s*(?:"([^"]*)"|''([^'']*)'')') { $v = $Matches[1]; if (-not $v) { $v = $Matches[2] }; $key = $v.Replace('\\', '\'); break }
     }
     if (-not $key -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { return }
     try {

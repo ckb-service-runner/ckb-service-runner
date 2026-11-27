@@ -151,3 +151,9 @@ test('a running csr.exe is stopped robustly (issue 32: "Access is denied" from P
     assert.match(src, /taskkill/i, name);
   }
 });
+
+test('no [0] on a piped single value (a string would be indexed by character)', () => {
+  for (const [name, src] of [['install.ps1', inst], ['uninstall.ps1', un]]) {
+    assert.doesNotMatch(src, /Where-Object\s*\{[^}]*\}\s*\)\s*\[0\]/, name);
+  }
+});
