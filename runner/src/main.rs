@@ -26,6 +26,7 @@ mod storage;
 mod update;
 mod wallet;
 mod web;
+mod winservice;
 
 /// Scratch directory for unit tests (`/tmp` may be read-only).
 #[cfg(test)]
@@ -142,6 +143,9 @@ enum Command {
         #[arg(long)]
         confirm_mainnet: bool,
     },
+    /// Entry point for the Windows service manager (not for console use)
+    #[command(hide = true)]
+    WindowsService,
 }
 
 #[derive(Subcommand)]
@@ -699,6 +703,13 @@ fn main() -> ExitCode {
             } else {
                 ExitCode::from(2)
             }
+        }
+        Command::WindowsService => {
+            let path = cli
+                .config
+                .clone()
+                .unwrap_or_else(|| data_root(&cli).join("csr.toml"));
+            winservice::run(load_config(&cli), path, data_root(&cli))
         }
         Command::Run { confirm_mainnet } => {
             let cfg = match load_config(&cli) {
