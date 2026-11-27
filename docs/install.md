@@ -157,8 +157,8 @@ Set the path in `csr.toml`:
 p2p_key_file = "/var/lib/ckb/data/network/secret_key"
 ```
 
-The runner only **reads** the file, at start: it never writes it, never changes its mode or owner, keeps the
-key in memory only and never shows it in a log, the dashboard or an API answer. It refuses a file readable
+The runner only **reads** the file: it never writes it, never changes its mode or owner, reads the
+key only while signing a proof (then erases it, keeping just the peer ID) and never shows it in a log, the dashboard or an API answer. It refuses a file readable
 by every user ("other"), and it refuses to send a proof if the key does not derive the node ID the node
 reports (wrong file); both show on the Node page and in `csr check`. Without `p2p_key_file` everything works
 as before, but the monitors will not rank the node once they require the proof.

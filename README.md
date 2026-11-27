@@ -31,7 +31,7 @@ port 8130, mainnet on 8140. Prerequisites, options and the manual steps: **[quic
 
 A Windows x86_64 beta runs beside `ckb.exe` (or Neuron's internal mainnet full node): download the zip, unzip it
 and double-click `install.cmd`. It finds the node (Neuron included), sets everything up and opens the dashboard.
-Unsigned, no auto-update. See **[docs/windows.md](docs/windows.md)**.
+The service runs under its own limited account (`NT SERVICE\CSR-<network>`), not as SYSTEM. Unsigned, no auto-update. See **[docs/windows.md](docs/windows.md)**.
 
 ## What works today
 
@@ -203,6 +203,7 @@ stake. Testers on testnet can ask the project for the 10,000 testnet CKB stake.
 | [`docs/install.md`](docs/install.md) | full installation guide: updates, rollback, remote access, uninstall |
 | [`docs/architecture.md`](docs/architecture.md) | how the runner is built |
 | [`docs/roadmap.md`](docs/roadmap.md), [`docs/open-questions.md`](docs/open-questions.md) | what is done and what is open |
+| [`docs/security-model.md`](docs/security-model.md) | what CSR reads, sends and which privileges it has |
 | [`docs/decisions.md`](docs/decisions.md) | design decisions and their reasons |
 | [`docs/testing.md`](docs/testing.md), [`docs/release.md`](docs/release.md) | devnet tests, making a release (developers) |
 | [`docs/publishing-a-service.md`](docs/publishing-a-service.md) | for app developers: publish a service and its manifest |

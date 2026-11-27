@@ -163,6 +163,8 @@ pub async fn identity_loop(state: Arc<AppState>, mut stop: watch::Receiver<bool>
     // When the next proof is due (`None` = now) and whether the node answered at the last tick.
     let mut next: Option<std::time::Instant> = None;
     let mut node_seen = true;
+    // The last signing error logged, so that it is logged once per change.
+    let mut sign_error: Option<String> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {},
@@ -192,19 +194,32 @@ pub async fn identity_loop(state: Arc<AppState>, mut stop: watch::Receiver<bool>
             let c = state.config.read().unwrap();
             (c.ranking.join, c.network.clone())
         };
-        let Some(key) = state.p2p_key.proven(node_id.as_deref()) else {
+        if state.p2p_key.status(node_id.as_deref()).state != "proven" {
+            sign_error = None;
             continue;
-        };
+        }
         if !join || next.is_some_and(|t| std::time::Instant::now() < t) {
             continue;
         }
-        let proof = crate::identity::identity_proof(
-            key,
+        let proof = match state.p2p_key.sign_identity_proof(
+            node_id.as_deref(),
             &state.service_key,
             &state.service_pubkey,
             &network,
             crate::run::now(),
-        );
+        ) {
+            Ok(p) => {
+                sign_error = None;
+                p
+            }
+            Err(e) => {
+                if sign_error.as_deref() != Some(e.as_str()) {
+                    tracing::warn!("node identity proof not signed: {e}");
+                    sign_error = Some(e);
+                }
+                continue;
+            }
+        };
         // Every configured monitor with a usable key gets the proof (decision D19 A).
         let monitors: Vec<String> = state
             .config

@@ -4,8 +4,8 @@ no code signing, no auto-update.
 
 It finds the CKB full nodes on this PC (ckb.exe, or Neuron's internal MAINNET full node) and installs one CSR
 instance per network, like scripts/install.sh does on Linux:
-  testnet -> task CSR-testnet, %ProgramData%\csr\csr-testnet.toml, dashboard 8130, ping 8131
-  mainnet -> task CSR-mainnet, %ProgramData%\csr\csr-mainnet.toml, dashboard 8140, ping 8141
+  testnet -> service CSR-testnet, %ProgramData%\csr\csr-testnet.toml, dashboard 8130, ping 8131
+  mainnet -> service CSR-mainnet, %ProgramData%\csr\csr-mainnet.toml, dashboard 8140, ping 8141
 On mainnet CSR is a node dashboard only: the Service Runtime stays off until Phase 2.
 Neuron's testnet mode is a light client and is not supported.
 
@@ -13,22 +13,29 @@ Easiest: double-click install.cmd in the unpacked zip (it asks for Administrator
 Or run it from the unpacked zip, in PowerShell started as Administrator:
   powershell -ExecutionPolicy Bypass -File .\install.ps1
 
-Node folders are found automatically: from the running ckb.exe (its -C folder, which is also where Neuron keeps
-its internal node, wherever the user put it), from -CkbDir, the user profile and %APPDATA%\Neuron. Neuron's
-light-client folders (chains\light\...) are never used.
+Node key files are looked for only in known places: -CkbDir, the folders of the running ckb.exe processes (their
+-C folder, which is also where Neuron keeps its internal node) and %APPDATA%\Neuron. Every key file the installer is
+about to read is printed as "key candidate: <path>". Neuron's light-client folders (chains\light\...) are never
+used. With -SearchWide (and only after you answer yes to a question) the user profile and LocalAppData are
+searched as well.
 
 What it does: copies csr.exe to %ProgramFiles%\csr, creates the data root %ProgramData%\csr, writes
 csr-<network>.toml per node (only if it does not exist yet), links the node identity (the node's own
-secret_key), adds a firewall rule for the ping port only, registers a scheduled task per network (at startup,
-as SYSTEM, restarts on failure) and starts it, and asks for a dashboard password. It never changes ckb.toml or
-the CKB node's data.
+secret_key), registers one Windows service per network (CSR-<network>, delayed automatic start, restarts on
+failure) that runs under the virtual account NT SERVICE\CSR-<network> (no password, not SYSTEM), restricts the
+data root to Administrators and those accounts, gives each service account read-only access to exactly one file,
+the node's P2P key, starts the services, and asks for a dashboard password. A firewall rule for the ping port is
+added only when ranking.ping_mode is inbound or both (the default, outbound, opens no port). An older install with
+a scheduled task running as SYSTEM (0.5.x/0.6.x) is migrated: the task is removed and the service takes over.
+It never changes ckb.toml or the CKB node's data.
 
-Updating: run the installer of the new zip again. It stops the tasks, replaces csr.exe, keeps configs, keys and
-data, and starts the tasks again.
+Updating: run the installer of the new zip again. It stops the services, replaces csr.exe, keeps configs, keys and
+data, and starts the services again.
 
 Parameters:
   -Rpc <url[]>      node RPC URL(s) (loopback http only); may list a testnet and a mainnet node
   -CkbDir <dir[]>   folder(s) that contain a ckb.toml
+  -SearchWide       also search the user profile and LocalAppData for node folders (asks first)
   -NoRanking        write [ranking] join = false
   -Source <dir>     the unpacked zip (default: the folder of this script)
   -NoBrowser        do not open the dashboard in the browser at the end
@@ -37,6 +44,7 @@ Parameters:
 param(
     [string[]]$Rpc = @(),
     [string[]]$CkbDir = @(),
+    [switch]$SearchWide,
     [switch]$NoRanking,
     [string]$Source = '',
     [switch]$NoBrowser
@@ -66,6 +74,7 @@ $Exe = Join-Path $InstallDir 'csr.exe'
 $Example = Join-Path $InstallDir 'csr.example.toml'
 $script:RunningNodeDirs = @()
 $script:LightClients = @()
+$script:WideAnswer = $null
 
 # ---------------------------------------------------------------- output helpers
 function Write-Step([string]$Text) { Write-Host ''; Write-Host "==> $Text" -ForegroundColor Cyan }
@@ -162,17 +171,10 @@ function Get-RunningNodeDirs {
     return @($dirs | Select-Object -Unique)
 }
 
-function Find-NodeKeys {
-    # Candidate P2P key files: <dir>\data\network\secret_key under -CkbDir, the running ckb.exe folders, the
-    # user profile, Neuron and LocalAppData. Neuron's light-client keys (chains\light\...) are skipped.
-    $roots = @()
-    $roots += $CkbDir
-    $roots += $script:RunningNodeDirs
-    foreach ($v in @($env:USERPROFILE, (Join-Path $env:APPDATA 'Neuron'), $env:LOCALAPPDATA)) {
-        if ($v) { $roots += $v }
-    }
+function Search-KeyRoots([string[]]$Roots) {
+    # <root>\data\network\secret_key directly or up to 6 levels below each root; light-client keys are skipped.
     $found = @()
-    foreach ($r in $roots) {
+    foreach ($r in $Roots) {
         if (-not $r -or -not (Test-Path -LiteralPath $r)) { continue }
         $direct = Join-Path $r 'data\network\secret_key'
         if ((Test-Path -LiteralPath $direct -PathType Leaf) -and -not (Test-LightClientPath $direct)) { $found += $direct }
@@ -183,6 +185,39 @@ function Find-NodeKeys {
         }
     }
     return @($found | Select-Object -Unique)
+}
+
+function Find-NodeKeys {
+    # Candidate P2P key files in known places only: -CkbDir, the running ckb.exe folders and Neuron's folder.
+    $roots = @()
+    $roots += $CkbDir
+    $roots += $script:RunningNodeDirs
+    if ($env:APPDATA) { $roots += (Join-Path $env:APPDATA 'Neuron') }
+    $found = @(Search-KeyRoots $roots)
+    if ($found.Count -eq 0 -and (Test-SearchWideAllowed)) { $found = @(Find-NodeKeysWide) }
+    return $found
+}
+
+function Test-SearchWideAllowed {
+    # The wider search needs -SearchWide AND a yes from the operator (asked once).
+    if (-not $SearchWide) { return $false }
+    if ($null -eq $script:WideAnswer) {
+        $script:WideAnswer = $false
+        if ([Environment]::UserInteractive) {
+            $a = Read-Host -Prompt 'Search your user profile and LocalAppData for CKB node folders? (y/N)'
+            if ($a -match '^\s*(y|yes)\s*$') { $script:WideAnswer = $true }
+        }
+    }
+    return $script:WideAnswer
+}
+
+function Find-NodeKeysWide {
+    # The old, wider places: the user profile and LocalAppData (only reached through Test-SearchWideAllowed).
+    $roots = @()
+    foreach ($v in @($env:USERPROFILE, $env:LOCALAPPDATA)) {
+        if ($v) { $roots += $v }
+    }
+    return @(Search-KeyRoots $roots)
 }
 
 function Get-KeyNodeDir([string]$Key) {
@@ -322,7 +357,11 @@ function Get-TomlValue([string]$Path, [string]$Section, [string]$Key) {
     $cur = ''
     foreach ($line in (Read-Lines $Path)) {
         if ($line -match '^\s*\[([^\]]+)\]') { $cur = $Matches[1]; continue }
-        if ($cur -eq $Section -and $line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*"([^"]*)"')) { return $Matches[1] }
+        # The runner rewrites the file with single-quoted (literal) strings; the installer writes double-quoted ones.
+        if ($cur -eq $Section -and $line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*(?:"([^"]*)"|''([^'']*)'')')) {
+            if ($null -ne $Matches[1] -and $Matches[1] -ne '') { return $Matches[1] }
+            return $Matches[2]
+        }
     }
     return $null
 }
@@ -414,15 +453,11 @@ function Install-Files {
         Stop-Install "the folder 'networks' is missing in $Source (unpack the whole zip)."
     }
     foreach ($net in @('testnet', 'mainnet')) {
-        $t = Get-ScheduledTask -TaskName "CSR-$net" -ErrorAction SilentlyContinue
-        if ($t) {
-            Stop-ScheduledTask -TaskName "CSR-$net" -ErrorAction SilentlyContinue
-        }
+        Stop-CsrService $net
+        Remove-LegacyTask $net
     }
     # a running csr.exe would keep the file locked
-    Get-Process -Name csr -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and ($_.Path -eq $Exe) } |
-        ForEach-Object { $_.Kill(); [void]$_.WaitForExit(10000) }
+    Stop-RunningCsr
     $old = ''
     if (Test-Path -LiteralPath $Exe) {
         $o = Invoke-Csr 'testnet' @('version')
@@ -442,6 +477,7 @@ function Install-Files {
     New-Item -ItemType Directory -Force -Path $netDest | Out-Null
     Copy-Item -Path (Join-Path (Join-Path $Source 'networks') '*') -Destination $netDest -Recurse -Force
     New-Item -ItemType Directory -Force -Path $Data | Out-Null
+    $null = & icacls.exe $Data /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' 2>&1
     $v = (& $Exe version 2>&1 | Out-String).Trim()
     $was = ''
     if ($old) { $was = " (was: $old)" }
@@ -449,11 +485,31 @@ function Install-Files {
     Write-Ok "data root: $Data"
 }
 
-function Restrict-DataRoot {
-    # Only SYSTEM and Administrators may read the data root (runner keys, wallet, password hash).
-    $null = & icacls.exe $Data /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' 2>&1
-    if ($LASTEXITCODE -eq 0) { Write-Ok 'data root readable only by SYSTEM and Administrators' }
-    else { Write-Warn "could not restrict the permissions of $Data" }
+function Restrict-DataRoot([string[]]$Nets) {
+    # Administrators and each CSR service account only (runner keys, wallet, password hash). SYSTEM gets nothing.
+    $grants = @('*S-1-5-32-544:(OI)(CI)F')
+    foreach ($n in $Nets) { $grants += "NT SERVICE\CSR-${n}:(OI)(CI)F" }
+    $null = & icacls.exe $Data /inheritance:r /grant:r @grants 2>&1
+    if ($LASTEXITCODE -ne 0) { Write-Warn "could not restrict the permissions of $Data"; return }
+    # existing files take the new ACL from the folder; an old SYSTEM entry is removed everywhere
+    if (Get-ChildItem -LiteralPath $Data -Force -ErrorAction SilentlyContinue) {
+        $null = & icacls.exe "$Data\*" /reset /T /C 2>&1
+    }
+    $null = & icacls.exe $Data /remove:g '*S-1-5-18' /T /C 2>&1
+    Write-Ok "data root readable only by Administrators and the CSR service accounts ($($Nets -join ', '))"
+}
+
+function Get-NodeKeyPath([string]$Net) {
+    $k = Get-TomlValue (Get-ConfigPath $Net) 'node' 'p2p_key_file'
+    if (-not $k) { return $null }
+    return $k.Replace('\\', '\')
+}
+
+function Grant-NodeKeyRead([string]$Net, [string]$Key) {
+    # One read-only entry on the node's key file for this network's service account; nothing else is changed.
+    $null = & icacls.exe $Key /grant "NT SERVICE\CSR-${Net}:(R)" 2>&1
+    if ($LASTEXITCODE -eq 0) { Write-Ok "node key: read access for NT SERVICE\CSR-$Net on $Key" }
+    else { Write-Warn "could not give NT SERVICE\CSR-$Net read access to $Key; the node identity cannot be proven" }
 }
 
 # ---------------------------------------------------------------- identity
@@ -485,9 +541,11 @@ function Set-Identity([string]$Net, [string]$Url) {
     }
     if ($cands.Count -eq 0) {
         Write-Warn "no CKB P2P key found. Set node.p2p_key_file in $(Get-ConfigPath $Net) to <ckb data dir>\network\secret_key"
+        if (-not $SearchWide) { Write-Warn 'or run this script again with -CkbDir <node folder>, or with -SearchWide' }
         return
     }
     foreach ($k in $cands) {
+        Write-Ok "key candidate: $k"
         if (-not (Test-Path -LiteralPath $k -PathType Leaf)) { Write-Warn "$k : not a file"; continue }
         Set-NodeKey $Net $k
         $state = Get-IdentityState $Net
@@ -505,32 +563,110 @@ function Set-Identity([string]$Net, [string]$Url) {
     Write-Warn 'node identity not proven; the node is not ranked. Fix later: see docs/windows.md'
 }
 
-# ---------------------------------------------------------------- firewall, task
+# ---------------------------------------------------------------- firewall, service
 function Set-PingFirewallRule([string]$Net) {
     $ping = (Get-InstancePorts $Net)[1]
     $name = "CSR ping $Net"
+    $mode = Get-TomlValue (Get-ConfigPath $Net) 'ranking' 'ping_mode'
+    if (-not $mode) { $mode = 'inbound' }   # the runner's own default when the key is missing
     Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-    New-NetFirewallRule -DisplayName $name -Direction Inbound -Action Allow -Protocol TCP -LocalPort $ping -Profile Private,Domain | Out-Null
-    Write-Ok "firewall: inbound TCP $ping allowed (Private, Domain) as '$name'; the dashboard port stays closed"
+    if ($mode -eq 'inbound' -or $mode -eq 'both') {
+        New-NetFirewallRule -DisplayName $name -Direction Inbound -Action Allow -Protocol TCP -LocalPort $ping -Profile Private,Domain | Out-Null
+        Write-Ok "firewall: inbound TCP $ping allowed (Private, Domain) as '$name'; the dashboard port stays closed"
+    } else {
+        Write-Ok 'firewall: no inbound rule (ping_mode = outbound)'
+    }
 }
 
-function Register-CsrTask([string]$Net) {
+function Remove-LegacyTask([string]$Net) {
+    # Installs of 0.5.x and 0.6.x ran CSR as a scheduled task under SYSTEM; the service replaces it.
     $name = "CSR-$Net"
-    $cfg = Get-ConfigPath $Net
-    $argLine = '--data-root "' + $Data + '" --config "' + $cfg + '" run'
-    $action = New-ScheduledTaskAction -Execute $Exe -Argument $argLine
-    $trigger = New-ScheduledTaskTrigger -AtStartup
-    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-    $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
-        -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-        Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $name -Confirm:$false
+    if (-not (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue)) { return }
+    Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $name -Confirm:$false
+    Write-Ok "removed the old scheduled task $name (the service takes over; data and keys are kept)"
+}
+
+function Stop-RunningCsr {
+    # Ends a csr.exe of the install folder that still runs (a task or service that has not finished stopping).
+    # Waits up to 30 seconds. Stop-Process, then taskkill (it enables the debug privilege, which a process of
+    # another account such as SYSTEM or a service account needs). Never ends with a raw stack trace.
+    $deadline = (Get-Date).AddSeconds(30)
+    $tries = 0
+    while ($true) {
+        $procs = @(Get-Process -Name csr -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -eq $Exe) })
+        if ($procs.Count -eq 0) { return }
+        if ((Get-Date) -gt $deadline) {
+            Stop-Install "csr.exe is still running and cannot be stopped (process id $($procs[0].Id)). Stop the CSR service in services.msc or restart the PC, then run the installer again."
+        }
+        foreach ($p in $procs) {
+            try { Stop-Process -Id $p.Id -Force -ErrorAction Stop }
+            catch { $null = & taskkill.exe /F /PID $p.Id 2>&1 }
+        }
+        $tries++
+        Start-Sleep -Milliseconds 500
     }
-    Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
-        -Description 'CSR (CKB Service Runner), Windows beta' | Out-Null
-    Start-ScheduledTask -TaskName $name
-    Write-Ok "task $name registered (at startup, as SYSTEM) and started"
+}
+
+function Stop-CsrService([string]$Net) {
+    $svc = Get-Service -Name "CSR-$Net" -ErrorAction SilentlyContinue
+    if (-not $svc) { return }
+    if ($svc.Status -ne 'Stopped') {
+        Stop-Service -Name "CSR-$Net" -Force -ErrorAction SilentlyContinue
+        try { $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) } catch { Write-Warn "CSR-$Net did not stop within 30 seconds" }
+    }
+}
+
+function Invoke-Sc([string[]]$ScArgs) {
+    # sc.exe prints its own messages; a non-zero exit code stops the install.
+    $null = & sc.exe @ScArgs
+    if ($LASTEXITCODE -ne 0) { Stop-Install "sc.exe $($ScArgs -join ' ') failed (exit code $LASTEXITCODE)" }
+}
+
+function Remove-CsrService([string]$Net) {
+    $name = "CSR-$Net"
+    if (-not (Get-Service -Name $name -ErrorAction SilentlyContinue)) { return }
+    Stop-CsrService $Net
+    $null = & sc.exe delete $name
+    for ($i = 0; $i -lt 30; $i++) {
+        if (-not (Get-Service -Name $name -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Seconds 1
+    }
+    Stop-Install "the old service $name could not be deleted within 30 seconds (close services.msc and try again)"
+}
+
+function Register-CsrService([string]$Net) {
+    # Windows service CSR-<net> under the virtual account NT SERVICE\CSR-<net>, created stopped.
+    # sc.exe wants "name= value": the space after "=" is a separate argument, so each is its own array element.
+    $name = "CSR-$Net"
+    $acct = "NT SERVICE\CSR-$Net"
+    $cfg = Get-ConfigPath $Net
+    $bin = '\"' + $Exe + '\" --data-root \"' + $Data + '\" --config \"' + $cfg + '\" windows-service'
+    Remove-CsrService $Net
+    Invoke-Sc @('create', $name, 'binPath=', $bin, 'obj=', $acct, 'start=', 'delayed-auto', 'DisplayName=', "CSR (CKB Service Runner) $Net")
+    Invoke-Sc @('description', $name, "CSR (CKB Service Runner), $Net instance, Windows beta")
+    Invoke-Sc @('failure', $name, 'reset=', '86400', 'actions=', 'restart/60000/restart/60000/restart/60000')
+    Invoke-Sc @('failureflag', $name, '1')
+    Invoke-Sc @('privs', $name, 'SeChangeNotifyPrivilege')
+    Write-Ok "service $name registered (account $acct, delayed automatic start, restarts on failure), not started yet"
+}
+
+function Start-CsrService([string]$Net) {
+    $name = "CSR-$Net"
+    try {
+        Start-Service -Name $name
+        (Get-Service -Name $name).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        Write-Ok "service $name is running"
+        return
+    } catch {
+        Write-Warn "service $name did not reach Running: $($_.Exception.Message)"
+    }
+    $log = Join-Path (Join-Path (Join-Path $Data $Net) 'logs') 'csr.log'
+    if (Test-Path -LiteralPath $log) {
+        Write-Host "  last lines of ${log}:"
+        Get-Content -LiteralPath $log -Tail 15 | ForEach-Object { Write-Host "    $_" }
+    }
+    Write-Host "  Check it with: Get-Service $name   (or services.msc)"
 }
 
 function Set-DashboardPassword([string]$Net) {
@@ -548,15 +684,9 @@ function Set-DashboardPassword([string]$Net) {
     $plain = $null
     if ($r.Code -eq 0) {
         Write-Ok 'password set'
-        Restart-ScheduledTaskSafe "CSR-$Net"
     } else {
         Write-Warn "password not set: $($r.Output)"
     }
-}
-
-function Restart-ScheduledTaskSafe([string]$Name) {
-    Stop-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
-    Start-ScheduledTask -TaskName $Name
 }
 
 # ---------------------------------------------------------------- shortcuts and browser
@@ -592,7 +722,7 @@ function Show-Summary($Nodes) {
         Write-Host ''
         Write-Host "  $net" -ForegroundColor Cyan
         Write-Host "  Dashboard   http://127.0.0.1:$(Get-DashboardPort $net)  (on this PC)"
-        Write-Host "  Task        CSR-$net (Task Scheduler; starts with Windows)"
+        Write-Host "  Service     CSR-$net, account NT SERVICE\CSR-$net (Get-Service CSR-$net, or services.msc; starts with Windows)"
         Write-Host "  Identity    $id"
         Write-Host "  Logs        $(Join-Path (Join-Path $Data $net) 'logs')"
         Write-Host "  Config      $(Get-ConfigPath $net)"
@@ -635,7 +765,6 @@ function Install-Csr {
     foreach ($n in $nodes) { Test-NodeModules $n.Network $n.Url }
 
     Install-Files
-    Restrict-DataRoot
 
     foreach ($n in $nodes) {
         $net = $n.Network
@@ -659,12 +788,22 @@ function Install-Csr {
         Set-PeerUrl 'mainnet' 'http://127.0.0.1:8130'
         Write-Ok 'each dashboard links to the other'
     }
-    foreach ($n in $nodes) {
-        Write-Step "Starting CSR-$($n.Network)"
-        Register-CsrTask $n.Network
-    }
+    # the password step runs csr as the administrator; it must come before the services start
     foreach ($n in $nodes) { Set-DashboardPassword $n.Network }
-    foreach ($n in $nodes) { Set-DashboardShortcut $n.Network }
+    $nets = @($nodes | ForEach-Object { $_.Network })
+    Write-Step 'Registering the Windows services'
+    foreach ($net in $nets) { Register-CsrService $net }
+    Write-Step 'Setting permissions'
+    Restrict-DataRoot $nets
+    foreach ($net in $nets) {
+        $key = Get-NodeKeyPath $net
+        if ($key -and (Test-Path -LiteralPath $key -PathType Leaf)) { Grant-NodeKeyRead $net $key }
+    }
+    foreach ($net in $nets) { Set-DashboardShortcut $net }
+    foreach ($net in $nets) {
+        Write-Step "Starting CSR-$net"
+        Start-CsrService $net
+    }
     Start-Sleep -Seconds 3
     Show-Summary $nodes
     Open-Dashboards $nodes

@@ -28,6 +28,46 @@ GitHub release of `ckb-service-runner/ckb-service-runner`, checks the ed25519 si
 
 ## Steps
 
+### Recommended: build in CI (with build provenance)
+
+The `release-build` workflow builds the binaries on GitHub Actions from the tag and attaches a build
+provenance attestation to each. The attestation proves that the file was built from this repository at
+this tag by GitHub Actions. It does not replace the offline signature: the updater still checks only the
+ed25519 signature of `SHA256SUMS` made offline with the release key.
+
+1. Set the version in `runner/Cargo.toml` and update `CHANGELOG.md`; merge; push the tag `vX.Y.Z`.
+   `release-build` fails if the tag and the `Cargo.toml` version differ.
+2. Wait for `release-build` (Linux on ubuntu-22.04, Windows on windows-latest) and download the artifacts:
+
+   ```sh
+   gh run download <run-id> -n csr-linux-x86_64-release -n csr-windows-x86_64-release -D ci/
+   ```
+
+   (With several artifacts `gh` may put each in its own sub-folder of `ci/`; move the files into `ci/`.)
+3. Check every file:
+
+   ```sh
+   gh attestation verify ci/csr-0.9.0-x86_64-linux --repo ckb-service-runner/ckb-service-runner
+   gh attestation verify ci/csr-0.9.0-linux-x86_64.tar.gz --repo ckb-service-runner/ckb-service-runner
+   gh attestation verify ci/csr.exe --repo ckb-service-runner/ckb-service-runner
+   ```
+4. Package Windows with the CI-built `csr.exe`:
+
+   ```sh
+   scripts/package-windows.sh 0.9.0 ci/csr.exe
+   ```
+5. Collect the release files (no build happens; both Linux files must be in `ci/`, otherwise the script fails):
+
+   ```sh
+   scripts/release.sh 0.9.0 --ci-dir ci/
+   ```
+
+   It copies them to `dist/`, adds the Windows zip if present, writes `dist/SHA256SUMS` and prints the
+   offline signing command and the `gh attestation verify` commands.
+6. Sign `SHA256SUMS` offline, create the release and upload (steps 3 and 4 below).
+
+### Fallback: local build (no provenance)
+
 1. Set the version in `runner/Cargo.toml` (`X.Y.Z`; pre-release tags are never offered) and update
    `CHANGELOG.md`.
 2. Build on the release machine (Linux x86_64; repeat on aarch64 for that asset):

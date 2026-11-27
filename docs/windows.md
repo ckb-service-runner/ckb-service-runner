@@ -48,13 +48,37 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 Options: `-Rpc <url[]>` node RPC URL(s) (loopback http, e.g. a testnet and a mainnet node),
-`-CkbDir <dir[]>` folder(s) containing a `ckb.toml` (or the node's data folder), `-NoRanking` (do not join the
-ranking), `-NoBrowser` (do not open the dashboard at the end).
+`-CkbDir <dir[]>` folder(s) containing a `ckb.toml` (or the node's data folder), `-SearchWide` (see below),
+`-NoRanking` (do not join the ranking), `-NoBrowser` (do not open the dashboard at the end).
 Without options the installer looks for nodes itself: RPC `127.0.0.1:8114`, the folders of running `ckb.exe`
-processes (their `-C` argument, which covers Neuron), the user profile and `%APPDATA%\Neuron`. It copies `csr.exe` to `%ProgramFiles%\csr`, creates
-`%ProgramData%\csr` (restricted to SYSTEM and Administrators), writes `csr-<network>.toml`, registers one scheduled
-task per network (`CSR-testnet`, `CSR-mainnet`; at startup, as SYSTEM, restarts on failure) and asks for a
-dashboard password.
+processes (their `-C` argument, which covers Neuron) and `%APPDATA%\Neuron`. It copies `csr.exe` to
+`%ProgramFiles%\csr`, creates `%ProgramData%\csr`, writes `csr-<network>.toml`, registers one Windows service per
+network (`CSR-testnet`, `CSR-mainnet`; delayed automatic start, restarts on failure), sets the permissions below,
+starts the services and asks for a dashboard password.
+
+### Service account and permissions
+
+Each network runs as a Windows service under the virtual account `NT SERVICE\CSR-<network>`: no password, not
+SYSTEM, and only the `SeChangeNotifyPrivilege` privilege. Check or restart it with `Get-Service CSR-testnet`,
+`Restart-Service CSR-testnet`, or in `services.msc`.
+
+- The data root `%ProgramData%\csr` has no inherited permissions: full control for Administrators and for the
+  `NT SERVICE\CSR-<network>` accounts only. SYSTEM is not granted (an entry from an older install is removed).
+- The installer reads the node's P2P key file (`<node>\data\network\secret_key`) to prove the node identity. It
+  prints every file it is about to read as `key candidate: <path>`, and adds exactly **one** entry to the chosen key
+  file: read-only for that network's service account. The uninstaller removes that entry again. `ckb.toml` and the
+  rest of the node's folders are never changed. The runner does not keep the key in memory; it reads the file for
+  each identity proof.
+- Key files are looked for only in `-CkbDir`, the folders of running `ckb.exe` processes and `%APPDATA%\Neuron`.
+  With `-SearchWide` the installer asks "Search your user profile and LocalAppData for CKB node folders?" and, only
+  on yes, searches those places too. Without it, pass `-CkbDir <node folder>` if the key is not found.
+- The firewall rule `CSR ping <network>` (inbound TCP) is created only when `ranking.ping_mode` is `inbound` or
+  `both`. The default `outbound` mode opens no port, and the installer removes a rule left by an older install.
+
+### Updating from 0.5/0.6
+
+Releases 0.5.x and 0.6.x ran CSR as a scheduled task under SYSTEM. Run the new installer: it stops and removes the
+task `CSR-<network>`, registers the service instead, and keeps your configs, keys and data.
 
 ### SmartScreen and unsigned scripts
 
@@ -74,7 +98,7 @@ release public key.
 
 - Testnet: `http://127.0.0.1:8130` (ping port 8131). Mainnet: `http://127.0.0.1:8140` (ping port 8141).
 - Dashboards listen on this PC only. **Only the ping port** gets a Windows Firewall rule (inbound TCP, Private and
-  Domain profiles); the dashboard port is never opened.
+  Domain profiles), and only when `ranking.ping_mode` is `inbound` or `both`; the dashboard port is never opened.
 - On mainnet CSR is a node dashboard and ranking client; the Service Runtime stays locked, as on Linux.
 
 ## Sleep and NAT
@@ -85,20 +109,20 @@ loses availability in the ranking: set the power plan to never sleep for a stead
 
 ## Update
 
-Download the new zip and run its `install.cmd` (or `install.ps1`) again. It stops the tasks, replaces `csr.exe` and starts them
+Download the new zip and run its `install.cmd` (or `install.ps1`) again. It stops the services, replaces `csr.exe` and starts them
 again; configs, keys and data are kept. There is no auto-update; the dashboard only shows that a new version exists.
 
 ## Uninstall
 
 Double-click `C:\Program Files\csr\uninstall.cmd` (the installer keeps a copy there), or run
-`& "$env:ProgramFiles\csr\uninstall.ps1"` in an Administrator PowerShell. It removes the tasks, the firewall rules,
+`& "$env:ProgramFiles\csr\uninstall.ps1"` in an Administrator PowerShell. For each network it removes the read entry on the node's key file, stops and deletes the service, removes an old scheduled task and the firewall rule; then it removes
 the Start menu folder CSR and the program folder. From a command prompt, `uninstall.cmd -RemoveData` also deletes
 the data. Data in `%ProgramData%\csr` (configs, keys, wallet, logs) is kept unless you pass `-RemoveData` (you must then type DELETE).
 
 ## Logs
 
 `%ProgramData%\csr\<network>\logs\csr.log` (for example `C:\ProgramData\csr\testnet\logs\csr.log`), also shown in the
-dashboard. Task state: `Get-ScheduledTask CSR-testnet` (or `CSR-mainnet`).
+dashboard. Service state: `Get-Service CSR-testnet` (or `CSR-mainnet`), or `services.msc`.
 
 ## Porting notes
 
