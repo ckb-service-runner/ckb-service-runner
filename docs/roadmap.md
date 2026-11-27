@@ -30,7 +30,8 @@ Signed and verifiable releases
 Transparency
 - [x] `docs/security-model.md`: what CSR reads (node RPC, the node's P2P key file), what it never touches (wallet
       keystores, including Neuron's), what leaves the machine (signed proof, ping statistics; the monitor stores no
-      IP address), privileges per platform, known gaps. Linked from the README and the monitor site.
+      IP address), privileges per platform, known gaps. Linked from the README; the link on the monitor site follows
+      (monitor repo).
 - [x] `SECURITY.md` status updated: mainnet runs as a dashboard only; the Service Runtime stays off on mainnet.
 - [ ] Independent security audit scheduled as a milestone before the mainnet Service Runtime (see Phase 2), with a
       funding proposal (e.g. Community Fund DAO).

@@ -53,7 +53,7 @@ changing its owner.
 - **On Windows the node key is readable by the service account for as long as the installation lasts.**
 - The installer searches for key files only in `-CkbDir`, the folders of running `ckb.exe` processes and
   `%APPDATA%\Neuron`; a wider search needs `-SearchWide` and a yes. Each candidate is printed as `key candidate: <path>`.
-- Firewall: in `outbound` ping mode (the default) the runner binds no ping listener and no rule is created (an old
+- Firewall: in `outbound` ping mode (the installer writes it into new configurations; the runner's own default is `inbound`) the runner binds no ping listener and no rule is created (an old
   rule is removed). The inbound rule exists only when `ranking.ping_mode` is `inbound` or `both`.
 - The dashboard listens on `127.0.0.1` only and is never opened in the firewall.
 

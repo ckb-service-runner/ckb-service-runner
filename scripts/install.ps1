@@ -568,6 +568,7 @@ function Set-PingFirewallRule([string]$Net) {
     $ping = (Get-InstancePorts $Net)[1]
     $name = "CSR ping $Net"
     $mode = Get-TomlValue (Get-ConfigPath $Net) 'ranking' 'ping_mode'
+    if (-not $mode) { $mode = 'inbound' }   # the runner's own default when the key is missing
     Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     if ($mode -eq 'inbound' -or $mode -eq 'both') {
         New-NetFirewallRule -DisplayName $name -Direction Inbound -Action Allow -Protocol TCP -LocalPort $ping -Profile Private,Domain | Out-Null
