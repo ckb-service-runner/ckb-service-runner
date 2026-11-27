@@ -1,5 +1,5 @@
 //! Service and storage keys: generated on the first run per network, never printed or logged.
-//! The CKB node's P2P key (`node.p2p_key_file`): read only, kept in memory, used for the node-identity proof.
+//! The CKB node's P2P key (`node.p2p_key_file`): read only, and only while signing the node-identity proof (then erased).
 
 use blake2b_ref::Blake2bBuilder;
 use rand::RngCore;
@@ -313,11 +313,12 @@ pub fn load_p2p_key_file(path: &Path) -> Result<P2pKey, P2pKeyError> {
     key
 }
 
-/// The P2P key as configured: off (`node.p2p_key_file` empty), unreadable, or loaded (in memory only).
+/// The P2P key as configured: off (`node.p2p_key_file` empty), unreadable, or known by path and peer ID.
+/// No variant holds the key: the file is read again for each proof and the key is erased at once.
 pub enum ConfiguredP2pKey {
     Off,
     Unreadable(String),
-    Loaded(P2pKey),
+    Known { path: std::path::PathBuf, peer_id: String },
 }
 
 impl ConfiguredP2pKey {
@@ -325,8 +326,13 @@ impl ConfiguredP2pKey {
         if p2p_key_file.trim().is_empty() {
             return ConfiguredP2pKey::Off;
         }
-        match load_p2p_key_file(Path::new(p2p_key_file.trim())) {
-            Ok(k) => ConfiguredP2pKey::Loaded(k),
+        let path = Path::new(p2p_key_file.trim());
+        match load_p2p_key_file(path) {
+            Ok(k) => {
+                let peer_id = k.peer_id();
+                drop(k);
+                ConfiguredP2pKey::Known { path: path.to_path_buf(), peer_id }
+            }
             Err(e) => ConfiguredP2pKey::Unreadable(e.to_string()),
         }
     }
@@ -336,28 +342,46 @@ impl ConfiguredP2pKey {
         let (state, message) = match (self, node_id) {
             (ConfiguredP2pKey::Off, _) => ("off", None),
             (ConfiguredP2pKey::Unreadable(e), _) => ("unreadable", Some(e.clone())),
-            (ConfiguredP2pKey::Loaded(_), None) => {
+            (ConfiguredP2pKey::Known { .. }, None) => {
                 ("unknown", Some("the node does not report its node ID yet".to_string()))
             }
-            (ConfiguredP2pKey::Loaded(k), Some(id)) if k.peer_id() == id => ("proven", None),
-            (ConfiguredP2pKey::Loaded(k), Some(id)) => (
+            (ConfiguredP2pKey::Known { peer_id, .. }, Some(id)) if peer_id == id => ("proven", None),
+            (ConfiguredP2pKey::Known { peer_id, .. }, Some(id)) => (
                 "mismatch",
                 Some(format!(
-                    "node.p2p_key_file derives peer ID {}, but the node reports {id}: \
-                     wrong key file (another node?); no identity proof is sent",
-                    k.peer_id()
+                    "node.p2p_key_file derives peer ID {peer_id}, but the node reports {id}: \
+                     wrong key file (another node?); no identity proof is sent"
                 )),
             ),
         };
         IdentityStatus { state, message }
     }
 
-    /// The key, only when it derives the node ID the node reports.
-    pub fn proven(&self, node_id: Option<&str>) -> Option<&P2pKey> {
-        match self {
-            ConfiguredP2pKey::Loaded(k) if node_id == Some(k.peer_id().as_str()) => Some(k),
-            _ => None,
+    /// Signs the identity proof: reads the key file again, checks it still derives the stored peer ID (which
+    /// must be the node ID the node reports), signs and erases the key. Signs nothing in any other case.
+    pub fn sign_identity_proof(
+        &self,
+        node_id: Option<&str>,
+        service: &SecretKey,
+        service_pubkey: &str,
+        network: &str,
+        ts: i64,
+    ) -> Result<serde_json::Value, String> {
+        let ConfiguredP2pKey::Known { path, peer_id } = self else {
+            return Err("no readable node.p2p_key_file is configured".into());
+        };
+        match node_id {
+            Some(id) if id == peer_id => {}
+            Some(_) => return Err("the node ID the node reports is not the one of node.p2p_key_file".into()),
+            None => return Err("the node does not report its node ID yet".into()),
         }
+        let key = load_p2p_key_file(path).map_err(|e| e.to_string())?;
+        if key.peer_id() != *peer_id {
+            return Err(format!("{} no longer holds the key it held at start", path.display()));
+        }
+        let proof = identity_proof(&key, service, service_pubkey, network, ts);
+        drop(key);
+        Ok(proof)
     }
 }
 
@@ -511,15 +535,16 @@ mod tests {
         fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
         let k = ConfiguredP2pKey::load(f.to_str().unwrap());
         assert_eq!(k.status(Some(id)).state, "proven");
-        assert!(k.proven(Some(id)).is_some());
+        let sk = SecretKey::from_slice(&[7u8; 32]).unwrap();
+        assert!(k.sign_identity_proof(Some(id), &sk, "0x02", "testnet", 1).is_ok());
         assert_eq!(k.status(None).state, "unknown");
         let m = k.status(Some("QmOther"));
         assert_eq!(m.state, "mismatch");
         assert!(m.message.unwrap().contains("QmOther"));
-        assert!(k.proven(Some("QmOther")).is_none());
+        assert!(k.sign_identity_proof(Some("QmOther"), &sk, "0x02", "testnet", 1).is_err());
         let u = ConfiguredP2pKey::load(tmp.path().join("none").to_str().unwrap());
         assert_eq!(u.status(Some(id)).state, "unreadable");
-        assert!(u.proven(Some(id)).is_none());
+        assert!(u.sign_identity_proof(Some(id), &sk, "0x02", "testnet", 1).is_err());
     }
 
     #[test]
@@ -539,3 +564,7 @@ mod aiworker_node_identity_tests;
 #[cfg(test)]
 #[path = "../../acceptance/aiworker-csr-runner-id/runner_id_tests.rs"]
 mod aiworker_runner_id_tests;
+
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-csr-07-security/identity_tests.rs"]
+mod aiworker_07_identity_tests;

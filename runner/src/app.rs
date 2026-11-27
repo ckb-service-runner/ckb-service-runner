@@ -48,7 +48,7 @@ pub struct AppState {
     pub monitor_cache: tokio::sync::Mutex<crate::monitor::Cache>,
     pub sessions: crate::web::Sessions,
     pub login_limiter: crate::web::LoginLimiter,
-    /// The CKB node's P2P key (`node.p2p_key_file`): in memory only, never serialised or logged.
+    /// The CKB node's P2P key (`node.p2p_key_file`): path and peer ID only; the key is read just while signing. Never serialised or logged.
     pub p2p_key: crate::identity::ConfiguredP2pKey,
     /// The node-identity state against the node ID the node reports now.
     pub identity_status: RwLock<crate::identity::IdentityStatus>,

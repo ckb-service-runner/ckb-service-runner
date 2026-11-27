@@ -50,12 +50,30 @@ pub fn period(normal: Duration) -> Duration {
     }
 }
 
+static SHUTDOWN_REQUEST: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+
+fn shutdown_notify() -> &'static tokio::sync::Notify {
+    SHUTDOWN_REQUEST.get_or_init(tokio::sync::Notify::new)
+}
+
+/// Asks `run()` to shut down (the Windows service stop). Works even before `shutdown_signal()` is awaited.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn request_shutdown() {
+    shutdown_notify().notify_one();
+}
+
+/// True when the ping port must be bound: joined, and the mode includes inbound.
+pub(crate) fn ping_listener_wanted(join: bool, mode: &str) -> bool {
+    join && (mode == "inbound" || mode == "both")
+}
+
 #[cfg(windows)]
 async fn shutdown_signal() {
     let mut brk = tokio::signal::windows::ctrl_break().expect("Ctrl-Break handler");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {},
         _ = brk.recv() => {},
+        _ = shutdown_notify().notified() => {},
     }
 }
 
@@ -67,6 +85,7 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = term.recv() => {},
         _ = int.recv() => {},
+        _ = shutdown_notify().notified() => {},
     }
 }
 
@@ -333,7 +352,7 @@ pub async fn run(
     }
     let set_log_level = logs::init(&net_dir.join("logs").join("csr.log"), &cfg.logging.level)?;
     let identity = Identity::load_or_create(&net_dir)?;
-    // Read only; the key stays in memory. Never logged: only the derived peer ID is.
+    // Read now only for its peer ID; the key is read again (and erased) for each proof. Never logged.
     let p2p_key = ConfiguredP2pKey::load(&cfg.node.p2p_key_file);
     let identity_status = p2p_key.status(first.snap.node_id.as_deref());
     let db = Db::open(&net_dir.join("csr.db"))?;
@@ -725,7 +744,7 @@ pub async fn run(
                 c.ranking.ping_bind.clone(),
             )
         };
-        if join && (mode == "inbound" || mode == "both") {
+        if ping_listener_wanted(join, &mode) {
             let l = tokio::net::TcpListener::bind(&pbind)
                 .await
                 .map_err(|e| format!("cannot listen on {pbind}: {e}"))?;
@@ -806,3 +825,7 @@ mod tests {
         assert!(Sweeper::load(&db).pending.is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "../../acceptance/aiworker-csr-07-security/run_tests.rs"]
+mod aiworker_07_run_tests;
