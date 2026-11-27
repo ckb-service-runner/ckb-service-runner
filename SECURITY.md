@@ -21,4 +21,6 @@ We aim to acknowledge reports within 7 days.
 
 ## Status
 
-Pre-alpha. No release is supported yet; do not run on mainnet with value at stake.
+Still pre-alpha. Mainnet runs as a node dashboard only, and the Service Runtime stays off on mainnet until the audit
+findings are closed. Do not run on mainnet with value at stake. What CSR reads, sends and which privileges it has:
+[docs/security-model.md](docs/security-model.md).

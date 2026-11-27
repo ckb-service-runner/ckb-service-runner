@@ -8,6 +8,7 @@
   - The node's P2P key is no longer kept in memory: only the path and peer ID are kept, the key is re-read for each identity proof and erased right after signing.
   - Ping port: no firewall rule in `outbound` mode (an old rule is removed); the inbound rule exists only for `inbound`/`both`.
   - Release provenance: release binaries are built by GitHub Actions from the tag (`release-build`) with a build provenance attestation (`gh attestation verify`); `scripts/release.sh <version> --ci-dir <dir>` uses them. `SHA256SUMS` is still signed offline.
+  - Docs: new `docs/security-model.md` (what CSR reads, never touches, sends; privileges per platform; verifying a download; known gaps); `SECURITY.md` status updated (mainnet is a dashboard only); linked from the README.
 
 ## 0.6.1
 - **Host interface: `random_bytes` (7050)**, requested by CRT. A service gets `len` bytes (1–1024) from the operating system's CSPRNG (`OsRng`); 11 above 1024, 12 for 0; cost 500 + ceil(len / 4) cycles; available in every mode including `csr service run-local`. The host never logs, captures or stores the bytes. 7051 `prekey_decrypt` stays reserved; no other number changes, so existing services are unaffected. New example service `randtest` (`services/rust/randtest`) and the test `acceptance/v0.6.1/randtest.test.mjs`. Decision D53.
