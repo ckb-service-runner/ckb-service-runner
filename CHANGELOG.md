@@ -8,6 +8,8 @@
   - The node's P2P key is no longer kept in memory: only the path and peer ID are kept, the key is re-read for each identity proof and erased right after signing.
   - Ping port: no firewall rule in `outbound` mode (an old rule is removed); the inbound rule exists only for `inbound`/`both`.
   - Release provenance: release binaries are built by GitHub Actions from the tag (`release-build`) with a build provenance attestation (`gh attestation verify`); `scripts/release.sh <version> --ci-dir <dir>` uses them. `SHA256SUMS` is still signed offline.
+  - Windows installer and uninstaller: a still-running old `csr.exe` is now ended robustly (wait up to 30 s, `Stop-Process`, then `taskkill /F`, otherwise a clear message). Before, `Process.Kill()` could fail with "Access is denied" and a second install attempt was needed (issue #32).
+  - Windows installer: reads `csr-<network>.toml` values written with single quotes (the runner rewrites the file that way after `set-password`); before, the key-file entry could be skipped.
   - Docs: new `docs/security-model.md` (what CSR reads, never touches, sends; privileges per platform; verifying a download; known gaps); `SECURITY.md` status updated (mainnet is a dashboard only); linked from the README.
 
 ## 0.6.1

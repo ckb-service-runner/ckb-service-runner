@@ -78,4 +78,8 @@ Use both: the signature ties a file to the release key, the attestation ties it 
 - Testnet and mainnet services of one machine share one data root (as on Linux).
 - The monitor is trusted for ranking; CSR cannot verify its ranking.
 - A compromised service account can read the node key for as long as CSR is installed.
+- CSR does not tighten the permissions of the node's own files. A node folder created in the root of a drive (for
+  example `C:\ckb\data`) usually inherits `Users` and `Authenticated Users` entries, so every account on the PC can
+  already read the key file, and `Authenticated Users` can even change it. The read entry that the installer adds is
+  then redundant. Keep the node's data folder in a location with restricted permissions.
 - Mainnet runs as a node dashboard only; the Service Runtime stays off on mainnet.
