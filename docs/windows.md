@@ -82,6 +82,10 @@ task `CSR-<network>`, registers the service instead, and keeps your configs, key
 
 ### SmartScreen and unsigned scripts
 
+**Status (0.7.0):** Authenticode signing of `csr.exe`, `install.ps1` and `uninstall.ps1` is planned for 0.7.x and depends on approval by a
+code-signing provider. Until then, verify a download with the offline-signed `SHA256SUMS` (below) and, for `csr.exe`, with
+`gh attestation verify csr.exe --repo ckb-service-runner/ckb-service-runner` (build provenance; needs `gh` 2.49 or newer).
+
 The zip, `csr.exe` and the scripts are **unsigned**, so SmartScreen ("Windows protected your PC") or an
 execution-policy message may appear ("More info" > "Run anyway"); `install.cmd` and the command above bypass the
 policy for that one PowerShell session only. Check the download first against the signed `SHA256SUMS` of the release (signed offline; see

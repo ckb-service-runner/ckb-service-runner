@@ -1,6 +1,7 @@
 [package]
 name = "csr-dev"
 version = "0.1.0"
+license = "MIT"
 edition = "2021"
 description = "CSR developer CLI: deploy scripts, play the monitor, fund, sign (devnet / testnet only)"
 

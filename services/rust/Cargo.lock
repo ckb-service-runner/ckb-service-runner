@@ -72,6 +72,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crowdcell-finalize"
+version = "0.1.0"
+dependencies = [
+ "ckb-std",
+ "crowdcell-finalize-logic",
+ "csr-svc",
+]
+
+[[package]]
+name = "crowdcell-finalize-logic"
+version = "0.1.0"
+
+[[package]]
 name = "csr-svc"
 version = "0.1.0"
 

@@ -3,6 +3,10 @@
 
 pub const RESULT_PUT: u64 = 7031;
 pub const JOB_PAYLOAD: u64 = 7001;
+pub const BLOCK_INFO: u64 = 7002;
+pub const CHAIN_READ: u64 = 7003;
+pub const CELLS_QUERY: u64 = 7004;
+pub const TX_SKELETON_PUT: u64 = 7030;
 pub const KV_GET: u64 = 7010;
 pub const KV_PUT: u64 = 7011;
 pub const KV_DELETE: u64 = 7012;
@@ -112,4 +116,39 @@ pub fn sign(msg: &[u8; 32], sig: &mut [u8; 64]) -> u64 {
 /// bytes; 12 when it is empty.
 pub fn random_bytes(buf: &mut [u8]) -> u64 {
     unsafe { syscall(RANDOM_BYTES, [buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0]) }
+}
+
+/// `block_info(addr)`: 24 bytes LE = tip number, packed epoch, median time (ms). Returns the host status.
+pub fn block_info(out: &mut [u8; 24]) -> u64 {
+    unsafe { syscall(BLOCK_INFO, [out.as_mut_ptr() as u64, 0, 0, 0, 0, 0]) }
+}
+
+/// `chain_read(kind, key, addr, len_ptr, offset)`: `kind` 0 live cell output, 1 live cell data (key = 36-byte out
+/// point), 2 header, 3 transaction (key = 32-byte hash). Returns (status, full length); status 1 = dead / unknown,
+/// 2 = not supported (local runs).
+pub fn chain_read(kind: u64, key: &[u8], buf: &mut [u8]) -> (u64, u64) {
+    let mut len = buf.len() as u64;
+    let r = unsafe {
+        syscall(CHAIN_READ, [kind, key.as_ptr() as u64, buf.as_mut_ptr() as u64, &mut len as *mut u64 as u64, 0, 0])
+    };
+    (r, len)
+}
+
+/// `cells_query(script, script_len, script_type, addr, len_ptr, offset)`: `script` is a molecule `Script`, type 0 =
+/// lock, 1 = type (args match as a prefix). Writes an `OutPointVec` (u32 count, then 36-byte out points, at most 64).
+/// Returns (status, full length).
+pub fn cells_query(script: &[u8], script_type: u64, buf: &mut [u8]) -> (u64, u64) {
+    let mut len = buf.len() as u64;
+    let r = unsafe {
+        syscall(
+            CELLS_QUERY,
+            [script.as_ptr() as u64, script.len() as u64, script_type, buf.as_mut_ptr() as u64, &mut len as *mut u64 as u64, 0],
+        )
+    };
+    (r, len)
+}
+
+/// `tx_skeleton_put(addr, len)`: stores the transaction skeleton (a molecule `Transaction`); the last call wins.
+pub fn tx_skeleton_put(data: &[u8]) -> u64 {
+    unsafe { syscall(TX_SKELETON_PUT, [data.as_ptr() as u64, data.len() as u64, 0, 0, 0, 0]) }
 }

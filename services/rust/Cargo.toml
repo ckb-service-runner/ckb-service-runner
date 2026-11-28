@@ -1,5 +1,5 @@
 [workspace]
-members = ["csr-svc", "hello", "loop", "memhog", "badsyscall", "bigresult", "kvtest", "heartbeat", "quotatest", "signtest", "dottest", "randtest"]
+members = ["csr-svc", "hello", "loop", "memhog", "badsyscall", "bigresult", "kvtest", "heartbeat", "quotatest", "signtest", "dottest", "randtest", "crowdcell-finalize-logic", "crowdcell-finalize"]
 resolver = "2"
 
 [workspace.dependencies]
