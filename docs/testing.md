@@ -97,6 +97,18 @@ are `0 0 11 12`, and the bytes never appear in the debug capture. Unit tests: `c
 
 `bash scripts/manual-checks.sh` builds the contracts, the services and the debug binaries, starts a fresh devnet, runs `acceptance/manual-checks/devnet.test.mjs` and prints `PASS`/`FAIL` per check (full output in `manual-checks.log`). It covers the manual phases of the Oct 2026 audit that need a real node: the skeleton guard (a test service, `services/c/skeletontest`, whose skeleton spends the registry cell or a runner wallet cell fails before signing; a normal job settles), delete-on-consume (spending a real cell deletes its entry, also with the service disabled), attestation renewal (a devnet monitor answering `POST /v1/attest`: the automatic renewal near the expiry, its error while the monitor is down, `csr register refresh` by hand) and the cell-consumed trigger (a watched job waits until its cell is spent; a normal job runs at once).
 
+### CrowdCell finalize on testnet (manual)
+
+1. Deploy or reuse CrowdCell's testnet contracts (`campaign`, `campaign-lock`); note the code out points.
+2. Create a short campaign (deadline a few dozen blocks ahead).
+3. Publish the service: `csr service publish --code-outpoint 0x<tx>:0 …`; note the service ID.
+4. Add and approve the service on a testnet runner (`allowed_services`, approve in the admin UI/CLI).
+5. Create the job cell `AtBlock(deadline)` with the payload from `crowdcellFinalizePayload` (see
+   `sdk/js/examples/crowdcell-create-with-finalize.mjs`).
+6. **Stop other keepers during the test.** A keeper finalizes first and the run is then an empty run (tip only);
+   test that as a second case.
+7. After the deadline check the campaign status (`Success` or `Failed`) and the runner wallet (tip received).
+
 ### Manual testnet runbook "with Neuron" (not run by the test suite)
 
 Prerequisites: a synced testnet CKB node (full node with the Indexer module), a funded testnet key, the built contracts.

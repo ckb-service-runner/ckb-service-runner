@@ -18,3 +18,7 @@
 - The RISC-V binary `crowdcell-finalize` was not compiled here (target not available); the owner builds it with `scripts/build-services.sh`.
 
 - acceptance/a1/cargo.sh now switches to `services/rust` when `-p csr-svc|crowdcell-finalize[-logic]` is given, because the root workspace excludes `services` and `cargo check -p csr-svc` from the repo root otherwise fails ("did not match any packages").
+
+## Phase 3
+- reclaimJob/crowdcellFinalizePayload added to the SDK; d.ts hand-written; example uses CCC-style objects and is untested documentation.
+- Roadmap/testing/integration docs written to the agreed design; no acceptance file edited.

@@ -197,6 +197,30 @@ export function watchPayload(outPoint, innerHex = '0x') {
   ]));
 }
 
+/** Payload of the `crowdcell-finalize` service: u32 LE script length ‖ type script (molecule) ‖ campaign code out point ‖ lock code out point (each tx hash ‖ index u32 LE). */
+export function crowdcellFinalizePayload({ typeScript, campaignCodeOutPoint, lockCodeOutPoint }) {
+  const script = hexToBytes(typeScript, 'typeScript');
+  if (script.length === 0 || script.length > 4096) throw new Error('typeScript: expected 1..4096 bytes');
+  const op = (o, what) => {
+    if (!o) throw new Error(`${what}: missing`);
+    return concat([hash32(o.txHash, `${what}.txHash`), u32(o.index)]);
+  };
+  return bytesToHex(concat([
+    u32(script.length), script,
+    op(campaignCodeOutPoint, 'campaignCodeOutPoint'), op(lockCodeOutPoint, 'lockCodeOutPoint'),
+  ]));
+}
+
+/** Pieces of a refund transaction after `expiry_block`: the cell deps (no registry) and the job input with `since` = expiryBlock. */
+export function reclaimJob({ deployment, jobOutPoint, expiryBlock }) {
+  const cellDeps = jobCellDeps(deployment);
+  if (!jobOutPoint) throw new Error('jobOutPoint: missing');
+  hash32(jobOutPoint.txHash, 'jobOutPoint.txHash');
+  u32(jobOutPoint.index);
+  if (typeof expiryBlock !== 'bigint' || expiryBlock < 0n || expiryBlock >= (1n << 56n)) throw new Error('expiryBlock: expected BigInt below 2^56');
+  return { cellDeps, jobInput: { previousOutput: { txHash: jobOutPoint.txHash, index: jobOutPoint.index }, since: expiryBlock } };
+}
+
 // ---- blake2b-256 (ckb-default-hash) -----------------------------------------------------------
 
 const IV = [0x6a09e667f3bcc908n, 0xbb67ae8584caa73bn, 0x3c6ef372fe94f82bn, 0xa54ff53a5f1d36f1n,

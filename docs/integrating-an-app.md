@@ -2,7 +2,7 @@
 
 For app developers. CSR lets your app's own transactions leave a **job cell** behind; independent CKB full nodes
 running the CSR runner pick it up at the right time and run your **keeper service**, which builds a transaction
-skeleton the runner signs and submits. Worked example: CrowdCell auto-settle (a pattern, not a CrowdCell decision).
+skeleton the runner signs and submits. Worked example: CrowdCell auto-finalize.
 
 ## What CSR gives you, and what it does not
 
@@ -45,23 +45,37 @@ tx.addCellDeps(csr.jobCellDeps(deployment));
 Show it as an optional **"settle automatically"** checkbox: ticked, add the job output; unticked, the transaction
 is the one you had before.
 
-## Worked example: CrowdCell auto-settle
+## Worked example: CrowdCell auto-finalize
 
-- **create** with the box ticked also creates a job `AtBlock(deadline)` that **finalizes** the campaign.
-- **back** with the box ticked also creates a job `AtBlock(deadline + margin)` that **settles that backer's pledge**
-  (release or refund). CrowdCell's locks still decide where funds go.
-- **One backer per transaction, so one job per pledge.** One job cell per campaign (`AtBlock` with
-  `remaining_runs > 1`) would need contracts v4 and is not possible now.
-- **Finalization before settlement:** the margin keeps the settle job behind the finalize job; if finalization has
-  not happened yet, the settle job's skeleton can do it first or return an empty skeleton to be retried (job
-  failures count, see below, so prefer a margin that is large enough).
-- **Already done:** if someone else settled first, the keeper returns an **empty skeleton**; the job then settles
-  with only its tip and the rest returns to `refund_lock_hash`.
-- **Costs.** The job cell parks capacity ≈ occupied capacity + tip + max fee (`minJobCapacity`). Everything but the
-  tip and the fee returns to `refund_lock_hash` when the job is consumed. The user pays tip + fee even if the bot
-  settled first, unless the app decides otherwise (open question for CrowdCell).
-- **The 1 CKB `MAX_FEE` slack in CrowdCell's locks** must cover the fee of the settlement transaction; keep
-  `max_fee_shannons` consistent with it, or the lock rejects the skeleton.
+Creator side only (release 0.7.1). A campaign must be **finalized** (`Active` -> `Success` or `Failed`) after its
+deadline before pledges can be released or refunded; today a keeper bot does it.
+
+- **create** with the box "finalize automatically" ticked also creates one job cell `AtBlock(deadline)` for the
+  service **`crowdcell-finalize`**. Payload: `crowdcellFinalizePayload({ typeScript, campaignCodeOutPoint,
+  lockCodeOutPoint })` = the campaign type script, plus the out points of the code cells of the `campaign` type and
+  the `campaign-lock` lock (cell deps of the finalization). Example: `sdk/js/examples/crowdcell-create-with-finalize.mjs`.
+- **What the run does:** it finds the live campaign cell by its type script and builds the transaction CrowdCell's
+  contracts accept: one input with `since` = deadline, one identical output except the status byte (`Success` if
+  `total_pledged >= funding_goal`, else `Failed`). The campaign keeps every shannon; the fee and the tip come from
+  the job cell.
+- **Already finalized (or no live campaign cell):** the service returns an **empty skeleton**. The run is an empty
+  run: it settles with only its tip and the rest of the job cell returns to `refund_lock_hash` (D54). The tip cannot
+  be waived; a keeper that finalized first therefore costs the creator the tip.
+- **No cleanup job.** Since CrowdCell's contracts of 31 Oct, campaign destruction refuses any other typed input
+  (error 27), and a CSR run always consumes the typed job cell, so a cleanup job cannot work.
+- **Parked:** backer-side settle jobs (one job per pledge, created together with the pledge) and the payback receipt
+  lock are not part of this release.
+- **Fee note:** the "1 CKB `MAX_FEE` slack" in CrowdCell's locks applies to release and refund only. It does not
+  apply to finalize: there fee and tip come from the job cell, so `maxFeeShannons` just has to cover the fee.
+- **The keeper stays the fallback** and should hold back for a short margin on campaigns that have a job cell, so
+  that the runner normally finalizes first and empty runs stay rare.
+- **When to show the option:** hide it for campaigns with early finalization, and on mainnet until the runtime is
+  live (monitor field `runtime_unlocked`, to come).
+- **Expiry and reclaim:** set `expiryBlock` a few days after the deadline. After `expiry_block` the creator can
+  reclaim the job cell (see "Refund after `expiry_block`" below) with `reclaimJob({ deployment, jobOutPoint,
+  expiryBlock })`, which returns `{ cellDeps, jobInput }`.
+- **Costs.** The job cell parks capacity ≈ occupied capacity + tip + max fee (`minJobCapacity`); all but tip and fee
+  returns to `refund_lock_hash` when it is consumed.
 
 ## Failure modes
 
@@ -70,7 +84,7 @@ is the one you had before.
 - **Refund after `expiry_block`:** only a transaction with an input whose lock hash is `refund_lock_hash`, and
   whose job input has `since` an absolute block number ≥ `expiry_block`, can spend the job cell (the run path is
   not needed). The app or user must reclaim it. With the SDK, rebuild the cell deps with `jobCellDeps(deployment)`
-  (no registry dep), spend the job cell with `since = expiryBlock` (absolute block, `0x0000000000000000` flags
+  (no registry dep; `reclaimJob` returns them with the job input), spend the job cell with `since = expiryBlock` (absolute block, `0x0000000000000000` flags
   with the value), add an input from the user's wallet (lock hash = `refund_lock_hash`) and an output to the user.
   A "reclaim" button in the app is a good place for this.
 - **Runner race:** several runners may try the same job. One transaction wins; the others fail at submit and pay
@@ -86,6 +100,5 @@ is the one you had before.
 | `tipShannons` | What a runner earns; too low and nobody picks the job. Show it to the user. |
 | `maxFeeShannons` | A realistic fee for the settlement transaction (F6), not a guess at zero; too low makes runs fail. |
 | `maxCycles` | Upper bound for the keeper's run; measure on devnet and add headroom. |
-| margin | Blocks after the deadline for the settle job (CrowdCell decides). |
 | `expiryBlock` | Later than the trigger by enough runs and retries; after it the owner can refund. |
 | `remainingRuns` | `1` for one-shot jobs. |

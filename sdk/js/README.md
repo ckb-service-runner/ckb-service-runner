@@ -19,6 +19,8 @@ import * as csr from 'https://raw.githubusercontent.com/ckb-service-runner/ckb-s
 | `minJobCapacity({ deployment, serviceId, job })` | `BigInt` shannons: occupied capacity + `remainingRuns × (tip + maxFee)` |
 | `jobCellDeps(deployment)` | cell deps of `csr-job-type` and `csr-job-lock` (`depType: 'code'`) |
 | `watchPayload(outPoint, innerHex)` | `CSRW` header + inner payload |
+| `crowdcellFinalizePayload({ typeScript, campaignCodeOutPoint, lockCodeOutPoint })` | 0x-hex payload of the `crowdcell-finalize` service (script ≤ 4096 bytes) |
+| `reclaimJob({ deployment, jobOutPoint, expiryBlock })` | `{ cellDeps, jobInput }` to refund a job cell after `expiry_block` (`since = expiryBlock`) |
 | `loadDeployment(json)` | checks the content of `deployments/<network>.json` |
 | `serviceId(codeHash, argsHex, dataHashes)` | service ID (D49, `spec/service-manifest.md`) |
 
@@ -58,6 +60,8 @@ await tx.completeFeeBy(signer);
 ```
 
 To make the job watch a cell, set `payload` to `csr.watchPayload({ txHash, index }, innerHex)`.
+
+TypeScript declarations: `csr-job.d.ts`. CrowdCell example: `examples/crowdcell-create-with-finalize.mjs`.
 
 ## Tests
 

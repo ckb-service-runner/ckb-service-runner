@@ -4,6 +4,18 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 
 ## Current phase: Phase 2 – Service Runtime on testnet (A8b polish done)
 
+## Runner release 0.7.1: CrowdCell auto-finalize
+
+- [x] `crowdcell-finalize` service (logic crate `crowdcell-finalize-logic` + RISC-V binary), D54
+- [x] Runner sends `approved_services` at check-in (advisory, not signed), D55
+- [x] JS SDK `crowdcellFinalizePayload` and `reclaimJob`, TypeScript declarations, CCC example, docs
+- [ ] Testnet end-to-end test with CrowdCell's contracts
+- [ ] Two-keeper test with Ayoub (keeper and runner race; empty run)
+- [ ] Publish the testnet manifest
+- [ ] Mainnet manifest (who publishes)
+- [ ] Monitor endpoints: `GET /v1/<network>/services`, `runtime_unlocked`
+- [ ] Measure `max_cycles` of the service
+
 ## Runner release 0.7.0: security hardening (merged 27 Nov 2026, release pending)
 
 Community feedback (Telegram, Nov 2026) on the Windows beta: it runs as SYSTEM, reads the node's P2P identity key
