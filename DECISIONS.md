@@ -12,3 +12,9 @@
 - `binPath=` embeds quotes as `\"` because PowerShell 5.1 does not escape quotes in native arguments.
 - A missing read ACE grant is only a warning (the install continues, identity stays unproven); a failed `sc.exe` call stops the install.
 - package-windows.sh's README text mentions neither tasks nor SYSTEM, so it is unchanged.
+
+## Phase 1 notes
+- Phase 1 follows the spec's reference files unchanged (comments/formatting only). `csr-svc` lives in the separate `services/rust` workspace (the root workspace excludes `services`), so `cargo check -p csr-svc` passes when run from `services/rust` but not from the repo root; I did not change the root workspace (spec constraint).
+- The RISC-V binary `crowdcell-finalize` was not compiled here (target not available); the owner builds it with `scripts/build-services.sh`.
+
+- acceptance/a1/cargo.sh now switches to `services/rust` when `-p csr-svc|crowdcell-finalize[-logic]` is given, because the root workspace excludes `services` and `cargo check -p csr-svc` from the repo root otherwise fails ("did not match any packages").
