@@ -9,6 +9,7 @@ Testnet always comes first. Each phase runs on testnet before mainnet.
 - [x] `crowdcell-finalize` service (logic crate `crowdcell-finalize-logic` + RISC-V binary), D54
 - [x] Runner sends `approved_services` at check-in (advisory, not signed), D55
 - [x] JS SDK `crowdcellFinalizePayload` and `reclaimJob`, TypeScript declarations, CCC example, docs
+- [x] Services page: service details and Verify binary (open item #21)
 - [ ] Testnet end-to-end test with CrowdCell's contracts
 - [ ] Two-keeper test with Ayoub (keeper and runner race; empty run)
 - [ ] Publish the testnet manifest
