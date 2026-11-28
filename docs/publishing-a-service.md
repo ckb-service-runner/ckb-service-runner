@@ -70,6 +70,13 @@ jobs. Links are shown as text and, for `https://` URLs only, as links; runners n
 manifest, runners that already added the service show "Update available" on its row. If jobs name a service ID that
 has no manifest, runners list it as "seen on chain" without a description.
 
+When an operator clicks **Details** on a service (or **approve**), the **detail panel** shows name, version,
+description, project link, source link, publisher address, first seen, minimum CSR version and whether the service is
+deprecated, plus the code, data and manifest cells with explorer links. The operator can press **Verify binary**: the
+runner reads the cells from its own node and recomputes the service ID. The project and source links are shown as the
+publisher's own claim, not a proof. A good description and a source link that really builds the binary make approval
+easier; a service without a manifest gets an explicit warning when approved.
+
 A runner update is only needed for changes to the runner itself: a new host call (7001–7099), a new trigger kind,
 new contract versions or higher fixed limits. Set `--min-csr` if your service needs a newer runner.
 

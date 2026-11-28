@@ -12,6 +12,12 @@ under [Known gaps](#known-gaps). Report vulnerabilities as described in [`SECURI
   stored at start-up and against the node ID the node reports, used to sign, and erased from memory immediately. Between
   proofs CSR holds only the file path and the derived peer ID. The key is never logged and never sent.
   If the key file is missing, unreadable or holds another key, no proof is signed.
+- **Cells from its own node, for Verify binary.** The dashboard's **Verify binary** button (`GET /api/services/{id}/verify`,
+  read-only) makes the runner read a service's code cell and data cells from the operator's **own node** only, hash
+  them and recompute the service ID. It checks the on-chain bytes against the service ID, not the publisher's source:
+  a source link in a manifest is the publisher's claim, not a proof. The **explorer links** in the detail panel are
+  plain links the browser opens when the operator clicks; the runner itself never contacts the explorer or any other
+  site.
 - **Its own files** in the CSR data root (`/var/lib/csr` on Linux, `%ProgramData%\csr` on Windows): configuration,
   its database, the runner's own keys.
 

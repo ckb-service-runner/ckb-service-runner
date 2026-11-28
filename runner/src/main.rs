@@ -24,6 +24,7 @@ mod runtime;
 mod service;
 mod storage;
 mod update;
+mod verify;
 mod wallet;
 mod web;
 mod winservice;

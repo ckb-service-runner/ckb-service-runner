@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- **Services page: know what you approve** (open item #21, dashboard only): a detail panel per service with explorer links (from `links.explorer` in `/api/status`); **Verify binary** (`GET /api/services/{id}/verify`, reads from the runner's own node only, read-only); names with version, publisher and short service ID, and a "No manifest" chip; approve shows the facts first and warns about services without a manifest; the manifest's source link is the publisher's claim, not a proof. Decision D56.
 - **Service `crowdcell-finalize`** (creator side only): finalizes a CrowdCell campaign (status `Active` -> `Success`/`Failed`) after its deadline for a creator who ticked "finalize automatically". New crates `crowdcell-finalize-logic` (`no_std`, host-tested) and `crowdcell-finalize`; `csr-svc` gains `block_info`, `chain_read`, `cells_query`, `tx_skeleton_put`; spec in `spec/crowdcell-finalize.md`. Test it with a testnet campaign; the mainnet manifest is not published yet. Decision D54.
 - **Check-in reports approved service IDs**: the check-in body gains `approved_services` (sorted, unique, at most 64 IDs of services that are approved, enabled and allowed; empty on mainnet). Advisory, not signed; the signed messages are unchanged. Decision D55.
 - Packaging: `license = "MIT"` in the runner, tools and service crates (the repository has been MIT-licensed from the start; contracts unchanged).

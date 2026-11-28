@@ -911,6 +911,54 @@
       } else row.appendChild(el('span', 'mono', u));
       return row;
     }
+    function extLink(text, u) {
+      var a = el('a', '', text); a.href = u; a.target = '_blank'; a.rel = 'noopener noreferrer nofollow'; return a;
+    }
+    // The list of facts (label, value, links); no HTML is built from data.
+    function factsList(rows) {
+      var dl = el('dl', 'svc-facts');
+      rows.forEach(function (f) {
+        dl.appendChild(el('dt', '', f.label));
+        var dd = el('dd', f.mono ? 'mono' : '');
+        if (f.href && (f.label === 'Project' || f.label === 'Source')) dd.appendChild(extLink(f.value, f.href));
+        else {
+          dd.appendChild(document.createTextNode(f.value));
+          if (f.href) { dd.appendChild(document.createTextNode(' ')); dd.appendChild(extLink('Explorer', f.href)); }
+        }
+        if (f.label === 'Service ID') { dd.appendChild(document.createTextNode(' ')); dd.appendChild(copyBtn(f.value)); }
+        dl.appendChild(dd);
+      });
+      return dl;
+    }
+    function verifyBlock(id) {
+      var box = el('div', 'svc-verify-box');
+      var btn = el('button', 'btn', 'Verify binary'); btn.type = 'button';
+      var out = el('div');
+      btn.addEventListener('click', function () {
+        btn.disabled = true; clear(out);
+        api('/api/services/' + id + '/verify').then(function (rep) {
+          var vt = CSRSvc.verifyText(rep);
+          out.appendChild(el('p', 'svc-verify ' + vt.cls, vt.text));
+          (rep.checks || []).forEach(function (ch) {
+            out.appendChild(el('div', 'note svc-check' + (ch.ok ? '' : ' bad'), (ch.ok ? '' : 'FAILED · ') + ch.what + ': ' + ch.detail));
+          });
+        }).catch(function (x) { out.appendChild(el('p', 'msg err', x.message)); })
+          .then(function () { btn.disabled = false; });
+      });
+      box.appendChild(btn); box.appendChild(out);
+      return box;
+    }
+    function detailPanel(rows, svc, item, confirm) {
+      var p = el('div', 'svc-detail-body');
+      p.appendChild(factsList(rows));
+      p.appendChild(el('p', 'note', 'The service ID is a hash of the code, not an address. Explorers do not index data hashes, so search for the code cell (link above) instead, or press Verify binary.'));
+      if (item && (item.url || item.source)) p.appendChild(el('p', 'note', CSRSvc.CLAIM_NOTE));
+      var w = CSRSvc.approveWarning(svc, item);
+      if (w) p.appendChild(el('p', (item && item.deprecated) ? 'note' : 'msg err', w));
+      p.appendChild(verifyBlock(svc.service_id || svc.code_hash));
+      if (confirm) p.appendChild(confirm);
+      return p;
+    }
     function loadCatalog() {
       api('/api/catalog').then(function (j) {
         clear(cat); clear(unk);
@@ -952,6 +1000,13 @@
           box.appendChild(pub);
           box.appendChild(el('p', 'note', 'First seen ' + fmtDate(i.first_seen_ms) + ' · open jobs ' + (i.open_jobs || 0) + ' · tips waiting ' + ckbShort(i.tips_waiting_shannons || 0) + ' CKB'));
           var row = el('div', 'row');
+          var dtl = el('div', 'svc-detail'); dtl.hidden = true;
+          var dbtn = el('button', 'btn', 'Details'); dbtn.type = 'button';
+          dbtn.addEventListener('click', function () {
+            if (dtl.hidden && !dtl.firstChild) dtl.appendChild(detailPanel(CSRSvc.facts({ service_id: i.service_id }, i, { explorer: links().explorer, fmtDate: fmtDate }), { service_id: i.service_id }, i));
+            dtl.hidden = !dtl.hidden;
+          });
+          row.appendChild(dbtn);
           function add(label, approve, off) {
             var b = el('button', 'btn', label); b.type = 'button'; b.disabled = off;
             b.addEventListener('click', function () {
@@ -965,6 +1020,7 @@
           add('Add', false, !i.runnable);
           add('Add & approve', true, !i.runnable || locked);
           box.appendChild(row);
+          box.appendChild(dtl);
           box.appendChild(el('p', 'note', 'Published by the address shown. Not reviewed by CSR. Approve only code you trust.'));
           cat.appendChild(box);
         });
@@ -974,6 +1030,8 @@
         un.forEach(function (u) {
           var box = el('div', 'catalog-item');
           box.appendChild(el('div', 'mono', u.service_id));
+          if (CSRSvc.shortId(u.service_id) !== u.service_id) box.appendChild(el('div', 'note', 'Short ID ' + CSRSvc.shortId(u.service_id)));
+          box.appendChild(el('p', 'note', 'The ID is a hash of the code, not an address: the explorer cannot find it. Add the service to see its code cell.'));
           box.appendChild(el('p', 'note', 'Open jobs ' + (u.open_jobs || 0) + ' · tips waiting ' + ckbShort(u.tips_waiting_shannons || 0) + ' CKB'));
           box.appendChild(el('p', 'note', 'No manifest published. Ask the app developer, or add it by out point with '));
           box.lastChild.appendChild(el('code', '', 'csr service add-onchain'));
@@ -1001,27 +1059,52 @@
         t.appendChild(h);
         list.forEach(function (s) {
           var r = el('tr');
-          var mf = byId[(s.service_id || s.code_hash || '').toLowerCase()] || {};
-          var nm = el('td', '', mf.name || s.name);
+          var item = byId[(s.service_id || s.code_hash || '').toLowerCase()] || null;
+          var mf = item || {};
+          var dn = CSRSvc.displayName(s, item);
+          var nm = el('td', '', dn.title);
           if (mf.version) nm.appendChild(el('span', 'mono', ' ' + mf.version));
           if (mf.update_available) nm.appendChild(chip('Update available', 'warn'));
+          if (dn.noManifest) nm.appendChild(chip('No manifest', 'warn'));
+          nm.appendChild(el('div', 'note', dn.sub));
           r.appendChild(nm);
           r.appendChild(el('td', '', s.language));
           var ch = el('td', '', s.code_hash);
           if (s.service_id && s.service_id !== s.code_hash) ch.appendChild(el('div', 'note', 'Service ID ' + s.service_id));
+          var cu = CSRSvc.explorerTxUrl(links().explorer, s.outpoint || (item && item.code_cell));
+          if (cu) { var cd = el('div', 'note'); cd.appendChild(extLink('Code cell in explorer', cu)); ch.appendChild(cd); }
           r.appendChild(ch);
           var st = el('td'); st.appendChild(pill(s.status)); r.appendChild(st);
           [s.storage_bytes + ' B', s.jobs, s.earned_shannons].forEach(function (x) { r.appendChild(el('td', '', String(x))); });
           var a = el('td');
+          var dr = el('tr', 'svc-detail'); dr.hidden = true;
+          var dtd = el('td'); dtd.colSpan = h.children.length; dr.appendChild(dtd);
+          var confirmBox = null;
+          function openDetail() {
+            if (!dtd.firstChild) dtd.appendChild(detailPanel(CSRSvc.facts(s, item, { explorer: links().explorer, fmtDate: fmtDate }), s, item, confirmBox = el('div', 'svc-confirm')));
+            dr.hidden = false;
+          }
+          var db = el('button', 'btn', 'Details'); db.type = 'button';
+          db.addEventListener('click', function () { if (dr.hidden) openDetail(); else dr.hidden = true; });
+          a.appendChild(db);
           var verbs = s.status === 'not_approved' ? ['approve'] : s.status === 'approved_enabled' ? ['disable', 'revoke'] : ['enable', 'revoke'];
           verbs.forEach(function (v) {
             var b = el('button', 'btn', v);
             b.type = 'button';
-            b.addEventListener('click', function () { act(s.service_id || s.code_hash, v); });
+            b.addEventListener('click', function () {
+              if (v !== 'approve') return act(s.service_id || s.code_hash, v);
+              openDetail();
+              if (!confirmBox.firstChild) {
+                var cb = el('button', 'btn', 'Confirm approve'); cb.type = 'button';
+                cb.addEventListener('click', function () { cb.disabled = true; act(s.service_id || s.code_hash, 'approve'); });
+                confirmBox.appendChild(cb);
+              }
+            });
             a.appendChild(b);
           });
           r.appendChild(a);
           t.appendChild(r);
+          t.appendChild(dr);
         });
         c.appendChild(t);
       }).catch(function (x) { clear(c); c.appendChild(el('p', 'msg err', x.message)); });

@@ -164,3 +164,24 @@ footer.foot{max-width:1240px;margin:0 auto;padding:.4rem 1.2rem 1.4rem;display:f
 .catalog-link{font-size:.85rem;margin:.2rem 0;word-break:break-all}
 .catalog-link .k{color:var(--mut)}
 .catalog-notice{margin-top:.6rem;padding:.5rem .7rem;border-radius:8px;border:1px solid var(--warn-bd);background:var(--warn-bg);display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+
+/* Service detail panel (open item #21) */
+.svc-detail { background: rgba(127, 127, 127, .08); border-radius: 6px; }
+div.svc-detail { margin-top: 8px; padding: 8px 10px; }
+tr.svc-detail > td { padding: 10px 12px; }
+.svc-facts { display: grid; grid-template-columns: 9rem 1fr; gap: 4px 12px; margin: 0 0 8px; }
+.svc-facts dt { font-weight: 600; opacity: .8; }
+.svc-facts dd { margin: 0; overflow-wrap: anywhere; word-break: break-word; white-space: pre-line; }
+.svc-facts dd.mono { white-space: normal; }
+.svc-verify-box { margin: 8px 0; }
+.svc-verify { padding: 6px 10px; border-radius: 6px; border: 1px solid currentColor; margin: 8px 0 4px; font-weight: 600; }
+.svc-verify.ok { color: var(--ok); }
+.svc-verify.bad { color: var(--bad); }
+.svc-verify.warn { color: var(--warn); }
+.svc-check { overflow-wrap: anywhere; }
+.svc-check.bad { color: var(--bad); }
+.svc-confirm { margin-top: 8px; }
+@media (max-width: 600px) {
+  .svc-facts { grid-template-columns: 1fr; gap: 0; }
+  .svc-facts dd { margin-bottom: 6px; }
+}
