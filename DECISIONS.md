@@ -22,3 +22,6 @@
 ## Phase 3
 - reclaimJob/crowdcellFinalizePayload added to the SDK; d.ts hand-written; example uses CCC-style objects and is untested documentation.
 - Roadmap/testing/integration docs written to the agreed design; no acceptance file edited.
+
+## Phase 2 (dashboard)
+- Detail panel logic lives in app.js `detailPanel()`; added a "Code cell in explorer" link in the Code hash column. Verify button never runs automatically. No test seemed wrong.
