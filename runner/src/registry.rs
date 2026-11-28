@@ -96,7 +96,7 @@ pub async fn add_onchain(db: &Db, rpc_url: &str, outpoint: &str) -> Result<Value
 }
 
 /// Live cell data from the node; `None` if the cell is not live.
-async fn live_data(client: &RpcClient, outpoint: &str) -> Result<Option<Vec<u8>>, String> {
+pub(crate) async fn live_data(client: &RpcClient, outpoint: &str) -> Result<Option<Vec<u8>>, String> {
     let (tx_hash, index) = crate::chain::parse_out_point(outpoint)?;
     let cell = client
         .call(
@@ -218,6 +218,8 @@ fn entry(row: &ServiceRow, storage_root: &Path, totals: &HashMap<String, (u64, u
         "data_cells": row.data_cells,
         "args": row.args,
         "manifest_type_id": row.manifest_type_id,
+        "outpoint": row.outpoint,
+        "manifest_outpoint": row.manifest_outpoint,
         "name": row.name,
         "language": row.language,
         "status": row.status,
@@ -297,6 +299,22 @@ mod tests {
         m.data_hashes = data.iter().map(|d| ckb_hash::blake2b_256(d)).collect();
         m.data_cells = vec![format!("0x{}:1", "bb".repeat(32)), format!("0x{}:2", "cc".repeat(32))];
         (sample_raw(5, &m, 6), code, data)
+    }
+
+    #[test]
+    fn entry_carries_code_cell_and_manifest_cell() {
+        let db = Db::open_memory();
+        let (raw, code, data) = composite();
+        let v = store_manifest(&db, &raw, &code, &data).unwrap();
+        let id = v["service_id"].as_str().unwrap().to_string();
+        let row = db.service(&id).unwrap().unwrap();
+        let e = entry(&row, Path::new("/nonexistent"), &HashMap::new());
+        assert_eq!(e["outpoint"], json!(row.outpoint));
+        assert_eq!(e["manifest_outpoint"], json!(row.manifest_outpoint));
+        db.add_service("0xabc", "x", "onchain").unwrap();
+        let row = db.service("0xabc").unwrap().unwrap();
+        let e = entry(&row, Path::new("/nonexistent"), &HashMap::new());
+        assert!(e["outpoint"].is_null() && e["manifest_outpoint"].is_null());
     }
 
     #[test]

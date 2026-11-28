@@ -29,6 +29,7 @@ pub fn routes() -> Router<Arc<AppState>> {
             get(super::settings::get).put(super::settings::put),
         )
         .route("/api/services", get(services))
+        .route("/api/services/{hash}/verify", get(service_verify))
         .route("/api/services/{hash}/{verb}", post(service_action))
         .route("/api/catalog", get(catalog))
         .route("/api/catalog/refresh", post(catalog_refresh))
@@ -128,6 +129,20 @@ async fn services(State(s): St) -> Response {
                 Json(json!({"error": "database error"})),
             )
                 .into_response()
+        }
+    }
+}
+
+/// Read-only: re-reads the cells of a service from the own node and recomputes its service ID.
+async fn service_verify(State(s): St, Path(hash): Path<String>) -> Response {
+    let cfg = s.config.read().unwrap().clone();
+    let rpc = crate::node::rpc::RpcClient::new(&cfg.node.rpc_url);
+    match crate::verify::verify_service(&s.db, &rpc, &hash).await {
+        Ok(Some(v)) => Json(v).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "unknown service"}))).into_response(),
+        Err(e) => {
+            tracing::warn!("verifying service {hash} failed: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "database error"}))).into_response()
         }
     }
 }
@@ -283,4 +298,14 @@ async fn earnings(State(s): St) -> Response {
         }
     }
     Json(v).into_response()
+}
+
+#[cfg(test)]
+mod verify_route_tests {
+    /// axum panics when routes conflict: building the router proves the static `verify` segment coexists
+    /// with the `{verb}` parameter route (the static segment wins at dispatch).
+    #[test]
+    fn verify_route_coexists_with_the_action_route() {
+        let _ = super::routes();
+    }
 }
