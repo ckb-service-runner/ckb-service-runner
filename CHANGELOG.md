@@ -2,6 +2,7 @@
 
 ## Unreleased
 - **Service `crowdcell-finalize`** (creator side only): finalizes a CrowdCell campaign (status `Active` -> `Success`/`Failed`) after its deadline for a creator who ticked "finalize automatically". New crates `crowdcell-finalize-logic` (`no_std`, host-tested) and `crowdcell-finalize`; `csr-svc` gains `block_info`, `chain_read`, `cells_query`, `tx_skeleton_put`; spec in `spec/crowdcell-finalize.md`. Test it with a testnet campaign; the mainnet manifest is not published yet. Decision D54.
+- **Check-in reports approved service IDs**: the check-in body gains `approved_services` (sorted, unique, at most 64 IDs of services that are approved, enabled and allowed; empty on mainnet). Advisory, not signed; the signed messages are unchanged. Decision D55.
 - Packaging: `license = "MIT"` in the runner, tools and service crates (the repository has been MIT-licensed from the start; contracts unchanged).
 - Docs: `docs/release.md` names the artifacts to use and the `gh` version needed for `gh attestation verify`; `docs/windows.md` states that Authenticode signing is planned for 0.7.x.
 

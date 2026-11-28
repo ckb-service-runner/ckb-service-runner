@@ -56,6 +56,35 @@ pub async fn run(state: Arc<AppState>, mut stop: watch::Receiver<bool>) {
     }
 }
 
+/// Normalises service IDs for the check-in: lowercase, `0x` + 64 hex digits only, sorted, unique, at most 64.
+pub(crate) fn approved_service_ids(ids: Vec<String>) -> Vec<String> {
+    let mut v: Vec<String> = ids
+        .into_iter()
+        .map(|i| i.to_ascii_lowercase())
+        .filter(|i| {
+            i.strip_prefix("0x")
+                .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+        .collect();
+    v.sort();
+    v.dedup();
+    v.truncate(64);
+    v
+}
+
+/// Service IDs approved and enabled here and allowed by `runtime.allowed_services`; empty while the runtime is locked.
+fn approved_services_from(db: &crate::db::Db, cfg: &crate::config::Config, network: &str) -> Vec<String> {
+    if crate::network::registration_locked(network).is_some() {
+        return Vec::new();
+    }
+    approved_service_ids(crate::jobs::allowlist(db, cfg).unwrap_or_default())
+}
+
+fn approved_services_for(state: &AppState, network: &str) -> Vec<String> {
+    let cfg = state.config.read().unwrap().clone();
+    approved_services_from(&state.db, &cfg, network)
+}
+
 async fn checkin_once(
     state: &AppState,
     http: &reqwest::Client,
@@ -75,6 +104,7 @@ async fn checkin_once(
         &state.service_key,
         &proto::checkin_message(&peer_id, &state.service_pubkey, &network, ts),
     );
+    let approved = approved_services_for(state, &network);
     let body = json!({
         "peer_id": peer_id,
         "service_pubkey": state.service_pubkey,
@@ -83,6 +113,7 @@ async fn checkin_once(
         "csr_version": env!("CARGO_PKG_VERSION"),
         "ts": ts,
         "checkin_sig": checkin_sig,
+        "approved_services": approved,
     });
     let resp = http
         .post(format!("{base}/v1/checkin"))
@@ -283,3 +314,47 @@ async fn post_identity(http: &reqwest::Client, base: &str, proof: &Value) -> Pro
         _ => ProofOutcome::Failed(format!("monitor replied {st}")),
     }
 }
+
+#[cfg(test)]
+mod approved_services_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::db::Db;
+
+    fn sid(c: char) -> String {
+        format!("0x{}", c.to_string().repeat(64))
+    }
+
+    fn setup() -> (Db, Config) {
+        let db = Db::open_memory();
+        for c in ['a', 'b', 'c'] {
+            db.add_service(&sid(c), "svc", "rust").unwrap();
+        }
+        let mut cfg = Config::default();
+        cfg.runtime.allowed_services = vec![sid('a'), sid('b'), sid('c')];
+        (db, cfg)
+    }
+
+    #[test]
+    fn only_enabled_and_allowed_services_are_listed() {
+        let (db, mut cfg) = setup();
+        for c in ['a', 'b'] {
+            db.set_service_status(&sid(c), crate::registry::ENABLED).unwrap();
+        }
+        assert_eq!(approved_services_from(&db, &cfg, "testnet"), vec![sid('a'), sid('b')]);
+        cfg.runtime.allowed_services = vec![sid('b')];
+        assert_eq!(approved_services_from(&db, &cfg, "testnet"), vec![sid('b')]);
+    }
+
+    #[test]
+    fn nothing_is_listed_without_approval_or_on_locked_mainnet() {
+        let (db, cfg) = setup();
+        assert!(approved_services_from(&db, &cfg, "testnet").is_empty());
+        db.set_service_status(&sid('a'), crate::registry::ENABLED).unwrap();
+        assert!(approved_services_from(&db, &cfg, "mainnet").is_empty());
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../acceptance/aiworker-csr-071-crowdcell/outbound_tests.rs"]
+mod aiworker_071_outbound_tests;

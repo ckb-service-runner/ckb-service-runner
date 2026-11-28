@@ -29,6 +29,11 @@ a user wallet and is not imported from one.
 - **The signed node-identity proof**: peer ID, service public key, network, timestamp, the node's public key and two
   signatures (one by the node key, one by the service key). The node's secret key is never part of it.
 - **Ping and check-in statistics** sent to the CSR Network Monitor (reachability, latency, node tip and sync state).
+- **The approved service IDs** (sent with the check-in, only when the ranking is joined): the sorted list of the
+  service IDs that are approved and enabled on this runner and allowed for this network, at most 64. It is advisory
+  and not signed (the check-in signature does not cover it), so the monitor can count how many runners will run a
+  service. It reveals which services an operator runs; no names, arguments or outpoints are sent. It is empty on
+  mainnet. You can see the same list on the Services page of the dashboard (the approved, enabled services).
 - **What the Service Runtime publishes on chain** (job settlements, registrations), which is public by nature.
 - According to the monitor's design, the CSR Network Monitor stores no IP address of runners. That is the monitor's
   published design and is not something the runner can enforce or prove.
